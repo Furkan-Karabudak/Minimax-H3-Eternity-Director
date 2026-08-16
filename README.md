@@ -1,21 +1,58 @@
-# ComfyUI MiniMax H3 Director
+# ComfyUI MiniMax H3 Director — Extended
+
+> ### A fork of [**ComfyUI MiniMax H3 Director**](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director) — genuinely excellent work.
+>
+> That node — by **seesee75-commits**, itself a port of **WhatDreamsCost**'s [LTX Director](https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyUI) — is the entire foundation here: the timeline, the storyboard compiler, the live prompt preview. **Go star the original.** This fork keeps all of it and pushes hard on long-form video, the reference system, and dialogue. The [original documentation](#-original-readme) below still applies in full.
 
 **A timeline editor for [MiniMax H3](https://huggingface.co/Comfy-Org/MiniMax-H3) inside ComfyUI.**
 Drag images, videos and music onto tracks, trim them on a ruler, write a prompt per shot,
-press Run. Instead of one prompt box for a whole clip you get a storyboard — and you can
-see the exact prompt the model will receive while you are still editing it.
+press Run — a storyboard instead of one prompt box, with the exact model prompt visible as
+you edit.
 
 [![license](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-%E2%89%A5%200.30.0-1a1a1a)](https://github.com/comfyanonymous/ComfyUI)
-[![version](https://img.shields.io/badge/version-0.1.6-brightgreen)](CHANGELOG.md)
+[![fork](https://img.shields.io/badge/fork-Extended-brightgreen)](CUSTOM_ADDITIONS.md)
 
 ![The MiniMax H3 Director node](docs/images/director-node.png)
 
-<!-- TODO: demo video -->
+---
 
-> This is the [LTX Director](https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyUI)
-> timeline editor by **WhatDreamsCost**, ported to MiniMax H3. Same editing, new backend.
-> See [Credits](#credits).
+## What this fork adds
+
+Full detail in [**CUSTOM_ADDITIONS.md**](CUSTOM_ADDITIONS.md). The headlines:
+
+- **Long-form in one node.** Wire a `sampler` + `sigmas` and the Director renders *past H3's
+  ~15s ceiling* on a single timeline, as evenly-split anchored windows — no second node, no
+  JSON copy-paste. Your LoRAs and turbo schedule stay on the wire and apply to every window.
+- **Two-phase decode.** Sampling and the heavy VAE decode are separated — anchor-frame decode
+  in the loop, full decode once the DiT is freed — so long renders stay on the GPU instead of
+  spilling to CPU and OOM-freezing the machine.
+- **Seam handling.** 12 ms equal-power audio de-click, per-window audio-reference slicing, a
+  length-matched `combined_audio` output, and amber **seam markers** on the timeline that
+  segment edges snap to — so cuts land exactly on a window join.
+- **Typed references.** Every reference slot is *Character / Animal / Object / Scene / Style*,
+  and the `subject_definitions` line matches the type **and finally uses your description.**
+- **Per-shot dialogue.** A dialogue section per shot (time · speaker · language · line) compiles
+  to H3's own `<Subject N> (SN) says, <d>[Language] …</d>`, with ♪ markers on the timeline and
+  hover-sync between markers and the editor rows.
+- **Audio roles.** *Voice / Background Music / Ambient* — each written as its own `<Audio N>`
+  definition instead of assuming every clip is a voice.
+- **Gen-log output.** The `prompt` output is a full, saveable record — storyboard, timings,
+  every reference filename, audio prompts, and a per-window breakdown.
+- **UI & robustness.** Zoom no longer blanks on long timelines, zoom controls sit under the
+  timeline, dropping a long song no longer balloons the render duration, sub-frame prompt-bleed
+  at seams is eliminated, and a front-end performance pass.
+
+> **Deploy after updating:** restart ComfyUI (backend) **and** hard-refresh the browser
+> (frontend). If a node on the canvas looks stale after the input/output changes, right-click →
+> **Fix node (recreate)**.
+
+---
+
+## <a id="-original-readme"></a>📖 Original documentation
+
+Everything below is the upstream README — installation, usage, prompt format, retakes, the lot —
+and all of it still applies to this fork.
 
 ---
 
@@ -127,7 +164,7 @@ any OpenAI-compatible endpoint) with automatic VRAM release before a run.
 Not listed yet? Use **Manager → Install via Git URL** and paste:
 
 ```
-https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director
+https://github.com/vomitselfie/ComfyUI-MiniMaxH3-Director-Extended
 ```
 
 ### Manual
@@ -136,7 +173,7 @@ Clone into your `custom_nodes` folder and restart:
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director
+git clone https://github.com/vomitselfie/ComfyUI-MiniMaxH3-Director-Extended
 ```
 
 On the Windows portable build the folder is
@@ -541,7 +578,7 @@ frames → 5.17 s. This is the model's grid, not a bug.
 
 ## Reporting a bug
 
-Open an [issue](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director/issues). The three
+Open an [issue](https://github.com/vomitselfie/ComfyUI-MiniMaxH3-Director-Extended/issues). The three
 things that make a report fixable:
 
 1. the **full traceback** from the ComfyUI console (not just the last line),

@@ -1,7 +1,7 @@
 [project]
-name = "minimaxh3-director"
+name = "minimaxh3-director-extended"
 description = "A timeline editor for MiniMax H3 — storyboard prompts, first/last keyframes, image/video/audio references, native joint audio, live sampling preview, retakes and shot chaining."
-version = "0.1.6"
+version = "0.2.0"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 # Nothing beyond what ComfyUI itself already installs.
@@ -13,12 +13,12 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director"
-"Bug Tracker" = "https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director/issues"
+Repository = "https://github.com/vomitselfie/ComfyUI-MiniMaxH3-Director-Extended"
+"Bug Tracker" = "https://github.com/vomitselfie/ComfyUI-MiniMaxH3-Director-Extended/issues"
 
 [tool.comfy]
 # Must match the publisher you create at https://registry.comfy.org
-PublisherId = "seesee75-commits"
+PublisherId = ""
 DisplayName = "MiniMax H3 Director"
 Icon = ""
 # comfy_api.latest, the packed AV latent and H3 support all landed in ComfyUI 0.30.0.

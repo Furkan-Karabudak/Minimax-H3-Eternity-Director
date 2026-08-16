@@ -69,10 +69,15 @@ def substitute_char_tags(text, replacements):
     return text
 
 
-def overlaps(seg, win_start, win_end):
+def overlaps(seg, win_start, win_end, eps=0.5):
+    """A segment counts as inside [win_start, win_end) only if it overlaps by more than
+    `eps` frames. Half a frame kills a sub-frame straddle — a segment snapped to a window
+    boundary (or landing a hair over it) can never bleed its prompt into the neighbouring
+    generation — while any real overlap (a segment that genuinely spans the seam) still
+    counts on both sides."""
     start = float(seg.get("start", 0))
     length = float(seg.get("length", 1))
-    return start < win_end and start + length > win_start
+    return start < win_end - eps and start + length > win_start + eps
 
 
 def parse_timeline(timeline_data):
@@ -124,6 +129,65 @@ def fmt_timestamp(seconds):
     return "%02d:%06.3f" % (minutes, rest)
 
 
+# The reference guide groups subjects as "people, animals, or objects" / "scenes,
+# backgrounds, or environments" / styles. The editor's type dropdown maps onto these; the
+# noun goes in the sentence and the user's description becomes the detail clause the guide
+# asks for ("is the coffee-shop environment in <Picture 1>, featuring …").
+_SUBJECT_NOUNS = {
+    "character": "the character", "person": "the character",
+    "animal": "the animal", "object": "the object",
+    "scene": "the environment", "background": "the environment", "environment": "the environment",
+}
+
+
+def _subject_sentence(subject_n, ref_type, description, pictures):
+    """One subject_definitions line in the reference guide's own shape: the TYPE carried by
+    the noun, the DESCRIPTION as the detail clause after it. Style is an aesthetic rather
+    than a thing in the frame, so it gets its own frame."""
+    ref_type = (ref_type or "character").strip().lower()
+    desc = (description or "").strip().rstrip(".")
+    if ref_type == "style":
+        base = "<Subject %d> is the visual-style reference from %s" % (subject_n, pictures)
+    else:
+        noun = _SUBJECT_NOUNS.get(ref_type, "the character")
+        base = "<Subject %d> is %s shown in %s" % (subject_n, noun, pictures)
+    return ("%s, %s." % (base, desc)) if desc else ("%s." % base)
+
+
+def _format_dialogue(dialogue, subject_of_slot, char_slots):
+    """Compile a segment's dialogue lines into the guide's `<Subject N> (SN) says, <d>[Lang]
+    text</d>` form, ordered by their in-shot timestamp. The speaker is the character slot the
+    line names, mapped to its resolved <Subject N>; if that slot has no reference image (so no
+    subject), fall back to its description, then to a generic voice. Dialogue and a voice-timbre
+    <Audio> reference coexist — the (SN) tag is the same one the audio binding emits."""
+    if not dialogue:
+        return ""
+
+    def _slot(line):
+        try:
+            return int(line.get("slot"))
+        except (TypeError, ValueError):
+            return None
+
+    out = []
+    for line in sorted(dialogue, key=lambda d: float(d.get("time", 0) or 0)):
+        text = (line.get("text") or "").strip()
+        if not text:
+            continue
+        lang = (line.get("lang") or "English").strip() or "English"
+        slot = _slot(line)
+        subject = subject_of_slot.get(slot) if slot else None
+        if subject:
+            speaker = "<Subject %d> (S%d)" % (subject, subject)
+        elif (slot and char_slots and 0 < slot <= len(char_slots)
+              and (char_slots[slot - 1].get("description") or "").strip()):
+            speaker = char_slots[slot - 1]["description"].strip().rstrip(".")
+        else:
+            speaker = "A voice"
+        out.append("%s says, <d>[%s] %s</d>" % (speaker, lang, text))
+    return " ".join(out)
+
+
 def build_subject_definitions(char_slots, ref_image_slots, ref_video_segs, ref_audio_segs):
     """Bind <Subject N> names to the <Picture i> labels the tokenizer will emit.
 
@@ -142,7 +206,8 @@ def build_subject_definitions(char_slots, ref_image_slots, ref_video_segs, ref_a
         subject = len(subject_of_slot) + 1
         subject_of_slot[slot_index + 1] = subject
         pictures = " and ".join("<Picture %d>" % o for o in ordinals)
-        lines.append("<Subject %d> is the character shown in %s." % (subject, pictures))
+        lines.append(_subject_sentence(subject, _slot.get("type"),
+                                       _slot.get("description"), pictures))
 
     for i, _seg in enumerate(ref_video_segs):
         lines.append("<Video %d> is a reference video: follow its motion and camera work."
@@ -154,6 +219,16 @@ def build_subject_definitions(char_slots, ref_image_slots, ref_video_segs, ref_a
     # say who is speaking, which is exactly what issue #10 ran into.
     bound_audio = {}
     for i, seg in enumerate(ref_audio_segs):
+        role = str((seg or {}).get("audioRole", "voice") or "voice").lower()
+        if role == "music":
+            lines.append("<Audio %d> is a background-music reference: follow its melody, "
+                         "instrumentation, tempo, and overall style." % (i + 1))
+            continue
+        if role == "ambient":
+            lines.append("<Audio %d> is an ambient sound reference: follow its texture, "
+                         "space, and timbre." % (i + 1))
+            continue
+        # role == "voice" (default): bind it to the subject whose voice it carries, if set
         subject = subject_of_slot.get(_audio_subject_slot(seg))
         if subject:
             bound_audio[i + 1] = subject
@@ -392,7 +467,8 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
         if legacy_b64 and not images_list:
             images_list = [{"b64": legacy_b64, "name": char_info.get("fileName", "")}]
         char_slots.append({"images": images_list,
-                           "description": char_info.get("description", "") or ""})
+                           "description": char_info.get("description", "") or "",
+                           "type": (char_info.get("type", "") or "character").lower()})
 
     # --- shots + image events ---
     shots, events = [], []
@@ -417,6 +493,7 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
             rel_start = max(0.0, seg_start - win_start)
             rel_end = min(float(duration_frames), seg_start + seg_len - win_start)
             shots.append({"prompt": seg.get("prompt", "") or "",
+                          "dialogue": seg.get("dialogue", []) or [],
                           "start_sec": rel_start / fps, "end_sec": rel_end / fps})
 
             kind = seg.get("type", "image")
@@ -606,6 +683,10 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
     global_prompt = substitute_char_tags(global_prompt, char_tag_values)
     for shot in shots:
         shot["prompt"] = substitute_char_tags(shot["prompt"], char_tag_values)
+        spoken = _format_dialogue(shot.get("dialogue"), subject_of_slot, char_slots)
+        if spoken:
+            base = shot["prompt"].rstrip()
+            shot["prompt"] = (base + " " + spoken) if base else spoken
 
     if prompt_format == FORMAT_MINIMAX:
         # the guide keeps the soundtrack out of the shot description

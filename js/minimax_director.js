@@ -30,16 +30,16 @@ const MIN_SEGMENT_LENGTH = 6;
 // box, so the box has to be tall enough for both. MUST match .mmxd-sound-row's height in
 // the stylesheet — the CSS shortens the textarea by exactly this much, and if the two
 // disagree the prompt area either overlaps the strip or leaves a gap.
-const SOUND_ROW_HEIGHT = 54;
+const SOUND_ROW_HEIGHT = 54;                                      // legacy; audio now has its own section
 const GLOBAL_PROMPT_MIN_H = 60;                                    // the prompt box alone
-const GLOBAL_PROP_MIN_H = GLOBAL_PROMPT_MIN_H + SOUND_ROW_HEIGHT;  // prompt box + strip
+const GLOBAL_PROP_MIN_H = GLOBAL_PROMPT_MIN_H;                     // global-prompt box only; audio is its own section below
 const MAX_THUMBNAIL_DIM = 512; // Increased to maintain quality for taller images
 
 const HIDDEN_WIDGET_NAMES = ["timeline_data", "local_prompts", "segment_lengths", "guide_strength", "audio_data", "use_custom_audio", "inpaint_audio", "use_custom_motion", "override_audio"];
 
 // Subject slots. Three was a number baked into the code, not a model limit — the card
 // caps total reference images at 9 and each slot holds 2, so there is room for more.
-const CHAR_SLOTS_DEFAULT = 3;
+const CHAR_SLOTS_DEFAULT = 5;
 const CHAR_SLOTS_MIN = 1;
 const CHAR_SLOTS_MAX = 9;
 
@@ -447,8 +447,10 @@ const STYLES = `
   .mmxd-zoom-controls {
     display: flex;
     align-items: center;
+    justify-content: flex-end;
     gap: 4px;
-    margin-left: 12px;
+    margin-top: 5px;
+    padding-right: 2px;
   }
   .mmxd-zoom-slider {
     width: 80px;
@@ -657,21 +659,47 @@ const STYLES = `
   }
   /* --- Character reference slots --- */
   .mmxd-characters-container { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; margin-bottom: 4px; box-sizing: border-box; width: 100%; flex-shrink: 0; }
-  .mmxd-character-slot { flex: 1; background: #1e1e1e; border: 1.5px dashed #444; border-radius: 8px; height: 120px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 4px; position: relative; cursor: pointer; overflow: hidden; transition: all 0.2s ease; box-sizing: border-box; }
+  .mmxd-character-slot { flex: 1; background: #1e1e1e; border: 1.5px dashed #444; border-radius: 8px; height: 326px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 4px; position: relative; cursor: pointer; overflow: hidden; transition: all 0.2s ease; box-sizing: border-box; }
   .mmxd-character-slot:hover { border-color: #666; background: #252525; }
   .mmxd-character-slot.drag-over { border-color: #4fff8f; background: rgba(79, 255, 143, 0.05); }
   .mmxd-character-label { font-size: 10px; font-weight: bold; color: #888; margin-bottom: 2px; pointer-events: none; }
   .mmxd-character-placeholder { font-size: 9px; color: #666; text-align: center; pointer-events: none; margin-top: 10px; }
-  .mmxd-character-previews-row { display: flex; width: 100%; height: 52px; gap: 4px; position: relative; }
+  .mmxd-character-previews-row { display: flex; width: 100%; height: 192px; gap: 4px; position: relative; }
   .mmxd-character-preview-wrapper { flex: 1; height: 100%; position: relative; overflow: hidden; border-radius: 3px; background: #111; }
-  .mmxd-character-preview { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+  .mmxd-character-preview { width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
   .mmxd-character-delete { position: absolute; top: 2px; right: 2px; background: rgba(0, 0, 0, 0.85); color: #ff4444; border: none; border-radius: 50%; width: 14px; height: 14px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 9px; transition: background 0.15s; z-index: 10; padding: 0; }
   .mmxd-character-delete:hover { background: #ff4444; color: #fff; }
   .mmxd-character-validate-btn { position: absolute; bottom: -8px; left: 50%; transform: translateX(-50%); background: rgba(0, 0, 0, 0.85); color: #e0e0e0; border: 1px solid #444; border-radius: 3px; padding: 2px 8px; font-size: 9px; font-weight: bold; cursor: pointer; transition: all 0.15s; z-index: 20; }
   .mmxd-character-validate-btn:hover { background: #4fff8f; color: #000; border-color: #4fff8f; }
   .mmxd-character-validate-btn.loading { background: #333; color: #888; cursor: wait; pointer-events: none; }
-  .mmxd-character-desc { width: 100%; height: 38px; background: #111; color: #e0e0e0; border: 1px solid #333; border-radius: 4px; font-size: 9px; resize: none; box-sizing: border-box; padding: 2px 4px; margin-top: 10px; outline: none; font-family: inherit; z-index: 10; }
+  .mmxd-character-desc { width: 100%; height: 56px; background: #111; color: #e0e0e0; border: 1px solid #333; border-radius: 4px; font-size: 9px; resize: none; box-sizing: border-box; padding: 2px 4px; margin-top: 6px; outline: none; font-family: inherit; z-index: 10; }
   .mmxd-character-desc:focus { border-color: #4fff8f; }
+  .mmxd-character-type { width: 100%; height: 22px; background: #1a1a1a; color: #cfcfcf; border: 1px solid #333; border-radius: 4px; font-size: 9px; box-sizing: border-box; padding: 1px 3px; margin-top: 8px; outline: none; font-family: inherit; cursor: pointer; z-index: 10; }
+  .mmxd-character-type:focus { border-color: #4fff8f; }
+  .mmxd-character-type:hover { border-color: #555; }
+  /* --- per-shot dialogue lines --- */
+  .mmxd-dialogue-area { width: 100%; margin-top: 6px; background: #1a1a1a; border: 1px solid #111; border-radius: 6px; padding: 6px 8px 8px 8px; box-sizing: border-box; }
+  .mmxd-dialogue-header-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }
+  .mmxd-dialogue-header { font-size: 9px; font-weight: bold; color: #666; text-transform: uppercase; letter-spacing: 0.5px; user-select: none; }
+  .mmxd-dialogue-add { font-size: 10px; background: #2a2a2a; color: #cfcfcf; border: 1px solid #444; border-radius: 4px; padding: 2px 8px; cursor: pointer; font-family: inherit; }
+  .mmxd-dialogue-add:hover { background: #383838; border-color: #4fff8f; color: #fff; }
+  .mmxd-dialogue-rows { display: flex; flex-direction: column; gap: 4px; }
+  .mmxd-dialogue-empty { font-size: 9px; color: #555; font-style: italic; }
+  .mmxd-dlg-colhead { display: flex; align-items: center; gap: 4px; padding: 0 1px; margin-bottom: 1px; }
+  .mmxd-dlg-colhead span { font-size: 8px; color: #666; text-transform: uppercase; letter-spacing: 0.4px; user-select: none; }
+  .mmxd-dlg-h-time { width: 44px; } .mmxd-dlg-h-spk { width: 96px; } .mmxd-dlg-h-lang { width: 68px; }
+  .mmxd-dlg-h-text { flex: 1 1 auto; min-width: 0; } .mmxd-dlg-h-del { width: 22px; flex-shrink: 0; }
+  .mmxd-dialogue-row { display: flex; align-items: center; gap: 4px; border-radius: 4px; padding: 1px; transition: background 0.15s ease, box-shadow 0.15s ease; }
+  .mmxd-dialogue-row.mmxd-dlg-hi { background: rgba(79,255,143,0.10); box-shadow: 0 0 0 1px rgba(79,255,143,0.7); }
+  .mmxd-dlg-time { width: 44px; height: 22px; background: #111; color: #e0e0e0; border: 1px solid #333; border-radius: 4px; font-size: 10px; box-sizing: border-box; padding: 0 3px; font-family: inherit; }
+  .mmxd-dlg-speaker { width: 96px; height: 22px; background: #111; color: #cfcfcf; border: 1px solid #333; border-radius: 4px; font-size: 9px; box-sizing: border-box; cursor: pointer; }
+  .mmxd-dlg-lang { width: 68px; height: 22px; background: #111; color: #cfcfcf; border: 1px solid #333; border-radius: 4px; font-size: 9px; box-sizing: border-box; padding: 0 3px; font-family: inherit; }
+  .mmxd-dlg-text { flex: 1 1 auto; min-width: 0; height: 22px; background: #111; color: #e0e0e0; border: 1px solid #333; border-radius: 4px; font-size: 10px; box-sizing: border-box; padding: 0 5px; font-family: inherit; }
+  .mmxd-dlg-text:focus, .mmxd-dlg-time:focus, .mmxd-dlg-lang:focus, .mmxd-dlg-speaker:focus { border-color: #4fff8f; outline: none; }
+  .mmxd-dlg-del { width: 22px; height: 22px; flex-shrink: 0; background: #2a2a2a; color: #d08080; border: 1px solid #444; border-radius: 4px; cursor: pointer; font-size: 13px; line-height: 1; padding: 0; }
+  .mmxd-dlg-del:hover { background: #3a2020; border-color: #d05050; color: #fff; }
+  @keyframes mmxdFlash { 0% { box-shadow: 0 0 0 2px rgba(79,255,143,0.9); } 100% { box-shadow: 0 0 0 2px rgba(79,255,143,0); } }
+  .mmxd-flash { animation: mmxdFlash 0.75s ease-out; }
   /* --- @char autocomplete popup --- */
   .mmxd-autocomplete-menu { position: fixed; background: #181818; border: 1px solid #444; border-radius: 6px; padding: 4px; display: flex; flex-direction: column; gap: 2px; z-index: 100000; box-shadow: 0 4px 16px rgba(0,0,0,0.6); min-width: 180px; max-height: 200px; overflow-y: auto; }
   .mmxd-autocomplete-item { background: #252525; color: #aaa; border: 1px solid #333; border-radius: 4px; padding: 6px 12px; font-size: 11px; font-family: monospace; cursor: pointer; text-align: left; display: flex; align-items: center; justify-content: space-between; transition: all 0.15s ease; }
@@ -693,16 +721,16 @@ const STYLES = `
   .mmxd-ref-option-select { background: #1e1e1e; border-color: #3a3a3a; border-radius: 6px; height: 28px; font-weight: 500; }
   .mmxd-ref-option-select:hover, .mmxd-ref-option-select.mmxd-msel-open { background: #1e1e1e; border-color: #4fff8f; color: #fff; }
   .mmxd-ref-option-select .mmxd-msel-caret { color: #cfcfcf; }
-  /* --- overall_soundscape / non_diegetic_music, docked under the global prompt --- */
-  /* The wrapper positions its children absolutely, so this row sits at the bottom and
-     the prompt area above it is shortened by exactly the same amount. Nothing here
-     changes the node's height: the container keeps whatever the user resized it to. */
-  .mmxd-sound-row { position: absolute; bottom: 0; left: 0; width: 100%; height: 54px; display: flex; gap: 6px; padding: 0 8px 6px 8px; box-sizing: border-box; }
-  .mmxd-prompt-area.mmxd-has-sound { height: calc(100% - 20px - 54px); }
-  .mmxd-sound-field { position: relative; flex: 1 1 0; min-width: 0; background: #1c1c1c; border: 1px solid #111; border-radius: 4px; box-sizing: border-box; }
+  /* --- overall_soundscape / non_diegetic_music — their own section below the prompt --- */
+  /* Pulled out of the cramped strip that used to overlay the bottom of the global prompt.
+     Now a labelled block with two full-height fields side by side. */
+  .mmxd-sound-section { display: flex; flex-direction: column; gap: 6px; padding: 8px 8px 10px 8px; margin-top: 6px; background: #1a1a1a; border: 1px solid #111; border-radius: 6px; box-sizing: border-box; }
+  .mmxd-sound-section-label { font-size: 9px; font-weight: bold; color: #666; text-transform: uppercase; letter-spacing: 0.5px; user-select: none; pointer-events: none; }
+  .mmxd-sound-row { display: flex; gap: 8px; width: 100%; box-sizing: border-box; }
+  .mmxd-sound-field { position: relative; flex: 1 1 0; min-width: 0; height: 96px; background: #1c1c1c; border: 1px solid #111; border-radius: 4px; box-sizing: border-box; }
   .mmxd-sound-field.focus-active { border-color: #888; }
-  .mmxd-sound-label { position: absolute; top: 3px; left: 6px; font-size: 8px; font-weight: bold; color: #5a5a5a; text-transform: uppercase; letter-spacing: 0.5px; pointer-events: none; user-select: none; z-index: 5; }
-  .mmxd-sound-area { position: absolute; top: 14px; left: 0; width: 100%; height: calc(100% - 14px); background: transparent; color: #d0d0d0; border: none; padding: 0 6px 4px 6px; resize: none; font-size: 11px; line-height: 1.35; font-family: inherit; box-sizing: border-box; outline: none; }
+  .mmxd-sound-label { position: absolute; top: 4px; left: 7px; font-size: 8px; font-weight: bold; color: #5a5a5a; text-transform: uppercase; letter-spacing: 0.5px; pointer-events: none; user-select: none; z-index: 5; }
+  .mmxd-sound-area { position: absolute; top: 16px; left: 0; width: 100%; height: calc(100% - 16px); background: transparent; color: #d0d0d0; border: none; padding: 0 7px 6px 7px; resize: none; font-size: 12px; line-height: 1.4; font-family: inherit; box-sizing: border-box; outline: none; }
   .mmxd-sound-area::placeholder { color: #4a4a4a; }
   /* --- subject-slot stepper --- */
   .mmxd-character-stepper { display: flex; align-items: center; gap: 4px; align-self: center; margin-left: 4px; }
@@ -906,7 +934,8 @@ function parseInitial(jsonStr) {
       if (Array.isArray(p.characters)) {
         parsed.characters = p.characters.map(c => ({
           images: Array.isArray(c.images) ? c.images : [],
-          description: c.description || ""
+          description: c.description || "",
+          type: c.type || "character"
         }));
         // pad up to the default, never truncate — a workflow saved with more slots keeps
         // every one of them
@@ -1005,6 +1034,16 @@ class TimelineEditor {
     this._dragTargetIdRight = null;
     this._previewSegments = null;
     this._lastWidth = 0;
+
+    // Perf: layout-sync change detection (avoids a forced reflow every frame)
+    this._syncTargetWidth = null;
+    this._syncCanvasHeight = null;
+    this._syncZoomLevel = null;
+    this._syncApplied = false;
+    // Perf: coalesced drag renders + memoized text truncation
+    this._renderQueued = false;
+    this._scheduleRenderId = null;
+    this._fitTextCache = new Map();
     this._hoveredGapIdx = -1;
     this._isHovering = false;
 
@@ -1471,9 +1510,16 @@ class TimelineEditor {
 
   destroy() {
     cancelAnimationFrame(this._renderLoop);
+    if (this._scheduleRenderId != null) {
+      cancelAnimationFrame(this._scheduleRenderId);
+      this._scheduleRenderId = null;
+    }
+    this._renderQueued = false;
     this.pauseAudio();
     window.removeEventListener("keydown", this.handleKeyDown, true);
     window.removeEventListener("paste", this.handlePaste, true);
+    if (this._onWinMove) window.removeEventListener("mousemove", this._onWinMove);
+    if (this._onWinUp) window.removeEventListener("mouseup", this._onWinUp);
   }
 
   getStartFrames() {
@@ -1552,10 +1598,16 @@ class TimelineEditor {
     const visualDurationSecs = this.getVisualDurationFrames() / this.getFrameRate();
     const baseMaxZoom = Math.max(1, visualDurationSecs / 4);
 
-    // Limit max zoom to prevent canvas width from exceeding browser limits (causing crash)
+    // The canvas BACKING store is cssWidth * getRenderScale(), and getRenderScale() is
+    // devicePixelRatio * the ComfyUI graph zoom (ds.scale) — NOT 1. A single canvas
+    // dimension is hard-capped by the browser (32767 on Firefox/LibreWolf); exceed it and
+    // the canvas silently blanks, which reads as "zoom stopped working" — most visibly
+    // after zooming the graph itself in, or on any HiDPI/fractional-scaled display. So the
+    // ceiling has to be against the backing width (cssWidth * scale), not the raw CSS width.
     const viewportWidth = this.viewport ? this.viewport.clientWidth : 1000;
-    const MAX_CANVAS_WIDTH = 32768; // Extended limit for modern browsers
-    const limitMaxZoom = MAX_CANVAS_WIDTH / Math.max(1, viewportWidth);
+    const MAX_CANVAS_PX = 32767; // browser hard limit for one canvas dimension
+    const renderScale = Math.max(1, this.getRenderScale ? this.getRenderScale() : 1);
+    const limitMaxZoom = MAX_CANVAS_PX / Math.max(1, viewportWidth * renderScale);
 
     return Math.max(1, Math.min(baseMaxZoom, limitMaxZoom));
   }
@@ -1839,6 +1891,17 @@ class TimelineEditor {
 
     const totalFrames = this.getVisualDurationFrames();
     const thresholdFrames = (15 / logicalWidth) * totalFrames;
+
+    // Generation seams win with priority and a wider grab, and snap to the EXACT boundary
+    // frame — so a segment edge locks onto a window boundary and can never straddle into the
+    // next generation (no sub-frame prompt bleed). Checked before every other snap target.
+    let bestSeam = null, bestSeamDiff = thresholdFrames * 1.8;
+    for (const b of this.getWindowBoundaries()) {
+      const d = Math.abs(mouseFrameX - b);
+      if (d < bestSeamDiff) { bestSeamDiff = d; bestSeam = b; }
+    }
+    if (bestSeam !== null) return Math.round(bestSeam);
+
     const snapCandidates = [0, this.getDurationFrames()];
 
     // Add start and end frames of active generation range
@@ -1882,6 +1945,33 @@ class TimelineEditor {
       }
     }
     return bestFrame;
+  }
+
+  // Frame positions of the internal generation seams — where each chained window meets the
+  // next — mirroring the backend's even-distribution split_windows() exactly. Empty when the
+  // render fits in a single window (no seams). Drives both the timeline markers and snapping.
+  getWindowBoundaries() {
+    const fps = this.getFrameRate();
+    const winW = (this.node && this.node.widgets)
+      ? this.node.widgets.find(w => w.name === "window_seconds") : null;
+    const windowSeconds = (winW && winW.value >= 4) ? winW.value : 5.0;
+    const D = this.getDurationFrames();
+    const minF = Math.max(1, Math.round(4.0 * fps));   // H3 trained floor (4s)
+    const maxF = Math.max(minF, Math.round(15.0 * fps)); // H3 per-shot ceiling (15s)
+    let W = Math.min(Math.max(1, Math.round(windowSeconds * fps)), maxF);
+    if (D <= W) return [];
+    let count = Math.ceil(D / W);
+    while (count > 1 && D < minF * count) count--;      // fewer/longer before dropping below the floor
+    count = Math.max(count, Math.ceil(D / maxF));        // more before exceeding the ceiling
+    const base = Math.floor(D / count), rem = D % count;
+    const start = this.getStartFrames();
+    const seams = [];
+    let cursor = 0;
+    for (let i = 0; i < count - 1; i++) {                // count-1 interior boundaries
+      cursor += base + (i < rem ? 1 : 0);
+      seams.push(start + cursor);
+    }
+    return seams;
   }
 
   getTrackFromY(y) {
@@ -3002,9 +3092,9 @@ class TimelineEditor {
     globalPromptWrapper.appendChild(this.globalPromptLabel);
 
     this.globalPromptInput = document.createElement("textarea");
-    this.globalPromptInput.className = "mmxd-prompt-area mmxd-has-sound";
+    this.globalPromptInput.className = "mmxd-prompt-area";
     this.globalPromptInput.placeholder =
-      "Enter global prompt here...  (Audio: / Music: lines are lifted into the two boxes below)";
+      "Enter global prompt here...  (Audio: / Music: lines are lifted into the Audio section below)";
     this.globalPromptInput.spellcheck = true;
     globalPromptWrapper.appendChild(this.globalPromptInput);
 
@@ -3083,7 +3173,17 @@ class TimelineEditor {
     this.musicInput = makeSoundField(
       "non_diegetic_music", "non_diegetic_music",
       "Score only the audience hears. Name instrumentation, tempo and dynamics, or write N/A.");
-    globalPromptWrapper.appendChild(soundRow);
+
+    // The two audio prompts are their own section under the global prompt, not a strip
+    // crammed inside it. Appended to the editor wrapper below (see this.soundSection).
+    const soundSection = document.createElement("div");
+    soundSection.className = "mmxd-sound-section";
+    const soundSectionLabel = document.createElement("div");
+    soundSectionLabel.className = "mmxd-sound-section-label";
+    soundSectionLabel.textContent = "Audio — global soundscape & music";
+    soundSection.appendChild(soundSectionLabel);
+    soundSection.appendChild(soundRow);
+    this.soundSection = soundSection;
 
     this.globalPromptInput.addEventListener("input", (e) => {
       const val = e.target.value;
@@ -3266,6 +3366,36 @@ class TimelineEditor {
     this.audioInfoArea = document.createElement("div");
     this.audioInfoArea.className = "mmxd-audio-info";
 
+    // --- Per-shot dialogue lines (shown under the segment prompt) ---
+    this.dialogueArea = document.createElement("div");
+    this.dialogueArea.className = "mmxd-dialogue-area";
+    this.dialogueArea.style.display = "none";
+    const dlgHeaderRow = document.createElement("div");
+    dlgHeaderRow.className = "mmxd-dialogue-header-row";
+    const dlgHeader = document.createElement("div");
+    dlgHeader.className = "mmxd-dialogue-header";
+    dlgHeader.textContent = "Dialogue";
+    const dlgAddBtn = document.createElement("button");
+    dlgAddBtn.className = "mmxd-dialogue-add";
+    dlgAddBtn.textContent = "+ Line";
+    dlgAddBtn.title = "Add a spoken line to this shot";
+    dlgAddBtn.addEventListener("click", (e) => { e.stopPropagation(); this._addDialogueLine(); });
+    dlgHeaderRow.appendChild(dlgHeader);
+    dlgHeaderRow.appendChild(dlgAddBtn);
+    this.dialogueArea.appendChild(dlgHeaderRow);
+    this.dialogueRows = document.createElement("div");
+    this.dialogueRows.className = "mmxd-dialogue-rows";
+    this.dialogueArea.appendChild(this.dialogueRows);
+    // shared language suggestions (typeable, so any language still works)
+    if (!document.getElementById("mmxd-lang-list")) {
+      const dl = document.createElement("datalist");
+      dl.id = "mmxd-lang-list";
+      dl.innerHTML = ["English", "Japanese", "Mandarin", "Cantonese", "Korean", "Spanish",
+                      "French", "German", "Portuguese", "Italian", "Russian", "Arabic", "Hindi"]
+        .map(l => `<option value="${l}"></option>`).join("");
+      document.body.appendChild(dl);
+    }
+
     propContainer.appendChild(this.promptWrapper);
     propContainer.appendChild(this.motionInfoArea);
     propContainer.appendChild(this.audioInfoArea);
@@ -3391,8 +3521,10 @@ class TimelineEditor {
       }
     });
 
-    window.addEventListener("mousemove", (e) => this.onMouseMove(e));
-    window.addEventListener("mouseup", (e) => this.onMouseUp(e));
+    this._onWinMove = (e) => this.onMouseMove(e);
+    this._onWinUp = (e) => this.onMouseUp(e);
+    window.addEventListener("mousemove", this._onWinMove);
+    window.addEventListener("mouseup", this._onWinUp);
 
     // --- Player Controls ---
     const playerControls = document.createElement("div");
@@ -3438,6 +3570,7 @@ class TimelineEditor {
     // --- Zoom Controls ---
     const zoomControls = document.createElement("div");
     zoomControls.className = "mmxd-zoom-controls";
+    this.zoomControls = zoomControls;  // mounted under the timeline, not in the player row
 
     const zoomOutBtn = document.createElement("button");
     zoomOutBtn.className = "mmxd-icon-btn";
@@ -3518,7 +3651,7 @@ class TimelineEditor {
     playerControls.appendChild(this.playBtn);
     playerControls.appendChild(this.loopBtn);
     playerControls.appendChild(this.seekBar);
-    playerControls.appendChild(zoomControls);
+    // zoomControls is NOT added here — it's mounted directly beneath the timeline below.
 
 
 
@@ -4035,6 +4168,9 @@ class TimelineEditor {
 
     this.wrapper.appendChild(toolbar);
     this.wrapper.appendChild(this.layoutContainer);
+    // Zoom controls sit directly beneath the timeline they act on — not down in the
+    // player/guide-strength row, where they read as belonging to the audio track.
+    if (this.zoomControls) this.wrapper.appendChild(this.zoomControls);
 
 
     const controlsGroup = document.createElement("div");
@@ -4043,7 +4179,9 @@ class TimelineEditor {
     controlsGroup.appendChild(playerControls);
     this.wrapper.appendChild(controlsGroup);
     this.wrapper.appendChild(propContainer);
+    if (this.dialogueArea) this.wrapper.appendChild(this.dialogueArea);
     this.wrapper.appendChild(this.globalPropContainer);
+    if (this.soundSection) this.wrapper.appendChild(this.soundSection);
 
     // --- Character reference slots (3 @char panels) at the bottom of the editor ---
     this.createCharacterSlots(this.wrapper);
@@ -4126,21 +4264,28 @@ class TimelineEditor {
   }
 
   checkResize() {
+    // syncLayoutToNode handles width/height changes (node resize) and is a cheap
+    // no-op when nothing changed. Graph-zoom (render scale) changes are handled here.
     this.syncLayoutToNode(false);
-    const viewportWidth = this.viewport.clientWidth;
     const currentScale = this.getRenderScale();
 
-    if (viewportWidth > 0 && (this._lastWidth !== viewportWidth || this._lastZoom !== this.zoomLevel || this._lastScale !== currentScale)) {
-      this._lastWidth = viewportWidth;
-      this._lastZoom = this.zoomLevel;
-      this._lastScale = currentScale;
+    // Only force a layout read (clientWidth) when the cheap signals actually
+    // changed. Viewport width tracks the node width, which syncLayoutToNode
+    // already reacts to, so a width-only change is covered there.
+    if (this._lastZoom !== this.zoomLevel || this._lastScale !== currentScale) {
+      const viewportWidth = this.viewport.clientWidth;
+      if (viewportWidth > 0) {
+        this._lastWidth = viewportWidth;
+        this._lastZoom = this.zoomLevel;
+        this._lastScale = currentScale;
 
-      const newCanvasWidth = Math.max(viewportWidth, viewportWidth * this.zoomLevel);
-      this.canvas.style.width = newCanvasWidth + "px";
-      this.resizeCanvas(newCanvasWidth);
+        const newCanvasWidth = Math.max(viewportWidth, viewportWidth * this.zoomLevel);
+        this.canvas.style.width = newCanvasWidth + "px";
+        this.resizeCanvas(newCanvasWidth);
 
-      if (this.node) this.node.setDirtyCanvas?.(true, true);
-      else if (window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
+        if (this.node) this.node.setDirtyCanvas?.(true, true);
+        else if (window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
+      }
     }
     this._renderLoop = requestAnimationFrame(() => this.checkResize());
   }
@@ -4148,6 +4293,16 @@ class TimelineEditor {
   syncLayoutToNode(forceRender = true) {
     const nodeWidth = this.node?.size?.[0] || 1375;
     const targetWidth = Math.max(10, nodeWidth - 30);
+
+    // Perf: skip all DOM writes and the forced layout read when nothing that
+    // affects layout has changed since the last successful sync. This turns the
+    // per-frame rAF call into a cheap no-op and avoids a forced sync reflow.
+    if (this._syncApplied &&
+      this._syncTargetWidth === targetWidth &&
+      this._syncCanvasHeight === this.canvasHeight &&
+      this._syncZoomLevel === this.zoomLevel) {
+      return;
+    }
 
     if (this.container) {
       this.container.style.width = `${targetWidth}px`;
@@ -4171,7 +4326,8 @@ class TimelineEditor {
       this.layoutContainer.style.flexShrink = "0";
     }
 
-    const viewportWidth = this.viewport?.clientWidth || targetWidth;
+    const rawViewportWidth = this.viewport ? this.viewport.clientWidth : 0;
+    const viewportWidth = rawViewportWidth || targetWidth;
     const canvasWidth = Math.max(viewportWidth, viewportWidth * this.zoomLevel);
     const currentWidth = parseFloat(this.canvas?.style?.width) || 0;
     if (viewportWidth > 0 && Math.abs(currentWidth - canvasWidth) > 1) {
@@ -4180,6 +4336,15 @@ class TimelineEditor {
       this._lastWidth = viewportWidth;
       this._lastZoom = this.zoomLevel;
       if (forceRender) this.render();
+    }
+
+    // Remember the applied inputs so the next frame is a no-op. Only mark applied
+    // once the viewport has a real measured width, otherwise retry next frame.
+    if (rawViewportWidth > 0) {
+      this._syncTargetWidth = targetWidth;
+      this._syncCanvasHeight = this.canvasHeight;
+      this._syncZoomLevel = this.zoomLevel;
+      this._syncApplied = true;
     }
   }
 
@@ -4197,13 +4362,75 @@ class TimelineEditor {
 
   resizeCanvas(widthPx) {
     const scale = this.getRenderScale();
-    const targetWidth = Math.round(widthPx * scale);
+    const MAX_CANVAS_PX = 32767; // browser hard limit for one canvas dimension
+    let targetWidth = Math.round(widthPx * scale);
+    let sx = scale;
+    if (targetWidth > MAX_CANVAS_PX) {
+      // Safety net for a stale zoom state (e.g. the graph was zoomed in after the timeline
+      // was): never let the backing store exceed the browser limit, or the whole canvas
+      // blanks. Clamp the backing width and rescale the x-transform so drawing coordinates
+      // (which assume `widthPx` CSS px) still land on the canvas — softer, but never blank.
+      targetWidth = MAX_CANVAS_PX;
+      sx = targetWidth / Math.max(1, widthPx);
+    }
     const targetHeight = Math.round(this.canvasHeight * scale);
 
     this.canvas.width = targetWidth;
     this.canvas.height = targetHeight;
-    this.ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    this.ctx.setTransform(sx, 0, 0, scale, 0, 0);
     this.render();
+  }
+
+  // Perf: coalesce many render() calls from a single pointer-move burst into one
+  // render per animation frame.
+  _scheduleRender() {
+    if (this._renderQueued) return;
+    this._renderQueued = true;
+    this._scheduleRenderId = requestAnimationFrame(() => {
+      this._renderQueued = false;
+      this._scheduleRenderId = null;
+      this.render();
+    });
+  }
+
+  // Perf: fit `text` into `maxW` px, appending `ellipsis` when it must be
+  // truncated. Binary-searches the longest fitting prefix and memoizes results
+  // (keyed by text + width + font + ellipsis) to avoid per-character measureText
+  // scans every render. Behaviour matches the previous char-by-char loops.
+  _fitText(ctx, text, maxW, ellipsis = "…") {
+    if (ctx.measureText(text).width <= maxW) return text;
+    const key = `${text}|${maxW}|${ctx.font}|${ellipsis}`;
+    const cached = this._fitTextCache.get(key);
+    if (cached !== undefined) return cached;
+
+    // Largest prefix length k in [0, text.length] whose width (with ellipsis)
+    // fits maxW. Falls back to just the ellipsis when nothing fits.
+    let lo = 0, hi = text.length, best = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (ctx.measureText(text.slice(0, mid) + ellipsis).width <= maxW) {
+        best = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    const result = text.slice(0, best) + ellipsis;
+    if (this._fitTextCache.size > 2000) this._fitTextCache.clear();
+    this._fitTextCache.set(key, result);
+    return result;
+  }
+
+  // Perf: thumbnails are sampled at even time intervals starting at 0, so the
+  // nearest thumbnail can be found by index math instead of a linear scan.
+  _nearestThumbImg(thumbnails, targetTime) {
+    const n = thumbnails.length;
+    if (n === 0) return null;
+    if (n === 1) return thumbnails[0].img;
+    const spacing = thumbnails[1].time - thumbnails[0].time;
+    let idx = spacing > 0 ? Math.round((targetTime - thumbnails[0].time) / spacing) : 0;
+    idx = Math.max(0, Math.min(n - 1, idx));
+    return thumbnails[idx].img;
   }
 
   // Helper to map mouse events accurately regardless of canvas scaling
@@ -5005,9 +5232,11 @@ class TimelineEditor {
           this.timeline.audioSegments.push(seg);
           this.timeline.audioSegments.sort((a, b) => a.start - b.start);
 
-          if (!this.retakeMode) {
-            this.growTimelineIfNeeded(seg.start + seg.length);
-          }
+          // NOTE: audio does NOT grow the render duration. The audio track is a
+          // soundtrack/reference, not the render clock — dropping a 6-minute song to score
+          // a 30s cut must not balloon duration_frames to 6 minutes (that turned a 30s
+          // render into 71 chained windows). The timeline still SHOWS the full clip:
+          // getVisualDurationFrames() spans audioSegments independently of duration_frames.
 
           this.selectionType = "audio";
           this.selectedIndex = this.timeline.audioSegments.findIndex(s => s.id === seg.id);
@@ -5308,7 +5537,9 @@ class TimelineEditor {
     this.selectionType = copiedTrack;
     this.selectedIndex = this.getSegmentArray(copiedTrack).findIndex(s => s.id === mainSeg.id);
 
-    if (!this.retakeMode) {
+    // Audio never drives the render duration (see the audio-drop handler) — a pasted audio
+    // clip must not grow duration_frames either.
+    if (!this.retakeMode && copiedTrack !== "audio") {
       this.growTimelineIfNeeded(mainSeg.start + mainSeg.length);
     }
 
@@ -5651,7 +5882,175 @@ class TimelineEditor {
     }
   }
 
+  // The selected segment IF it is a prompt-carrying shot (image/text, not an anchor) —
+  // the only kind that can hold dialogue. Null otherwise.
+  _currentDialogueSeg() {
+    if (this.retakeMode) return null;
+    if (this.selectionType !== "image") return null;
+    const seg = this.timeline.segments?.[this.selectedIndex];
+    if (!seg || seg.isAnchor) return null;
+    return seg;
+  }
+
+  _isSegSelected(segId) {
+    const seg = this._currentDialogueSeg();
+    return !!(seg && seg.id === segId);
+  }
+
+  // Briefly ring the segment-prompt editor so a click on the timeline visibly points at
+  // the field to type in. Restarting the animation requires a reflow between removes/adds.
+  _flashPromptField() {
+    const el = this.promptWrapper;
+    if (!el) return;
+    el.classList.remove("mmxd-flash");
+    void el.offsetWidth;
+    el.classList.add("mmxd-flash");
+    clearTimeout(this._flashTimer);
+    this._flashTimer = setTimeout(() => el.classList.remove("mmxd-flash"), 750);
+  }
+
+  // Ring the dialogue row at `idx` (or clear all when idx < 0). Rows only exist for the
+  // selected shot, so this only lights up when the hovered marker belongs to it.
+  _highlightDialogueRow(idx) {
+    if (!this.dialogueRows) return;
+    for (const row of this.dialogueRows.querySelectorAll(".mmxd-dialogue-row")) {
+      row.classList.toggle("mmxd-dlg-hi", idx >= 0 && row.dataset.dlgIndex === String(idx));
+    }
+  }
+
+  // Show the dialogue area for a single selected shot, hide it otherwise.
+  _syncDialogueArea() {
+    if (!this.dialogueArea) return;
+    const multi = this.selectedSegmentIds && this.isMultiSelectActive();
+    const seg = multi ? null : this._currentDialogueSeg();
+    if (seg) {
+      this.dialogueArea.style.display = "block";
+      this.renderDialogueRows();
+    } else {
+      this.dialogueArea.style.display = "none";
+      if (this.dialogueRows) this.dialogueRows.innerHTML = "";
+    }
+  }
+
+  _addDialogueLine() {
+    const seg = this._currentDialogueSeg();
+    if (!seg) return;
+    if (!Array.isArray(seg.dialogue)) seg.dialogue = [];
+    seg.dialogue.push({ time: 0, slot: "", lang: "English", text: "" });
+    this.commitChanges(true);
+    this.render();            // draw the new marker on the timeline
+    this.renderDialogueRows();
+  }
+
+  // Rebuild the dialogue rows for the selected shot. Each row: start-time (s from shot start),
+  // speaker (a character slot → <Subject N>), language (typeable, with suggestions), the line,
+  // and a remove button. Rows carry data-dlg-index for the timeline hover sync.
+  renderDialogueRows() {
+    if (!this.dialogueRows) return;
+    this.dialogueRows.innerHTML = "";
+    const seg = this._currentDialogueSeg();
+    if (!seg) return;
+    const lines = Array.isArray(seg.dialogue) ? seg.dialogue : [];
+    if (!lines.length) {
+      const empty = document.createElement("div");
+      empty.className = "mmxd-dialogue-empty";
+      empty.textContent = "No lines — “+ Line” to add speech for this shot.";
+      this.dialogueRows.appendChild(empty);
+      return;
+    }
+    const head = document.createElement("div");
+    head.className = "mmxd-dlg-colhead";
+    head.innerHTML = '<span class="mmxd-dlg-h-time">Time (s)</span>'
+      + '<span class="mmxd-dlg-h-spk">Speaker</span>'
+      + '<span class="mmxd-dlg-h-lang">Lang</span>'
+      + '<span class="mmxd-dlg-h-text">Line</span>'
+      + '<span class="mmxd-dlg-h-del"></span>';
+    this.dialogueRows.appendChild(head);
+    const chars = this.timeline.characters || [];
+    lines.forEach((line, idx) => {
+      const row = document.createElement("div");
+      row.className = "mmxd-dialogue-row";
+      row.dataset.dlgIndex = String(idx);
+
+      // hovering a row lights its ♪ marker on the timeline (reverse of the marker→row sync)
+      row.addEventListener("mouseenter", () => {
+        this._hoverDlg = { segId: seg.id, idx };
+        row.classList.add("mmxd-dlg-hi");
+        this.render();
+      });
+      row.addEventListener("mouseleave", () => {
+        this._hoverDlg = null;
+        row.classList.remove("mmxd-dlg-hi");
+        this.render();
+      });
+
+      const timeInput = document.createElement("input");
+      timeInput.type = "number"; timeInput.step = "0.1"; timeInput.min = "0";
+      timeInput.className = "mmxd-dlg-time";
+      timeInput.title = "Seconds from the start of this shot";
+      timeInput.value = (line.time != null ? line.time : 0);
+      timeInput.addEventListener("input", () => {
+        line.time = Math.max(0, parseFloat(timeInput.value) || 0);
+        this.commitChanges(true);
+        this.render();   // move the timeline marker
+      });
+
+      const spk = document.createElement("select");
+      spk.className = "mmxd-dlg-speaker";
+      spk.title = "Who is speaking (a character reference → <Subject N>)";
+      // Only things that can speak — characters and animals. Objects/scenes/styles are excluded.
+      spk.innerHTML = '<option value="">— a voice —</option>' + chars.map((c, i) => {
+        const type = (c.type || "character").toLowerCase();
+        if (!["character", "person", "animal"].includes(type)) return "";
+        const d = (c.description || "").trim();
+        const lab = d ? `S${i + 1} · ${d.slice(0, 16)}` : `Subject ${i + 1}`;
+        const sel = String(line.slot || "") === String(i + 1) ? " selected" : "";
+        return `<option value="${i + 1}"${sel}>${lab}</option>`;
+      }).join("");
+      spk.addEventListener("change", () => {
+        if (spk.value) line.slot = parseInt(spk.value, 10); else delete line.slot;
+        this.commitChanges(true);
+      });
+
+      const lang = document.createElement("input");
+      lang.className = "mmxd-dlg-lang";
+      lang.setAttribute("list", "mmxd-lang-list");
+      lang.placeholder = "English";
+      lang.value = line.lang || "English";
+      lang.addEventListener("input", () => { line.lang = lang.value; this.commitChanges(true); });
+
+      const text = document.createElement("input");
+      text.className = "mmxd-dlg-text";
+      text.placeholder = "spoken line…";
+      text.value = line.text || "";
+      text.addEventListener("input", () => { line.text = text.value; this.commitChanges(true); });
+
+      const del = document.createElement("button");
+      del.className = "mmxd-dlg-del";
+      del.textContent = "×";
+      del.title = "Remove this line";
+      del.addEventListener("click", (e) => {
+        e.stopPropagation();
+        seg.dialogue.splice(idx, 1);
+        this.commitChanges(true);
+        this.render();
+        this.renderDialogueRows();
+      });
+
+      for (const el of [timeInput, spk, lang, text, del]) {
+        el.addEventListener("mousedown", (e) => e.stopPropagation());
+      }
+      row.appendChild(timeInput);
+      row.appendChild(spk);
+      row.appendChild(lang);
+      row.appendChild(text);
+      row.appendChild(del);
+      this.dialogueRows.appendChild(row);
+    });
+  }
+
   updateUIFromSelection() {
+    this._syncDialogueArea();
     if (this.selectedSegmentIds && this.isMultiSelectActive()) {
       if (this.globalPromptInput) {
         this.globalPromptInput.disabled = true;
@@ -5803,14 +6202,37 @@ class TimelineEditor {
           const sel = String(seg.subject || "") === String(i + 1) ? " selected" : "";
           return `<option value="${i + 1}"${sel}>${label}</option>`;
         })).join("");
+      // Audio role: a clip is either a voice (bound to a subject), the background-music
+      // track, or ambient/SFX. Only a voice clip needs the "Voice of" subject picker.
+      const role = seg.audioRole || "voice";
+      const roleOpts = [["voice", "Voice / Dialogue"], ["music", "Background Music"],
+                        ["ambient", "Ambient / SFX"]]
+        .map(([v, l]) => `<option value="${v}"${role === v ? " selected" : ""}>${l}</option>`)
+        .join("");
       this.audioInfoArea.innerHTML = `
         File: <span>${seg.fileName || "Unknown"}</span><br>
         Length: <span>${this.formatTime(seg.audioDurationFrames)}</span> Output Length: <span>${this.formatTime(seg.length)}</span><br>
         Trim-in: <span>${this.formatTime(Math.round(seg.trimStart))}</span> Trim-Out: <span>${this.formatTime(Math.round(seg.audioDurationFrames - (seg.trimStart + seg.length)))}</span><br>
-        <label class="mmxd-audio-subject-label">Voice of:
+        <label class="mmxd-audio-subject-label">Type:
+          <select class="mmxd-audio-role">${roleOpts}</select>
+        </label>
+        <label class="mmxd-audio-subject-label mmxd-audio-voiceof" style="display:${role === "voice" ? "" : "none"}">Voice of:
           <select class="mmxd-audio-subject">${options}</select>
         </label>
       `;
+      const roleSel = this.audioInfoArea.querySelector(".mmxd-audio-role");
+      const voiceofRow = this.audioInfoArea.querySelector(".mmxd-audio-voiceof");
+      if (roleSel) {
+        roleSel.addEventListener("change", (e) => {
+          const target = this.timeline.audioSegments?.[this.selectedIndex];
+          if (!target) return;
+          target.audioRole = e.target.value;
+          if (e.target.value !== "voice") delete target.subject;  // not a voice → no subject
+          if (voiceofRow) voiceofRow.style.display = e.target.value === "voice" ? "" : "none";
+          this.commitChanges(true);
+          if (this.node?._mmxRefreshPrompt) this.node._mmxRefreshPrompt();
+        });
+      }
       const subjSel = this.audioInfoArea.querySelector(".mmxd-audio-subject");
       if (subjSel) {
         subjSel.addEventListener("change", (e) => {
@@ -6155,16 +6577,7 @@ class TimelineEditor {
           if (useLiveVideo && retakeVid.videoEl && retakeVid.videoEl.readyState >= 2 && !retakeVid.videoEl.seeking) {
             drawSource = retakeVid.videoEl;
           } else if (retakeVid.thumbnails && retakeVid.thumbnails.length > 0) {
-            let nearestImg = retakeVid.thumbnails[0].img;
-            let minDiff = Infinity;
-            for (const t of retakeVid.thumbnails) {
-              const diff = Math.abs(t.time - targetTime);
-              if (diff < minDiff) {
-                minDiff = diff;
-                nearestImg = t.img;
-              }
-            }
-            drawSource = nearestImg;
+            drawSource = this._nearestThumbImg(retakeVid.thumbnails, targetTime);
           } else {
             drawSource = retakeVid.videoEl || (retakeVid.imgObj && retakeVid.imgObj.complete ? retakeVid.imgObj : null);
           }
@@ -6234,16 +6647,7 @@ class TimelineEditor {
 
           let drawSource = null;
           if (retakeVid.thumbnails && retakeVid.thumbnails.length > 0) {
-            let nearestImg = retakeVid.thumbnails[0].img;
-            let minDiff = Infinity;
-            for (const t of retakeVid.thumbnails) {
-              const diff = Math.abs(t.time - midTime);
-              if (diff < minDiff) {
-                minDiff = diff;
-                nearestImg = t.img;
-              }
-            }
-            drawSource = nearestImg;
+            drawSource = this._nearestThumbImg(retakeVid.thumbnails, midTime);
           } else {
             drawSource = retakeVid.imgObj && retakeVid.imgObj.complete ? retakeVid.imgObj : null;
           }
@@ -6452,12 +6856,7 @@ class TimelineEditor {
           this.ctx.textAlign = "left";
           this.ctx.textBaseline = "middle";
           const maxFileTextW = videoWidthPx - 42 - 10;
-          if (this.ctx.measureText(fname).width > maxFileTextW) {
-            while (fname.length > 0 && this.ctx.measureText(fname + "…").width > maxFileTextW) {
-              fname = fname.slice(0, -1);
-            }
-            fname += "…";
-          }
+          fname = this._fitText(this.ctx, fname, maxFileTextW, "…");
           const textW = this.ctx.measureText(fname).width;
           this.ctx.fillStyle = "rgba(0, 0, 0, 0.50)";
           this.ctx.fillRect(43, RULER_HEIGHT + 1, textW + 8, 16);
@@ -6468,6 +6867,16 @@ class TimelineEditor {
 
       }
     } else {
+      // Perf: O(1) id lookups instead of Array.find() per segment per frame.
+      const segById = new Map(this.timeline.segments.map(s => [s.id, s]));
+      const motionSegById = new Map((this.timeline.motionSegments || []).map(s => [s.id, s]));
+
+      // Perf: off-screen culling range (canvas x coords). Segments whose drawn
+      // span lies entirely outside this window are skipped (they aren't visible).
+      const CULL_MARGIN = 8;
+      const visX0 = this.viewport ? this.viewport.scrollLeft : 0;
+      const visX1 = visX0 + (this.viewport ? this.viewport.clientWidth : width);
+
       // --- Draw Image/Text Segments ---
       for (let i = 0; i < sortedSegments.length; i++) {
         const seg = sortedSegments[i];
@@ -6475,9 +6884,10 @@ class TimelineEditor {
         const rawEndX = ((seg.start + seg.length) / totalFrames) * width;
         const startX = Math.floor(rawStartX);
         const pxWidth = Math.max(1, Math.floor(rawEndX) - startX);
+        if (startX + pxWidth < visX0 - CULL_MARGIN || startX > visX1 + CULL_MARGIN) continue;
         const isSelected = this.selectedSegmentIds.includes(seg.id);
 
-        const originalSeg = this.timeline.segments.find(s => s.id === seg.id);
+        const originalSeg = segById.get(seg.id);
         const imgObj = originalSeg ? originalSeg.imgObj : seg.imgObj;
         const videoEl = originalSeg ? originalSeg.videoEl : seg.videoEl;
 
@@ -6519,16 +6929,7 @@ class TimelineEditor {
             const targetTime = seg._scrubTargetSec !== undefined
               ? seg._scrubTargetSec
               : (isPlayheadOverSeg ? (this.currentFrame - seg.start + seg.trimStart) / this.getFrameRate() : seg.trimStart / this.getFrameRate());
-            let nearestImg = seg.thumbnails[0].img;
-            let minDiff = Infinity;
-            for (const t of seg.thumbnails) {
-              const diff = Math.abs(t.time - targetTime);
-              if (diff < minDiff) {
-                minDiff = diff;
-                nearestImg = t.img;
-              }
-            }
-            drawSource = nearestImg;
+            drawSource = this._nearestThumbImg(seg.thumbnails, targetTime);
           } else {
             drawSource = imgObj && imgObj.complete ? imgObj : null;
           }
@@ -6626,12 +7027,7 @@ class TimelineEditor {
               this.ctx.textAlign = "left";
               this.ctx.textBaseline = "middle";
               const maxFileTextW = pxWidth - 42 - 10;
-              if (this.ctx.measureText(fname).width > maxFileTextW) {
-                while (fname.length > 0 && this.ctx.measureText(fname + "…").width > maxFileTextW) {
-                  fname = fname.slice(0, -1);
-                }
-                fname += "…";
-              }
+              fname = this._fitText(this.ctx, fname, maxFileTextW, "…");
               const textW = this.ctx.measureText(fname).width;
               this.ctx.fillStyle = "rgba(0, 0, 0, 0.50)";
               this.ctx.fillRect(startX + 43, RULER_HEIGHT + 1, textW + 8, 16);
@@ -6665,12 +7061,7 @@ class TimelineEditor {
               this.ctx.textAlign = "left";
               this.ctx.textBaseline = "middle";
               const maxFileTextW = pxWidth - 42 - 10;
-              if (this.ctx.measureText(fname).width > maxFileTextW) {
-                while (fname.length > 0 && this.ctx.measureText(fname + "…").width > maxFileTextW) {
-                  fname = fname.slice(0, -1);
-                }
-                fname += "…";
-              }
+              fname = this._fitText(this.ctx, fname, maxFileTextW, "…");
               const textW = this.ctx.measureText(fname).width;
               this.ctx.fillStyle = "rgba(0, 0, 0, 0.50)";
               this.ctx.fillRect(startX + 43, RULER_HEIGHT + 1, textW + 8, 16);
@@ -6728,12 +7119,7 @@ class TimelineEditor {
             // Measure and truncate to single line
             const maxTextW = pxWidth - 10;
             let label = seg.prompt;
-            if (this.ctx.measureText(label).width > maxTextW) {
-              while (label.length > 0 && this.ctx.measureText(label + "…").width > maxTextW) {
-                label = label.slice(0, -1);
-              }
-              label += "…";
-            }
+            label = this._fitText(this.ctx, label, maxTextW, "…");
 
             this.ctx.fillText(label, startX + pxWidth / 2, overlayY + overlayH / 2);
             this.ctx.restore();
@@ -6912,12 +7298,7 @@ class TimelineEditor {
                 this.ctx.fillStyle = hasPrompt ? "#ffffff" : "rgba(255, 255, 255, 0.6)";
                 let label = hasPrompt ? z.prompt : "(no prompt)";
                 const maxW = pillW - 16;
-                if (this.ctx.measureText(label).width > maxW) {
-                  while (label.length > 0 && this.ctx.measureText(label + "\u2026").width > maxW) {
-                    label = label.slice(0, -1);
-                  }
-                  label += "\u2026";
-                }
+                label = this._fitText(this.ctx, label, maxW, "\u2026");
                 this.ctx.fillText(label, px + 8, zoneBarY + ZONE_BAR_H / 2 + 0.5);
                 this.ctx.restore();
               }
@@ -6948,6 +7329,7 @@ class TimelineEditor {
         const startX = Math.floor((seg.start / totalFrames) * width);
         const rawEndX = ((seg.start + seg.length) / totalFrames) * width;
         const pxWidth = Math.max(1, Math.floor(rawEndX) - startX);
+        if (startX + pxWidth < visX0 - CULL_MARGIN || startX > visX1 + CULL_MARGIN) continue;
         const isSelected = this.selectedSegmentIds.includes(seg.id);
         const trackY = RULER_HEIGHT + this.blockHeight + this.audioTrackHeight;
 
@@ -6974,7 +7356,7 @@ class TimelineEditor {
           this.ctx.fillStyle = "#000";
           this.ctx.fillRect(startX, trackY + 1, pxWidth, this.motionTrackHeight - 2);
 
-          const originalSeg = this.timeline.motionSegments.find(s => s.id === seg.id);
+          const originalSeg = motionSegById.get(seg.id);
           const imgObj = originalSeg ? originalSeg.imgObj : seg.imgObj;
           const videoEl = originalSeg ? originalSeg.videoEl : seg.videoEl;
 
@@ -6990,16 +7372,7 @@ class TimelineEditor {
               const targetTime = seg._scrubTargetSec !== undefined
                 ? seg._scrubTargetSec
                 : (isPlayheadOverSeg ? (this.currentFrame - seg.start + seg.trimStart) / this.getFrameRate() : seg.trimStart / this.getFrameRate());
-              let nearestImg = seg.thumbnails[0].img;
-              let minDiff = Infinity;
-              for (const t of seg.thumbnails) {
-                const diff = Math.abs(t.time - targetTime);
-                if (diff < minDiff) {
-                  minDiff = diff;
-                  nearestImg = t.img;
-                }
-              }
-              drawSource = nearestImg;
+              drawSource = this._nearestThumbImg(seg.thumbnails, targetTime);
             } else {
               drawSource = imgObj && imgObj.complete ? imgObj : null;
             }
@@ -7089,12 +7462,7 @@ class TimelineEditor {
               this.ctx.textAlign = "left";
               this.ctx.textBaseline = "middle";
               const maxFileTextW = pxWidth - 75 - 10;
-              if (this.ctx.measureText(fname).width > maxFileTextW) {
-                while (fname.length > 0 && this.ctx.measureText(fname + "…").width > maxFileTextW) {
-                  fname = fname.slice(0, -1);
-                }
-                fname += "…";
-              }
+              fname = this._fitText(this.ctx, fname, maxFileTextW, "…");
               const textW = this.ctx.measureText(fname).width;
               this.ctx.fillStyle = "rgba(0, 0, 0, 0.50)";
               this.ctx.fillRect(startX + 76, trackY + 1, textW + 8, 16);
@@ -7129,12 +7497,7 @@ class TimelineEditor {
             // Measure and truncate to single line
             const maxTextW = pxWidth - 10;
             let label = globalPromptStr;
-            if (this.ctx.measureText(label).width > maxTextW) {
-              while (label.length > 0 && this.ctx.measureText(label + "…").width > maxTextW) {
-                label = label.slice(0, -1);
-              }
-              label += "…";
-            }
+            label = this._fitText(this.ctx, label, maxTextW, "…");
 
             this.ctx.fillText(label, startX + pxWidth / 2, overlayY + overlayH / 2);
             this.ctx.restore();
@@ -7169,6 +7532,7 @@ class TimelineEditor {
         const rawEndX = ((seg.start + seg.length) / totalFrames) * width;
         const startX = Math.floor(rawStartX);
         const pxWidth = Math.max(1, Math.floor(rawEndX) - startX);
+        if (startX + pxWidth < visX0 - CULL_MARGIN || startX > visX1 + CULL_MARGIN) continue;
         const isSelected = this.selectedSegmentIds.includes(seg.id);
         const trackY = RULER_HEIGHT + this.blockHeight;
 
@@ -7348,6 +7712,82 @@ class TimelineEditor {
         this.ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
         this.ctx.fillRect(cutoffX, 0, width - cutoffX, RULER_HEIGHT);
       }
+
+      // --- Generation seam markers ---
+      // Amber dashed lines where each chained window meets the next (see getWindowBoundaries).
+      // Snapping is on the same positions, so a cut/fade dropped here hides the seam.
+      const seams = this.getWindowBoundaries();
+      if (seams.length) {
+        const seamBottom = RULER_HEIGHT + this.blockHeight + this.motionTrackHeight + this.audioTrackHeight;
+        this.ctx.save();
+        this.ctx.strokeStyle = "rgba(255, 179, 71, 0.8)";
+        this.ctx.fillStyle = "rgba(255, 179, 71, 0.95)";
+        this.ctx.lineWidth = 1;
+        for (let i = 0; i < seams.length; i++) {
+          const sx = (seams[i] / totalFrames) * width;
+          if (sx <= 0 || sx >= width) continue;
+          this.ctx.setLineDash([4, 3]);
+          this.ctx.beginPath();
+          this.ctx.moveTo(sx, RULER_HEIGHT);
+          this.ctx.lineTo(sx, seamBottom);
+          this.ctx.stroke();
+          // little downward triangle in the ruler so it reads as a snap handle
+          this.ctx.setLineDash([]);
+          this.ctx.beginPath();
+          this.ctx.moveTo(sx - 4, RULER_HEIGHT);
+          this.ctx.lineTo(sx + 4, RULER_HEIGHT);
+          this.ctx.lineTo(sx, RULER_HEIGHT + 5);
+          this.ctx.fill();
+        }
+        this.ctx.restore();
+      }
+    }
+
+    // --- Dialogue markers: a ♪ badge at the BOTTOM of the timeline per spoken line, with a
+    //     finely-dotted line rising up through the audio + reference-video tracks to show the
+    //     position of the voice across them. ---
+    this._dialogueMarkers = [];
+    {
+      const fr = this.getFrameRate();
+      const hov = this._hoverDlg;
+      const tlBottom = RULER_HEIGHT + this.blockHeight + this.audioTrackHeight + this.motionTrackHeight;
+      const lineTop = RULER_HEIGHT + this.blockHeight;   // top of the audio track = where the ref/audio timelines begin
+      for (const seg of (this.timeline.segments || [])) {
+        const lines = Array.isArray(seg.dialogue) ? seg.dialogue : [];
+        for (let li = 0; li < lines.length; li++) {
+          const t = Math.max(0, parseFloat(lines[li].time) || 0);
+          const mx = ((seg.start + t * fr) / totalFrames) * width;
+          if (mx < -8 || mx > width + 8) continue;
+          const isHi = hov && hov.segId === seg.id && hov.idx === li;
+          this.ctx.save();
+          // dotted position line rising through the audio + reference-video tracks
+          this.ctx.setLineDash([1.5, 3.5]);
+          this.ctx.strokeStyle = isHi ? "rgba(127,233,255,0.95)" : "rgba(63,182,216,0.7)";
+          this.ctx.lineWidth = isHi ? 1.5 : 1;
+          this.ctx.beginPath();
+          this.ctx.moveTo(mx, lineTop);
+          this.ctx.lineTo(mx, tlBottom - 6);
+          this.ctx.stroke();
+          this.ctx.setLineDash([]);
+          // ♪ badge at the very bottom
+          const my = tlBottom - 7;
+          const r = isHi ? 7 : 5.5;
+          this.ctx.fillStyle = isHi ? "#7fe9ff" : "#3fb6d8";
+          this.ctx.strokeStyle = "rgba(0,0,0,0.55)";
+          this.ctx.lineWidth = 1;
+          this.ctx.beginPath();
+          this.ctx.arc(mx, my, r, 0, Math.PI * 2);
+          this.ctx.fill();
+          this.ctx.stroke();
+          this.ctx.fillStyle = "#08222b";
+          this.ctx.font = "bold 8px sans-serif";
+          this.ctx.textAlign = "center";
+          this.ctx.textBaseline = "middle";
+          this.ctx.fillText("♪", mx, my + 0.5);
+          this.ctx.restore();
+          this._dialogueMarkers.push({ x: mx, y: my, r: r + 2, segId: seg.id, idx: li });
+        }
+      }
     }
 
     // --- Draw Playhead ---
@@ -7474,11 +7914,8 @@ class TimelineEditor {
 
     let text = seg.fileName || "Audio Track";
     const maxWidth = pxWidth - 12;
-    if (ctx.measureText(text).width > maxWidth && maxWidth > 0) {
-      while (text.length > 0 && ctx.measureText(text + "...").width > maxWidth) {
-        text = text.slice(0, -1);
-      }
-      text = text + "...";
+    if (maxWidth > 0) {
+      text = this._fitText(ctx, text, maxWidth, "...");
     }
 
     ctx.fillText(text, startX + 6, yOffset + 8);
@@ -7906,6 +8343,12 @@ class TimelineEditor {
       if (hit.type !== "joint") {
         this._dragTargetId = targetArray[hit.index].id;
       }
+
+      // Clicking a shot's body flashes its editable prompt field, so the on-timeline text
+      // and the field you type into are visibly connected.
+      if (this.selectionType === "image" && hit.type === "center") {
+        this._flashPromptField();
+      }
     }
 
     if (this.isPlaying) {
@@ -7918,11 +8361,28 @@ class TimelineEditor {
   onMouseMove(e) {
     const { x: mouseX, y: mouseY } = this.getMousePos(e);
 
+    // Dialogue marker hover → highlight the matching editor row (and vice-versa via render).
+    if (!this._isDragging && !this._isSelectingBox) {
+      let over = null;
+      for (const m of (this._dialogueMarkers || [])) {
+        const dx = mouseX - m.x, dy = mouseY - m.y;
+        if (dx * dx + dy * dy <= m.r * m.r) { over = m; break; }
+      }
+      const cur = this._hoverDlg;
+      const same = over ? (cur && cur.segId === over.segId && cur.idx === over.idx) : !cur;
+      if (!same) {
+        this._hoverDlg = over ? { segId: over.segId, idx: over.idx } : null;
+        this._highlightDialogueRow((over && this._isSegSelected(over.segId)) ? over.idx : -1);
+        this._scheduleRender();
+      }
+      if (over) this.canvas.style.cursor = "pointer";
+    }
+
     if (this._isSelectingBox && this._dragType === "box_select") {
       this.canvas.style.cursor = "crosshair";
       this._selectBoxCurrent = { x: mouseX, y: mouseY };
       this.updateSelectionFromBox();
-      this.render();
+      this._scheduleRender();
       return;
     }
 
@@ -7978,7 +8438,7 @@ class TimelineEditor {
       }
       if (this._hoveredGapIdx !== newHoveredGapIdx) {
         this._hoveredGapIdx = newHoveredGapIdx;
-        this.render();
+        this._scheduleRender();
       }
 
       const isOverDivider = Math.abs(mouseY - (RULER_HEIGHT + this.blockHeight)) <= 8;
@@ -8026,7 +8486,7 @@ class TimelineEditor {
         if (this.timeline.retakeVideo && this.timeline.retakeVideo.videoEl) {
           this.timeline.retakeVideo.videoEl.currentTime = this.currentFrame / frameRate;
         }
-        this.render();
+        this._scheduleRender();
         return;
       }
 
@@ -8070,7 +8530,7 @@ class TimelineEditor {
           this.timeline.retakeVideo.videoEl.currentTime = newStart / frameRate;
         }
 
-        this.render();
+        this._scheduleRender();
         this.updateUIFromSelection();
         return;
       }
@@ -8113,7 +8573,7 @@ class TimelineEditor {
           this.timeline.retakeVideo.videoEl.currentTime = (this.timeline.retakeStart + newLength) / frameRate;
         }
 
-        this.render();
+        this._scheduleRender();
         this.updateUIFromSelection();
         return;
       }
@@ -8158,7 +8618,7 @@ class TimelineEditor {
           this.timeline.retakeVideo.videoEl.currentTime = newStart / frameRate;
         }
 
-        this.render();
+        this._scheduleRender();
         this.updateUIFromSelection();
         return;
       }
@@ -8187,7 +8647,7 @@ class TimelineEditor {
       this.audioTrackHeight = newAudioTrackHeight;
 
       this.updateSidebarHeights();
-      this.render();
+      this._scheduleRender();
       return;
     }
 
@@ -8215,7 +8675,7 @@ class TimelineEditor {
       this.audioTrackHeight = newAudioTrackHeight;
 
       this.updateSidebarHeights();
-      this.render();
+      this._scheduleRender();
       return;
     }
 
@@ -8230,7 +8690,7 @@ class TimelineEditor {
 
       this.resizeCanvas(this.canvas.offsetWidth);
       this.updateSidebarHeights();
-      this.render();
+      this._scheduleRender();
 
       if (this.node && this.node.computeSize) {
         const sz = this.node.computeSize();
@@ -8262,7 +8722,7 @@ class TimelineEditor {
       mouseFrameX = this.getSnappedPlayhead(mouseFrameX, logicalWidth);
       this.currentFrame = clamp(mouseFrameX, 0, totalFrames);
       this._liveScrubPlayhead();
-      this.render();
+      this._scheduleRender();
       if (this.isPlaying) {
         this.playAudio(); // Scrub (restart from new position)
       }
@@ -8406,7 +8866,7 @@ class TimelineEditor {
         }
       }
 
-      this.render();
+      this._scheduleRender();
       return;
     }
 
@@ -8787,7 +9247,7 @@ class TimelineEditor {
     }
 
     this.updateUIFromSelection(); // Live update of trim values
-    this.render();
+    this._scheduleRender();
   }
 
   _applyCenterDragPhysics(initT, D_id, D_mouse_start, mouseFrameX, durationFrames, totalFrames, logicalWidth, forceStart = false) {
@@ -9322,7 +9782,7 @@ class TimelineEditor {
 
     parent.appendChild(container);
     this.charPanelContainer = container;
-    this.charPanelHeight = 150;
+    this.charPanelHeight = 356;
     this.updateCharacterSlotsUI();
   }
 
@@ -9474,13 +9934,37 @@ class TimelineEditor {
 
         slot.appendChild(previewsRow);
 
+        // Reference TYPE — picks the H3 subject sentence frame (character/animal/object
+        // appear in-frame; scene sets the environment; style guides the aesthetic). The
+        // backend uses this + the description below to write the subject_definitions line.
+        const typeSel = document.createElement("select");
+        typeSel.className = "mmxd-character-type";
+        for (const [val, lbl] of [["character", "Character"], ["animal", "Animal"],
+                                   ["object", "Object"], ["scene", "Scene / Background"],
+                                   ["style", "Style"]]) {
+          const opt = document.createElement("option");
+          opt.value = val;
+          opt.textContent = lbl;
+          typeSel.appendChild(opt);
+        }
+        typeSel.value = data.type || "character";
+        typeSel.title = "How H3 defines this reference. Character/Animal/Object appear in the "
+                      + "shot; Scene sets the environment; Style guides the overall aesthetic.";
+        typeSel.addEventListener("change", () => {
+          this.timeline.characters[i].type = typeSel.value;
+          this.commitChanges();   // commitChanges is wrapped to refresh the compiled-prompt panel
+        });
+        typeSel.addEventListener("mousedown", (e) => e.stopPropagation());
+        typeSel.addEventListener("click", (e) => e.stopPropagation());
+        slot.appendChild(typeSel);
+
         const descInput = document.createElement("textarea");
         descInput.className = "mmxd-character-desc";
         descInput.value = data.description || "";
         descInput.placeholder = "manual description...";
         descInput.addEventListener("input", () => {
           this.timeline.characters[i].description = descInput.value;
-          this.commitChanges();
+          this.commitChanges();   // commitChanges is wrapped to refresh the compiled-prompt panel
         });
         descInput.addEventListener("click", (e) => { e.stopPropagation(); });
         slot.appendChild(descInput);
@@ -9824,7 +10308,8 @@ class TimelineEditor {
       analyzeModel: this.timeline.analyzeModel || "",
       characters: (this.timeline.characters || []).map(c => ({
         images: (c.images || []).map(img => img.b64 ? { b64: img.b64, name: img.name } : { name: img.name }),
-        description: c.description || ""
+        description: c.description || "",
+        type: c.type || "character"
       })),
       segments: sortedSegments.map(s => {
         const { imgObj, videoEl, _isSeeking, thumbnails, _extractingThumbs, _sSecs, _lSecs, _tSecs, _dSecs, _uploading, _blobUrl, ...rest } = s;
@@ -12549,6 +13034,14 @@ app.registerExtension({
         const compWidget = this.widgets?.find(w => w.name === "img_compression");
         if (compWidget && (compWidget.value === undefined || compWidget.value === null || compWidget.value === 0)) {
           compWidget.value = 18;
+        }
+
+        // Same guard for window_seconds — ComfyUI has been handing it its MIN (4) instead of
+        // the 5.0 default, and a stale workflow can carry a sub-4s value that slices the
+        // render into dozens of seamy 1s windows. Anything below 4s is never valid for H3.
+        const winWidget = this.widgets?.find(w => w.name === "window_seconds");
+        if (winWidget && (winWidget.value === undefined || winWidget.value === null || winWidget.value < 4)) {
+          winWidget.value = 5.0;
         }
 
         const self = this;

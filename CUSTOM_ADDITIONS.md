@@ -46,7 +46,11 @@ card it can still fall back to CPU; the two-phase path is the real fix, leave ti
   grid, so the mixdown is built to the real output length and audio/video end together.
   Wire `combined_audio` (not the generated `audio`) when muxing your own track.
 - **Timeline seam markers:** amber dashed lines mark where windows join; segment edges snap
-  to them, so a cut or fade placed on a seam hides it.
+  to them (priority + a wider grab, locking to the exact frame), so a cut or fade placed on a
+  seam hides it.
+- **No sub-frame prompt bleed:** a segment must overlap a window by more than half a frame to
+  count, so a segment snapped to — or a hair over — a boundary can never leak its prompt into
+  the neighbouring generation.
 
 ## Reference subjects — typed
 
@@ -54,9 +58,12 @@ Each reference slot has a **type dropdown** — Character / Animal / Object / Sc
 / Style — mapped to H3's own subject buckets. The compiled `subject_definitions` line matches
 the type and **weaves in the slot's description** (previously dropped for image slots):
 
-- Character → `<Subject 1> is the character shown in <Picture 1>, <desc>.`
-- Scene → `<Subject 2> is the environment shown in <Picture 3>, <desc>.`
-- Style → `<Subject 3> is the visual-style reference from <Picture 4>, <desc>.`
+- Character → `<Subject 1> is the character shown in <Picture 1>, <desc>. Preserve the exact face, identity, hair, and wardrobe.`
+- Scene → `<Subject 2> is the environment shown in <Picture 3>, <desc>. Preserve the exact layout, palette, and key elements.`
+- Style → `<Subject 3> is the visual-style reference from <Picture 4>, <desc>.` *(transferred, not preserved — no lock)*
+
+Each concrete subject gets a type-appropriate **`Preserve …`** identity lock appended; a
+Style subject gets none because it's an attribute transfer.
 
 ## Per-shot dialogue
 
@@ -81,12 +88,41 @@ Audio clips carry a **Type dropdown** — Voice / Dialogue, Background Music, Am
 The `<Audio N>` definition matches the role (voice-timbre reference vs background-music
 reference vs ambient), and the "Voice of" subject binding only shows for Voice.
 
-## Output / logging
+## Compiled prompt structure (guide-aligned)
 
-The `prompt` output is now a **full gen-log**: canvas/frame metadata, global prompt, both
-audio prompts, every reference filename (`<Picture>`/`<Video>`/`<Audio>`), the storyboard,
-and — in chain mode — a per-window breakdown. Wire it into a "Save Text File" node to file
-one log per render (point it at your video's folder to keep them together).
+The encoded storyboard follows the reference guide's field shape, one member per line the way
+its own examples are written (subjects blank-line separated, one retention directive per line,
+each `[Shot N]` its own paragraph). Order: `subject_definitions` → `summary` →
+`retention_analysis` → `detailed_description` → `overall_soundscape` → `non_diegetic_music`.
+
+- **`summary:`** — an auto scaffold the node computes from the render (duration + how the audio
+  is driven) followed by your hand-written global brief. On ref2va the style/global **moves
+  here**, out of `detailed_description`. The audio clause adapts: *"…follows the reference
+  track"* when an `<Audio>` clip is wired, *"native synchronized stereo sound"* when you prompt
+  it. No LLM — pure templating.
+- **`retention_analysis:`** — generated from the reference **types** in H3's own vocabulary:
+  `fully_preserved` for characters/animals/objects, `partially_preserved` for scenes,
+  `attribute_transfer` for styles and video motion — plus an automatic
+  **`Never merge the subjects. Never exchange their faces, hair, eyes, clothing, or
+  accessories.`** whenever two or more concrete subjects share the frame (the anti-bleed lock).
+  Audio references are retained by role, so a reference-track workflow gets the clip preserved
+  rather than assumed-prompted.
+
+> **Credit:** this field discipline — the `summary` / `subject_definitions` /
+> `retention_analysis` shape, the `fully_preserved` / `attribute_transfer` vocabulary, the
+> `Preserve …` locks and the never-merge line — is adapted from
+> [@renataro9's prompt example](https://x.com/renataro9/status/2088597222778974473), which
+> laid it out unusually well. H3 doesn't mandate this structure; it just works.
+
+## Output / logging — restructured gen-log
+
+The `prompt` output is a **clean, saveable record**, organised for a human instead of
+repeating the model payload once per window. Shared context is written **once** — style /
+global, subjects & references, audio — then the **shots are listed by window**, and a single
+raw window is kept at the bottom for exact reference. (A 30s render's log dropped from
+~20.7k to ~10k characters, most of that the one raw appendix.) It reads top-to-bottom as
+*what it looks like → who's in it → what it sounds like → what happens when*. Wire it into a
+"Save Text File" node to file one log per render.
 
 ## UI / quality-of-life
 

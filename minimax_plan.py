@@ -140,18 +140,32 @@ _SUBJECT_NOUNS = {
 }
 
 
+# The reference guide ends every concrete subject with a "Preserve the exact …" identity
+# lock. A style is transferred, not preserved, so it gets none.
+_PRESERVE_CLAUSE = {
+    "character": "Preserve the exact face, identity, hair, and wardrobe.",
+    "person": "Preserve the exact face, identity, hair, and wardrobe.",
+    "animal": "Preserve the exact appearance, markings, and proportions.",
+    "object": "Preserve the exact shape, colour, and details.",
+    "scene": "Preserve the exact layout, palette, and key elements.",
+    "background": "Preserve the exact layout, palette, and key elements.",
+    "environment": "Preserve the exact layout, palette, and key elements.",
+}
+
+
 def _subject_sentence(subject_n, ref_type, description, pictures):
     """One subject_definitions line in the reference guide's own shape: the TYPE carried by
-    the noun, the DESCRIPTION as the detail clause after it. Style is an aesthetic rather
-    than a thing in the frame, so it gets its own frame."""
+    the noun, the DESCRIPTION as the detail clause, then a per-type "Preserve …" identity
+    lock. Style is an aesthetic rather than a thing in the frame — its own frame, no lock."""
     ref_type = (ref_type or "character").strip().lower()
     desc = (description or "").strip().rstrip(".")
     if ref_type == "style":
         base = "<Subject %d> is the visual-style reference from %s" % (subject_n, pictures)
-    else:
-        noun = _SUBJECT_NOUNS.get(ref_type, "the character")
-        base = "<Subject %d> is %s shown in %s" % (subject_n, noun, pictures)
-    return ("%s, %s." % (base, desc)) if desc else ("%s." % base)
+        return ("%s, %s." % (base, desc)) if desc else ("%s." % base)
+    noun = _SUBJECT_NOUNS.get(ref_type, "the character")
+    base = "<Subject %d> is %s shown in %s" % (subject_n, noun, pictures)
+    sentence = ("%s, %s." % (base, desc)) if desc else ("%s." % base)
+    return sentence + " " + _PRESERVE_CLAUSE.get(ref_type, _PRESERVE_CLAUSE["character"])
 
 
 def _format_dialogue(dialogue, subject_of_slot, char_slots):
@@ -240,6 +254,54 @@ def build_subject_definitions(char_slots, ref_image_slots, ref_video_segs, ref_a
     return lines, subject_of_slot, bound_audio
 
 
+def build_retention_analysis(char_slots, subject_of_slot, ref_video_segs, ref_audio_segs, bound_audio):
+    """Per-subject preservation directives in the reference guide's structured vocabulary —
+    fully_preserved / partially_preserved / attribute_transfer — keyed off each slot's type,
+    plus a never-merge / never-exchange line when two or more concrete subjects share the
+    frame. Audio references are retained by their role, so a user driving the sound from a
+    reference track (not prompting it) still gets the clip preserved."""
+    lines, concrete = [], []
+    slot_type = {}
+    for slot_index, slot in enumerate(char_slots):
+        subj = subject_of_slot.get(slot_index + 1)
+        if subj:
+            slot_type[subj] = (slot.get("type") or "character").lower()
+    for subj in sorted(slot_type):
+        t = slot_type[subj]
+        if t in ("character", "person"):
+            lines.append("<Subject %d>: fully_preserved identity, face, hair, and wardrobe." % subj)
+            concrete.append(subj)
+        elif t == "animal":
+            lines.append("<Subject %d>: fully_preserved appearance, markings, and proportions." % subj)
+            concrete.append(subj)
+        elif t == "object":
+            lines.append("<Subject %d>: fully_preserved shape, colour, and details." % subj)
+            concrete.append(subj)
+        elif t in ("scene", "background", "environment"):
+            lines.append("<Subject %d>: partially_preserved environment, layout, and key elements." % subj)
+        elif t == "style":
+            lines.append("The style, palette, and rendering of <Subject %d> are attribute_transfer." % subj)
+
+    for i in range(len(ref_video_segs)):
+        lines.append("<Video %d>: attribute_transfer of camera work and motion." % (i + 1))
+
+    for i, seg in enumerate(ref_audio_segs):
+        n, role = i + 1, str((seg or {}).get("audioRole", "voice") or "voice").lower()
+        if role == "music":
+            lines.append("<Audio %d>: fully_preserved melody, instrumentation, tempo, and style." % n)
+        elif role == "ambient":
+            lines.append("<Audio %d>: attribute_transfer of ambient texture and space." % n)
+        elif bound_audio.get(n):
+            lines.append("<Subject %d> speaks with the voice and timbre of <Audio %d>." % (bound_audio[n], n))
+        else:
+            lines.append("<Audio %d>: fully_preserved voice and timbre." % n)
+
+    if len(concrete) >= 2:
+        lines.append("Never merge the subjects. Never exchange their faces, hair, eyes, "
+                     "clothing, or accessories.")
+    return lines
+
+
 def _audio_subject_slot(seg):
     """Which character slot an audio clip belongs to, 1-based, or None.
 
@@ -292,46 +354,48 @@ def alignment_instruction(has_first, has_last, shot_count, seconds):
 
 def compile_storyboard_minimax(global_prompt, shots, soundscape="", music="",
                                subject_lines=None, retention_lines=None,
-                               instruction=""):
+                               instruction="", summary=""):
     """The notation MiniMax documents in VIDEO_PROMPT_WRITING_GUIDE_*.md.
 
-    `integrated_multimodal_description: [Shot 1] … [Shot 2] At 00:05.000, …`, with the
-    first shot carrying no timestamp and every later cut carrying a strictly increasing
-    one, followed by the soundscape fields. Sections are only emitted when there is
-    something real to put in them — an empty heading is worse than none.
+    Each field is on its own line and its members are line-broken the way the guide's own
+    examples are: subjects separated by a blank line, one retention directive per line, each
+    `[Shot N]` its own paragraph. Order: subject_definitions, summary, retention_analysis,
+    detailed_description, then the two sound fields. Sections are only emitted when there is
+    something real to put in them.
     """
     parts = []
 
-    # the guide: "must be the first line of the final prompt, followed by one blank line
-    # before the core fields" — joining parts with a blank line gives exactly that
+    # fl2va keyframe-alignment line, when present, leads (the guide puts it first).
     if (instruction or "").strip():
         parts.append(instruction.strip())
 
     if subject_lines:
-        parts.append("subject_definitions: " + " ".join(subject_lines))
+        parts.append("subject_definitions:\n" + "\n\n".join(subject_lines))
+    if (summary or "").strip():
+        parts.append("summary:\n" + summary.strip())
     if retention_lines:
-        parts.append("retention_analysis: " + " ".join(retention_lines))
+        parts.append("retention_analysis:\n" + "\n".join(retention_lines))
 
     written = [s for s in shots if (s["prompt"] or "").strip()]
-    body = []
+    blocks = []
     gp = (global_prompt or "").strip()
-    if gp:
-        body.append(gp)
+    if gp:                          # fl2va only — ref2va moves the global into `summary`
+        blocks.append(gp)
     for index, shot in enumerate(written):
         text = shot["prompt"].strip()
         if index == 0:
-            body.append("[Shot 1] %s" % text)
+            blocks.append("[Shot 1] %s" % text)
         else:
-            body.append("[Shot %d] At %s, %s"
-                        % (index + 1, fmt_timestamp(shot["start_sec"]), text))
-    if body:
-        parts.append(("detailed_description: " if subject_lines
-                      else "integrated_multimodal_description: ") + " ".join(body))
+            blocks.append("[Shot %d] At %s, %s"
+                          % (index + 1, fmt_timestamp(shot["start_sec"]), text))
+    if blocks:
+        label = "detailed_description" if subject_lines else "integrated_multimodal_description"
+        parts.append(label + ":\n" + "\n\n".join(blocks))
 
     if (soundscape or "").strip():
-        parts.append("overall_soundscape: " + soundscape.strip())
+        parts.append("overall_soundscape:\n" + soundscape.strip())
     if (music or "").strip():
-        parts.append("non_diegetic_music: " + music.strip())
+        parts.append("non_diegetic_music:\n" + music.strip())
 
     return "\n\n".join(parts).strip()
 
@@ -701,36 +765,18 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
                          "Audio:" if label == "overall_soundscape" else "Music:")
         soundscape = (soundscape or "").strip() or found_audio
         music = (music or "").strip() or found_music
-        retention_lines = []
-        if subject_lines:
-            named = ", ".join("<Subject %d>" % s for s in sorted(subject_of_slot.values()))
-            if named:
-                # "appearance" rather than "clothing": a subject slot holds whatever the
-                # user put in it — a person, an animal, a car, a building — and only one of
-                # those wears anything (issue #4).
-                retention_lines.append(
-                    "Keep the identity, face and appearance of %s consistent across every "
-                    "shot." % named)
-            if ref_video_segs:
-                retention_lines.append(
-                    "Follow the camera work and motion of %s."
-                    % ", ".join("<Video %d>" % (i + 1) for i in range(len(ref_video_segs))))
-            # A clip already tied to a subject said whose voice it is in its own
-            # definition; repeating it here as an anonymous one would only blur that.
-            for ordinal, subject in sorted(bound_audio.items()):
-                retention_lines.append(
-                    "<Subject %d> speaks with the voice from <Audio %d>."
-                    % (subject, ordinal))
-            loose = [i + 1 for i in range(len(ref_audio_segs))
-                     if (i + 1) not in bound_audio]
-            if loose:
-                retention_lines.append(
-                    "Keep the voice and timbre of %s."
-                    % ", ".join("<Audio %d>" % o for o in loose))
+        retention_lines = build_retention_analysis(
+            char_slots, subject_of_slot, ref_video_segs, ref_audio_segs, bound_audio)
         if ref_notes:
-            retention_lines.extend(n + "." for n in ref_notes)
-        # Only the fl2va path: ref2va has no keyframe slot and its guide asks for no
-        # instruction line. `written` mirrors the shot numbering the body will use.
+            retention_lines.extend(n.rstrip(".") + "." for n in ref_notes)
+
+        # summary: a factual scaffold the node computes (duration + how the audio is driven)
+        # followed by the hand-written global brief. On ref2va the style/global moves HERE,
+        # out of detailed_description, matching the guide's structure — subjects, then the
+        # brief, then retention, then the shots. fl2va keeps its keyframe-alignment line and
+        # its global in the body.
+        summary = ""
+        body_global = global_prompt
         instruction = ""
         if not ref_mode_on:
             written_shots = len([s for s in shots if (s["prompt"] or "").strip()])
@@ -738,8 +784,24 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
                 any(e["role"] == ROLE_FIRST for e in events),
                 any(e["role"] == ROLE_LAST for e in events),
                 written_shots, actual_seconds)
-        prompt = compile_storyboard_minimax(global_prompt, shots, soundscape, music,
-                                            subject_lines, retention_lines, instruction)
+        else:
+            if ref_audio_segs:
+                audio_clause = "synchronized native stereo audio that follows the reference track"
+            elif (soundscape or "").strip() or (music or "").strip():
+                audio_clause = "native synchronized stereo sound designed together with the picture"
+            else:
+                audio_clause = "native synchronized stereo audio"
+            scaffold = ("[reference generation] Generate one continuous %d-second sequence with "
+                        "%s. Treat character cinematography, editing, compositing, graphic "
+                        "transitions, and sound as one unified generation."
+                        % (max(1, round(actual_seconds)), audio_clause))
+            gp = (global_prompt or "").strip()
+            summary = scaffold + ("\n\n" + gp if gp else "")
+            body_global = ""   # the global brief now lives in the summary, not the body
+
+        prompt = compile_storyboard_minimax(body_global, shots, soundscape, music,
+                                            subject_lines, retention_lines,
+                                            instruction=instruction, summary=summary)
     else:
         prompt = compile_storyboard(global_prompt, shots, window_seconds)
         if ref_notes:
@@ -777,6 +839,7 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
         "prompt": prompt, "prompt_is_fallback": fallback,
         "prompt_overridden": overridden, "compiled_prompt": compiled_prompt,
         "shots": shots, "events": events, "retake": retake,
+        "subject_lines": subject_lines, "retention_lines": retention_lines,
         "ref_mode_on": ref_mode_on, "mode": mode,
         "ref_image_slots": ref_image_slots, "ref_notes": ref_notes,
         "ref_video_segs": ref_video_segs, "ref_audio_segs": ref_audio_segs,

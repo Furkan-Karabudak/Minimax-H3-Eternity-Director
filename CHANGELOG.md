@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.0 — Extended fork
+
+Fork of [seesee75-commits/ComfyUI-MiniMaxH3-Director](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director).
+Full detail in [CUSTOM_ADDITIONS.md](CUSTOM_ADDITIONS.md). Headlines:
+
+- **Long-form in one node** — wire `sampler` + `sigmas` and the Director renders past H3's
+  ~15s ceiling on a single timeline as evenly-split anchored windows; new `images` / `audio`
+  outputs, `noise_seed` / `window_seconds` widgets. LoRAs + turbo stay intact.
+- **Two-phase decode** — anchor-frame decode in the loop, full decode after the DiT is freed
+  once, so long renders stay on the GPU instead of spilling to CPU and OOM-freezing.
+- **Seam handling** — 12ms audio de-click, per-window audio-reference slicing, length-matched
+  `combined_audio`, timeline seam markers with snap, and a half-frame overlap guard so a
+  segment can't bleed its prompt into the next window.
+- **Typed references** — Character / Animal / Object / Scene / Style, feeding a guide-shaped
+  `subject_definitions` (with `Preserve …` locks) and a structured `retention_analysis`
+  (`fully_preserved` / `partially_preserved` / `attribute_transfer` + a never-merge line).
+- **`summary:` block** — auto scaffold (duration + audio handling) plus your global brief.
+- **Per-shot dialogue** — time · speaker · language · line, compiled to `<Subject N> (SN)
+  says, <d>[Language] …</d>`, with timeline ♪ markers and hover-sync.
+- **Audio roles** — Voice / Background Music / Ambient.
+- **Restructured gen-log** on the `prompt` output — shared context once, shots by window.
+- **UI & robustness** — zoom no longer blanks, zoom controls moved under the timeline, audio
+  no longer balloons the render duration, click-to-flash on shots, front-end perf pass.
+
 ## 0.1.6
 
 - **The compiled prompt can be written by hand.** `EDIT` on the prompt panel turns it into

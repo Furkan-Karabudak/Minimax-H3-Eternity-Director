@@ -368,67 +368,93 @@ def _ref_slot_name(slot):
     return "%s%s" % (name, " [%s frame]" % key if key else "")
 
 
-def _build_gen_log(p, tdata, global_prompt, width, height, length, fps,
-                   window_prompts=None):
-    """A complete, saveable record of one generation: settings, every reference file,
-    the audio prompts, and the compiled storyboard. `prompt` output text — never encoded,
-    so it is free to say more than the model sees."""
-    L = []
-    L.append("==== MiniMax H3 Director — generation log ====")
-    L.append("canvas: %dx%d | %d frames (%.2fs @%.0ffps) | path: %s%s"
-             % (width, height, length, length / MODEL_FPS, MODEL_FPS,
-                p.get("mode", "?"), " | CHAINED %d windows" % len(window_prompts)
-                if window_prompts else ""))
+def _shot_lines(shots):
+    """Format a window's shots the way the storyboard labels them — first shot has no
+    timestamp, later ones carry their start time — but one per line, without the repeated
+    global/subject/audio wrapper."""
+    out = []
+    written = [s for s in (shots or []) if (s.get("prompt") or "").strip()]
+    for i, s in enumerate(written):
+        head = "[Shot %d]" % (i + 1) if i == 0 else \
+            "[Shot %d] At %s" % (i + 1, plan.fmt_timestamp(s.get("start_sec", 0)))
+        out.append("  %-22s %s" % (head, (s["prompt"] or "").strip()))
+    return out
 
-    gp = (global_prompt or "").strip()
-    if gp:
+
+def _build_gen_log(shared_p, tdata, width, height, length, fps, windows=None, raw_prompt=None):
+    """A clean, saveable record of one generation. The shared context — style/global,
+    subjects, references, audio — is written ONCE; then the shots are listed per window.
+    (The model receives all of that repeated in every window's storyboard; a log that
+    repeats it six times is unreadable, which is the whole point of separating this from the
+    encoded prompt.) A single raw window is kept at the end for exact reference."""
+    shared_p = shared_p or {}
+    L = ["==== MiniMax H3 Director — generation log ===="]
+    L.append("canvas %dx%d · %d frames (%.2fs @%.0ffps) · %s · %s"
+             % (width, height, length, length / MODEL_FPS, MODEL_FPS,
+                shared_p.get("mode", "?"),
+                ("%d chained windows" % len(windows)) if windows else "single window"))
+
+    def rule(title, dashes):
         L.append("")
-        L.append("-- global prompt --")
+        L.append("── %s %s" % (title, "─" * dashes))
+
+    # style / global — read from the timeline (the node input was removed), retake-aware
+    gp = (tdata.get("global_prompt", "") or tdata.get("retake_global_prompt", "") or "").strip()
+    if gp:
+        rule("STYLE (global)", 24)
         L.append(gp)
 
-    soundscape = (tdata.get("overall_soundscape", "") or "").strip()
-    music = (tdata.get("non_diegetic_music", "") or "").strip()
-    if soundscape or music:
-        L.append("")
-        L.append("-- audio --")
-        if soundscape:
-            L.append("overall_soundscape: " + soundscape)
-        if music:
-            L.append("non_diegetic_music: " + music)
-
-    slots = p.get("ref_image_slots") or []
-    vids = p.get("ref_video_segs") or []
-    auds = p.get("ref_audio_segs") or []
-    if slots or vids or auds:
-        L.append("")
-        L.append("-- references --")
+    # subjects + references + retention, together and once
+    subj = shared_p.get("subject_lines") or []
+    slots = shared_p.get("ref_image_slots") or []
+    vids = shared_p.get("ref_video_segs") or []
+    auds = shared_p.get("ref_audio_segs") or []
+    if subj or slots or vids or auds:
+        rule("SUBJECTS & REFERENCES", 16)
+        for line in subj:
+            L.append("  " + line)
         for i, slot in enumerate(slots):
             L.append("  <Picture %d>  %s" % (i + 1, _ref_slot_name(slot)))
         for i, seg in enumerate(vids):
             L.append("  <Video %d>    %s" % (i + 1, seg.get("fileName") or seg.get("videoFile", "")))
         for i, seg in enumerate(auds):
             L.append("  <Audio %d>    %s" % (i + 1, seg.get("fileName") or seg.get("audioFile", "")))
+        for line in (shared_p.get("retention_lines") or []):
+            L.append("  " + line)
     else:
-        # fl2va keyframes (no ref slots) — still worth recording their source files
+        # fl2va keyframes (no references) — still worth recording their source files
         kf = []
-        for ev in p.get("events") or []:
+        for ev in shared_p.get("events") or []:
             if ev.get("role") == plan.ROLE_FIRST:
                 kf.append("first: " + (ev.get("name") or "(image)"))
             elif ev.get("role") == plan.ROLE_LAST:
                 kf.append("last:  " + (ev.get("name") or "(image)"))
         if kf:
-            L.append("")
-            L.append("-- keyframes --")
+            rule("KEYFRAMES", 20)
             L.extend("  " + k for k in kf)
 
-    if window_prompts:
-        L.append("")
-        L.append("-- windows --")
-        L.extend(window_prompts)
+    soundscape = (tdata.get("overall_soundscape", "") or "").strip()
+    music = (tdata.get("non_diegetic_music", "") or "").strip()
+    if soundscape or music:
+        rule("AUDIO", 32)
+        if soundscape:
+            L.append("  overall_soundscape: " + soundscape)
+        if music:
+            L.append("  non_diegetic_music: " + music)
+
+    rule("SHOTS", 32)
+    if windows:
+        for w in windows:
+            L.append("")
+            L.append("  [%s]" % w["label"])
+            L.extend(_shot_lines(w["shots"]))
     else:
-        L.append("")
-        L.append("-- storyboard (encoded) --")
-        L.append(p.get("prompt", ""))
+        L.extend(_shot_lines(shared_p.get("shots")))
+
+    if raw_prompt:
+        rule("RAW · window 1, exactly as sent to H3", 4)
+        L.append(raw_prompt)
+
     return "\n".join(L)
 
 
@@ -849,7 +875,7 @@ class MiniMaxH3Director(io.ComfyNode):
                 "width": int(width), "height": int(height),
             })
 
-        gen_log = _build_gen_log(p, tdata, global_prompt, width, height, length, fps)
+        gen_log = _build_gen_log(p, tdata, width, height, length, fps)
 
         return io.NodeOutput(patched_model, conditioning, latent, audio_out,
                              MODEL_FPS, int(width), int(height), int(length), gen_log,
@@ -907,9 +933,9 @@ class MiniMaxH3Director(io.ComfyNode):
             model=chosen_model, shift_video=float(shift_video),
             shift_audio=float(shift_audio)))[0]
 
-        all_images, all_audio, window_prompts = [], [], []
+        all_images, all_audio, windows_meta = [], [], []
         pending = []   # phase-1 stashes each window's latent; phase-2 decodes them all at once
-        last_conditioning = last_latent = last_p = None
+        last_conditioning = last_latent = last_p = first_p = None
         prev_last = None
         width = height = None
         pbar = comfy.utils.ProgressBar(len(windows))
@@ -965,9 +991,12 @@ class MiniMaxH3Director(io.ComfyNode):
                 first_frame = fit(first_src) if first_src is not None else None
             last_frame = fit(last_src) if last_src is not None else None
 
-            window_prompts.append("[window %d | %s-%s] %s" % (
-                index + 1, plan.fmt_seconds(offset / fps),
-                plan.fmt_seconds((offset + span) / fps), p["prompt"]))
+            windows_meta.append({
+                "label": "window %d · %s–%s" % (index + 1, plan.fmt_seconds(offset / fps),
+                                                plan.fmt_seconds((offset + span) / fps)),
+                "shots": p["shots"]})
+            if first_p is None:
+                first_p = p
 
             if p["ref_mode_on"]:
                 ref_image_tensors, ref_videos, ref_video_audios, ref_audios = [], {}, {}, {}
@@ -1122,8 +1151,9 @@ class MiniMaxH3Director(io.ComfyNode):
         combined_audio = media.build_combined_audio(
             timeline_data, int(win_start), audio_tl_frames, fps, override_audio=override_audio)
 
-        gen_log = _build_gen_log(last_p or {}, tdata, global_prompt, width, height,
-                                 total, fps, window_prompts=window_prompts)
+        gen_log = _build_gen_log(first_p or last_p or {}, tdata, width, height, total, fps,
+                                 windows=windows_meta,
+                                 raw_prompt=(first_p or {}).get("prompt"))
         log.info("[MiniMaxDirector] chain finished: %d frames (%.2fs) at %dx%d",
                  total, total / MODEL_FPS, width, height)
 

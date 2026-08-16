@@ -339,11 +339,17 @@ Every ratio in that envelope is a **Preset**, in both orientations, at two sizes
 | 1:2 | 672×1344 | 480×960 |
 | 9:21 | 576×1344 | 480×1120 |
 
-**Native** keeps H3's 768 px short edge, except at the two widest ratios, where 1344 is the
-long-edge cap and the short edge gives way instead. **Fast** is the same list at a 480 px
-short edge — 1:1 aside, which stays area-matched to the rest of its tier rather than dropping
-to 480×480. Every edge is a multiple of 32 — H3's own step, and what `divisible_by` defaults
-to — so a preset is never quietly floored to something else on the way in.
+**Native** keeps H3's 768 px short edge, and holds the long edge at 1344 for the two widest
+ratios, letting the short edge give way instead. That 1344 is this table's own ceiling, not
+a rule of the model's: H3's canvas policy is a 768 short edge and an **area** cap of
+768×1344, so at 21:9 the model itself would go to 1536×672 and the preset's 1344×576 spends
+a quarter less canvas than it is allowed. Deliberately — a preset should be the safe answer.
+Reach for **Aspect / MP** when you want the whole budget at a wide ratio.
+
+**Fast** is the same list at a 480 px short edge — 1:1 aside, which stays area-matched to
+the rest of its tier rather than dropping to 480×480. Every edge is a multiple of 32 — H3's
+own step, and what `divisible_by` defaults to — so a preset is never quietly floored to
+something else on the way in.
 
 One entry sits under its own **Past native** heading: `16:9 — 1920×1088`, which renders
 outside the canvas the model knows and is named for that rather than for a 2K module that is

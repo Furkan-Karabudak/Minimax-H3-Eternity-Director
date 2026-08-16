@@ -38,11 +38,18 @@ Two contributions from [@Brioch](https://github.com/Brioch) — [#16] and [#17],
   | 1:2 | 672×1344 | 480×960 |
   | 9:21 | 576×1344 | 480×1120 |
 
-  **Native** keeps H3's 768 px short edge, except at the two widest ratios where 1344 is the
-  long-edge cap and the short edge gives way instead. **Fast** is the same list at a 480 px
-  short edge, 1:1 aside, which stays area-matched to its tier rather than dropping to
-  480×480. Every edge is a multiple of 32 — H3's own step, and what `divisible_by` defaults
-  to — so a preset is never quietly floored to something else on the way in.
+  **Native** keeps H3's 768 px short edge, and holds the long edge at 1344 for the two
+  widest ratios, letting the short edge give way instead. That 1344 is the table's own
+  ceiling rather than a rule of the model's — H3's policy is a 768 short edge plus an
+  **area** cap of 768×1344, so at 21:9 `adapt_canvas` itself returns 1536×672 and the
+  preset's 1344×576 spends a quarter less canvas than it is allowed. That is the intended
+  trade: a preset should be the safe answer, and **Aspect / MP** is there for the whole
+  budget at a wide ratio.
+
+  **Fast** is the same list at a 480 px short edge, 1:1 aside, which stays area-matched to
+  its tier rather than dropping to 480×480. Every edge is a multiple of 32 — H3's own step,
+  and what `divisible_by` defaults to — so a preset is never quietly floored to something
+  else on the way in.
 
   0.2.1's `1920×1088` is still there, under a **Past native** heading of its own, since it
   is the one canvas here that leaves the trained envelope and the heading is what says so.

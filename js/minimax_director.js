@@ -13530,9 +13530,14 @@ app.registerExtension({
           // MiniMax H3's native canvas is a 768 px short edge capped at 768x1344, and every
           // edge here is a multiple of 32: H3's own step, and what divisible_by defaults to,
           // so a preset is never quietly floored to something else on the way in.
-          // Native holds the 768 short edge except for the two widest ratios, where 1344 is
-          // the long-edge cap and the short edge gives way instead. Fast is the same list at
-          // a 480 short edge.
+          // Native holds the 768 short edge, and holds the long edge at 1344 for the two
+          // widest ratios, letting the short edge give way instead. That 1344 is THIS
+          // TABLE's ceiling, not the model's: adapt_canvas in comfy_extras/nodes_minimax_h3
+          // is a 768 short edge plus an AREA cap of 768*1344, so at 21:9 the model's own
+          // policy returns 1536x672 and this preset's 1344x576 spends a quarter less canvas
+          // than it is allowed. Deliberate — a preset is the safe answer, and the
+          // Aspect / MP row below is how you spend the whole budget at a wide ratio.
+          // Fast is the same list at a 480 short edge.
           //
           // One entry sits past native, and says so. 1920x1088 is NOT what the model card
           // means by 2K, and calling it that was misleading (issue #14): the card's 2K comes

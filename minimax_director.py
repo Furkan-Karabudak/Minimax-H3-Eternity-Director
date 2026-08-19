@@ -472,7 +472,7 @@ def _ref_slot_name(slot):
     return "%s%s" % (name, " [%s frame]" % key if key else "")
 
 
-def _build_chain_log(tdata, first_p, windows, window_prompts, width, height, total, fps):
+def _build_chain_log(tdata, first_p, windows, window_prompts, width, height, total, fps, long_mode="chained"):
     """A clean, saveable record of a long-form (chained) render.
 
     The shared context — style, subjects, references, audio — is written ONCE at the top
@@ -482,9 +482,9 @@ def _build_chain_log(tdata, first_p, windows, window_prompts, width, height, tot
     upstream's compiled prompt directly and needs none of this."""
     first_p = first_p or {}
     L = ["==== MiniMax H3 Director — long-form generation log ===="]
-    L.append("canvas %dx%d · %d frames (%.2fs @%.0ffps) · %s · %d chained window%s"
+    L.append("canvas %dx%d · %d frames (%.2fs @%.0ffps) · %s · %d %s window%s"
              % (width, height, total, total / MODEL_FPS, MODEL_FPS,
-                first_p.get("mode", "?"), len(windows), "" if len(windows) == 1 else "s"))
+                first_p.get("mode", "?"), len(windows), long_mode, "" if len(windows) == 1 else "s"))
 
     def rule(title, dashes=24):
         L.append("")
@@ -1640,7 +1640,7 @@ class MiniMaxH3Director(io.ComfyNode):
         audio_tl_frames = max(1, int(round(total / MODEL_FPS * fps)))
         combined_audio = media.build_combined_audio(
             timeline_data, int(win_start), audio_tl_frames, fps, override_audio=override_audio)
-        prompt_txt = _build_chain_log(tdata, first_p, log_windows, window_prompts, width, height, total, fps)
+        prompt_txt = _build_chain_log(tdata, first_p, log_windows, window_prompts, width, height, total, fps, long_mode="seamless")
         log.info("[MiniMaxSeamless] finished: %d frames (%.2fs) at %dx%d",
                  total, total / MODEL_FPS, width, height)
         return io.NodeOutput(

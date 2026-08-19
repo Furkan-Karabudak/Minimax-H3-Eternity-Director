@@ -13,6 +13,9 @@ Thumbs.db
 .pytest_cache/
 .ruff_cache/
 
+# local test renders — analysis material, not part of the published node
+docs/video/
+
 # the node's own upload/workspace folder, if it ever lands inside the package
 workspace/
 uploads/

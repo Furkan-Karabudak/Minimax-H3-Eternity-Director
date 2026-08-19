@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.4.0 (MV fork)
+
+Seamless long-form and render-time levers, on top of 0.3.0.
+
+- **Seamless mode** — new `long_form_mode` (`chained` | `seamless`). `seamless` holds the whole
+  clip as one latent and co-denoises overlapping windows (temporal MultiDiffusion), averaging
+  the video overlaps for a stitch-free result; audio is assigned per-window (audio latents
+  can't be averaged — they decode to noise). New `overlap_seconds` / `window_seconds` widgets.
+  Video is seam-free; the audio join can still skip a beat and is being refined.
+- **Audio seam modes** — `seam_audio` (`aligned` | `crossfade` | `hard cut`). `aligned` is a
+  full-overlap equal-gain crossfade and is now the default.
+- **Dialogue across windows** — each window compiles its own time-slice, so spoken lines inject
+  wherever they fall; a line inside an overlap is voiced by both windows, so the words agree
+  across the seam.
+- **Latent output for external upscale** — the `latent` output carries the sampled AV latent
+  before decode, for a render-low → H3 latent-upscale → decode path.
+- **Docs** — `docs/SEAMLESS_LONGFORM_SPEC.md`; README documents both modes, the Performance
+  levers (turbo LoRA at ~8 steps / Euler+Beta, low-res render + latent upscale) and measured
+  timings (Arch-based Linux, RTX 3090, up to 60 s).
+
+## 0.3.0 (MV fork — on upstream 0.2.2)
+
+Reconciliation release. This fork was rebased onto **upstream 0.2.2**, adopting its
+prompt-compilation layer wholesale — typed references, per-shot dialogue, audio roles, the
+guide-aligned compiled prompt, the summary box, resolution presets and the Save-Last-Frame
+node are all upstream's now. The fork's own **long-form rendering path** was re-applied on
+top of that base. See [CUSTOM_ADDITIONS.md](CUSTOM_ADDITIONS.md).
+
+- **Long-form chaining** — optional `sampler` + `sigmas` inputs render the whole timeline as
+  evenly-split anchored windows past H3's ~15s ceiling, in one node. New `images` + `audio`
+  outputs; new `noise_seed` / `window_seconds` / `tiled_vae_decode` widgets.
+- **Two-phase decode** — anchor-frame decode in the loop, full decode once the DiT is freed,
+  so long chains decode on the GPU instead of OOM-freezing the machine.
+- **Audio-seam handling** — ~12 ms equal-power de-click at each seam, per-window audio-ref
+  slicing, duplicate seam frame dropped, length-matched `combined_audio`.
+- **Long-form gen-log** — chaining mode's `prompt` output writes shared context once, then
+  each window's exact compiled prompt.
+- **Frontend fixes** — zoom no longer blanks on long / HiDPI / graph-zoomed timelines;
+  dropping or pasting a long audio clip no longer balloons the render duration; clicking a
+  shot flashes its prompt field.
+- Node id **`MiniMaxH3DirectorCS`** unchanged — existing (and mp4-embedded) workflows keep
+  loading.
+
+Not yet re-applied (being validated live against upstream's rewritten editor): timeline seam
+markers + snapping, zoom-control relocation, the render-loop perf pass.
+
 ## 0.2.2
 
 Two contributions from [@Brioch](https://github.com/Brioch) — [#16] and [#17], closing

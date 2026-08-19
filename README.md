@@ -1,4 +1,13 @@
-# ComfyUI MiniMax H3 Director
+# ComfyUI MiniMax H3 Director — MV fork
+
+> ### A fork of [**ComfyUI MiniMax H3 Director**](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director) by **seesee75-commits** — genuinely excellent work.
+>
+> That node is the entire foundation here: the timeline, the storyboard compiler, the live
+> prompt preview, typed references, dialogue, audio roles. **Go star the original.** This fork
+> stays *aligned* with it and rebases onto upstream releases — it adds a **long-form rendering
+> path** (chaining past H3's ~15s ceiling in one node, two-phase GPU decode, audio-seam
+> handling, a saveable gen-log). The [original documentation](#-original-readme) below applies
+> in full.
 
 **A timeline editor for [MiniMax H3](https://huggingface.co/Comfy-Org/MiniMax-H3) inside ComfyUI.**
 Drag images, videos and music onto tracks, trim them on a ruler, write a prompt per shot,
@@ -7,15 +16,53 @@ see the exact prompt the model will receive while you are still editing it.
 
 [![license](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-%E2%89%A5%200.30.0-1a1a1a)](https://github.com/comfyanonymous/ComfyUI)
-[![version](https://img.shields.io/badge/version-0.2.2-brightgreen)](CHANGELOG.md)
+[![fork](https://img.shields.io/badge/fork-MV%20%E2%80%A2%20on%200.2.2-brightgreen)](CUSTOM_ADDITIONS.md)
 
 ![The MiniMax H3 Director node](docs/images/director-node.png)
 
 <!-- TODO: demo video -->
 
+---
+
+## What this fork adds
+
+Full detail — and honest credit for what's upstream's — in
+[**CUSTOM_ADDITIONS.md**](CUSTOM_ADDITIONS.md). The headlines:
+
+- **Long-form in one node, two ways.** Wire a `sampler` + `sigmas` and the Director renders
+  *past H3's ~15s ceiling* on a single timeline — as anchored windows (`chained`) or as one
+  co-denoised latent with no stitch (`seamless`). No second node, no JSON copy-paste. Your
+  LoRAs and turbo schedule stay on the wire and apply to every window.
+- **Two-phase decode.** Anchor-frame decode in the loop, full VAE decode once the DiT is freed
+  — long renders stay on the GPU instead of spilling to CPU and OOM-freezing the machine.
+- **Audio-seam handling.** A `seam_audio` choice at every window join — full-overlap aligned
+  crossfade (default), a fixed ~12 ms equal-power de-click, or a hard cut — plus per-window
+  audio-reference slicing, the duplicate seam frame dropped, and a length-matched
+  `combined_audio` output.
+- **Gen-log output.** In chaining mode the `prompt` output is a full, saveable record —
+  shared context once, then each window's exact compiled prompt.
+- **UI robustness.** Zoom no longer blanks on long timelines, dropping a long song no longer
+  balloons the render duration, and clicking a shot flashes its prompt field.
+
+Everything else — typed references, dialogue, audio roles, the compiled-prompt structure — is
+**upstream's**, adopted as-is.
+
+> **Deploy after updating:** restart ComfyUI (backend) **and** hard-refresh the browser
+> (frontend). If a node on the canvas looks stale after the input/output changes, right-click →
+> **Fix node (recreate)**.
+
+---
+
 > This is the [LTX Director](https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyUI)
-> timeline editor by **WhatDreamsCost**, ported to MiniMax H3. Same editing, new backend.
-> See [Credits](#credits).
+> timeline editor by **WhatDreamsCost**, ported to MiniMax H3 by seesee75-commits. See
+> [Credits](#credits).
+
+---
+
+## <a id="-original-readme"></a>📖 Original documentation
+
+Everything below is the upstream README — installation, usage, prompt format, retakes, the lot
+— and all of it still applies to this fork.
 
 ---
 
@@ -902,20 +949,52 @@ across the whole thing instead of the generated one.
 
 ## Longer than 15 seconds
 
-Not solved yet. There was a **Director Chain** node that rendered a long timeline as a
-chain of anchored windows, and its sampling worked — but there was no usable way to hand
-it a timeline, so it has been withdrawn rather than shipped as a feature nobody can
-operate. The code stays in the repository; the reasoning is written down at the top of
-`minimax_chain.py`.
+**4–15 s is H3's trained range, not a cap** — but past it a single window drifts and loops,
+with render time climbing faster than the video does (attention is quadratic in sequence
+length; memory grows roughly linearly). The dependable answer is several in-range windows
+joined into one timeline, which this fork does *inside* the Director. Wire a `sampler` +
+`sigmas` and pick a `long_form_mode`:
 
-**4–15 s is H3's trained range, not a cap.** Nothing in this pack limits the length, and
-longer windows do render — reported working at 45 s, and the model card's envelope is
-simply where quality is known to hold. Past it, expect drift and looping, and a render
-time that climbs faster than the video does: attention cost goes with the square of the
-sequence, while memory grows roughly with its length. The node says so once in the console
-and once in the prompt panel, and then gets out of the way.
+**`chained`** *(default)* — each window is sampled independently and anchored on the previous
+window's last decoded frame, then joined. Sharp per window (nothing is blended across
+windows), but a seam is a real cut: motion can hitch and the audio switches at the join.
+`seam_audio` controls that join:
 
-For a dependable long piece the answer is still several in-range windows spliced together.
+- `aligned` *(default)* — full-overlap equal-gain crossfade; each window's loud middle covers
+  the other's tapered edge. Best when the audio follows a continuous reference track.
+- `crossfade` — a fixed ~12 ms equal-power de-click. For independent-but-coherent takes.
+- `hard cut` — no blend, for deliberately unrelated windows.
+
+**`seamless`** — the whole clip is held as one latent and co-denoised over overlapping
+windows, averaging the overlaps every step so they converge with no stitch (temporal
+MultiDiffusion). `window_seconds` and `overlap_seconds` set the schedule. **Video comes out
+genuinely seam-free.** Audio is the open problem: audio latents can't be averaged (they decode
+to noise), so each audio-latent frame is assigned to a single window, and that hard assignment
+can still skip a beat at the boundary. Design notes in
+[`docs/SEAMLESS_LONGFORM_SPEC.md`](docs/SEAMLESS_LONGFORM_SPEC.md).
+
+Dialogue flows into both modes through the timeline — each window compiles its own time-slice,
+so a spoken line is injected wherever it falls. In `seamless`, a line sitting inside a window
+overlap is spoken by *both* windows, so the words agree across the seam even while the audio
+join itself is still being refined.
+
+**Measured** (Arch-based Linux, RTX 3090, ~52 GB RAM used): rendered up to **60 s** as
+5-second windows; at **4 steps a 60 s clip takes ~30 min**. Video holds up well at the seams;
+audio still skips a beat at the join. Longer renders are possible — quality past H3's envelope
+is your call.
+
+### Performance
+
+Two levers cut render time without changing the pipeline:
+
+- **Turbo / step-distilled LoRA.** The Director applies its own `SigmaShift` internally
+  (defaults 12/3) and keeps your LoRAs on the wire, so a turbo LoRA at ~8 steps (Euler + Beta)
+  applies to every window. **Do not add an external `SigmaShift` node** — it double-shifts and
+  corrupts the schedule. Tighter per-step convergence also sharpens the `seamless` overlaps.
+- **Latent upscale.** The `latent` output carries the sampled AV latent *before* decode. Render
+  at low resolution, run an H3 latent upscaler on that output, and decode externally — the fast
+  path to high resolution with no re-sampling. Skip any hi-res *refine* pass on long clips: a
+  >15 s re-sample exceeds H3's window, and a windowed refine reintroduces the seams.
 
 ## Troubleshooting
 

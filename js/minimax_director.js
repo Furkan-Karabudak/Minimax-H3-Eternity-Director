@@ -224,6 +224,8 @@ const STYLES = `
   .mmxd-prompt-wrapper.focus-active {
     border-color: #888;
   }
+  @keyframes mmxdFlash { 0% { box-shadow: 0 0 0 2px rgba(79,255,143,0.9); } 100% { box-shadow: 0 0 0 2px rgba(79,255,143,0); } }
+  .mmxd-flash { animation: mmxdFlash 0.75s ease-out; }
   .mmxd-wrapper.has-focus .mmxd-prompt-wrapper:not(.focus-active),
   .mmxd-wrapper:has(.mmxd-prompt-wrapper.focus-active) .mmxd-prompt-wrapper:not(.focus-active) {
     opacity: 0.65;
@@ -492,8 +494,10 @@ const STYLES = `
   .mmxd-zoom-controls {
     display: flex;
     align-items: center;
+    justify-content: flex-end;
     gap: 4px;
-    margin-left: 12px;
+    margin-top: 5px;
+    padding-right: 2px;
   }
   .mmxd-zoom-slider {
     width: 80px;
@@ -704,7 +708,7 @@ const STYLES = `
   .mmxd-characters-container { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 12px; margin-top: 6px; margin-bottom: 4px; box-sizing: border-box; width: 100%; flex-shrink: 0; }
   /* grows to nine slots, so they wrap into rows of three rather than shrinking to slivers */
   /* height is set inline from the dragged panel size — deliberately not duplicated here */
-  .mmxd-character-slot { flex: 1 1 calc(33.333% - 8px); min-width: 120px; background: #1e1e1e; border: 1.5px dashed #444; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 4px; position: relative; cursor: pointer; overflow: hidden; transition: border-color 0.2s ease, background 0.2s ease; box-sizing: border-box; }
+  .mmxd-character-slot { flex: 1 1 calc(20% - 10px); min-width: 110px; min-height: 300px; background: #1e1e1e; border: 1.5px dashed #444; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 4px; position: relative; cursor: pointer; overflow: hidden; transition: border-color 0.2s ease, background 0.2s ease; box-sizing: border-box; }
   .mmxd-character-slot:hover { border-color: #666; background: #252525; }
   .mmxd-character-slot.drag-over { border-color: #4fff8f; background: rgba(79, 255, 143, 0.05); }
   .mmxd-character-label { font-size: 10px; font-weight: bold; color: #888; margin-bottom: 2px; pointer-events: none; }
@@ -1711,6 +1715,35 @@ class TimelineEditor {
     return parseInt((this.frameRateWidget && this.frameRateWidget.value > 0) ? this.frameRateWidget.value : 24, 10);
   }
 
+  // Frame positions of the internal generation seams — where each chained window meets the
+  // next — mirroring the backend's even-distribution split_windows() EXACTLY (same W clamp to
+  // the 15s ceiling, same "fewer windows before dropping below the 4s floor", same even split
+  // with the remainder spread over the first windows). Empty when the render fits in a single
+  // window (no seams). Drives both the timeline markers and edge-snapping.
+  getWindowBoundaries() {
+    const fps = this.getFrameRate();
+    const winW = (this.node && this.node.widgets)
+      ? this.node.widgets.find(w => w.name === "window_seconds") : null;
+    const windowSeconds = (winW && winW.value >= 4) ? winW.value : 5.0;
+    const D = this.getDurationFrames();
+    const minF = Math.max(1, Math.round(4.0 * fps));      // TRAINED_MIN_FRAMES (96) / 24 * fps
+    const maxF = Math.max(minF, Math.round(15.0 * fps));  // TRAINED_MAX_FRAMES (360) / 24 * fps
+    let W = Math.min(Math.max(1, Math.round(windowSeconds * fps)), maxF);
+    if (D <= W) return [];
+    let count = Math.ceil(D / W);
+    while (count > 1 && D < minF * count) count--;        // fewer/longer before dropping below the floor
+    count = Math.max(count, Math.ceil(D / maxF));          // more before exceeding the ceiling
+    const base = Math.floor(D / count), rem = D % count;
+    const start = this.getStartFrames();
+    const seams = [];
+    let cursor = 0;
+    for (let i = 0; i < count - 1; i++) {                  // count-1 interior boundaries
+      cursor += base + (i < rem ? 1 : 0);
+      seams.push(start + cursor);
+    }
+    return seams;
+  }
+
   // Grow the timeline duration to fit `requiredFrames` if it is currently shorter.
   // The timeline only ever grows — never shrinks — through this method.
   growTimelineIfNeeded(requiredFrames) {
@@ -1775,10 +1808,17 @@ class TimelineEditor {
     const visualDurationSecs = this.getVisualDurationFrames() / this.getFrameRate();
     const baseMaxZoom = Math.max(1, visualDurationSecs / 4);
 
-    // Limit max zoom to prevent canvas width from exceeding browser limits (causing crash)
+    // Limit max zoom to prevent canvas width from exceeding browser limits (causing crash).
+    // The canvas BACKING store is cssWidth * getRenderScale(), and getRenderScale() is
+    // devicePixelRatio * the ComfyUI graph zoom (ds.scale) — NOT 1. A single canvas
+    // dimension is hard-capped by the browser (32767 on Firefox/LibreWolf); exceed it and
+    // the canvas silently blanks, which reads as "zoom stopped working" — most visibly after
+    // zooming the graph itself in, or on any HiDPI/fractional-scaled display. So the ceiling
+    // has to be against the backing width (cssWidth * scale), not the raw CSS width.
     const viewportWidth = this.viewport ? this.viewport.clientWidth : 1000;
-    const MAX_CANVAS_WIDTH = 32768; // Extended limit for modern browsers
-    const limitMaxZoom = MAX_CANVAS_WIDTH / Math.max(1, viewportWidth);
+    const MAX_CANVAS_PX = 32767; // browser hard limit for one canvas dimension
+    const renderScale = Math.max(1, this.getRenderScale ? this.getRenderScale() : 1);
+    const limitMaxZoom = MAX_CANVAS_PX / Math.max(1, viewportWidth * renderScale);
 
     return Math.max(1, Math.min(baseMaxZoom, limitMaxZoom));
   }
@@ -2062,6 +2102,17 @@ class TimelineEditor {
 
     const totalFrames = this.getVisualDurationFrames();
     const thresholdFrames = (15 / logicalWidth) * totalFrames;
+
+    // Generation seams win with priority and a wider grab (fork addition), and snap to the
+    // EXACT boundary frame — so a segment edge locks onto a window boundary and can never
+    // straddle into the next generation. Checked before every other snap target.
+    let bestSeam = null, bestSeamDiff = thresholdFrames * 1.8;
+    for (const b of this.getWindowBoundaries()) {
+      const d = Math.abs(mouseFrameX - b);
+      if (d < bestSeamDiff) { bestSeamDiff = d; bestSeam = b; }
+    }
+    if (bestSeam !== null) return Math.round(bestSeam);
+
     const snapCandidates = [0, this.getDurationFrames()];
 
     // Add start and end frames of active generation range
@@ -3821,6 +3872,7 @@ class TimelineEditor {
     // --- Zoom Controls ---
     const zoomControls = document.createElement("div");
     zoomControls.className = "mmxd-zoom-controls";
+    this.zoomControls = zoomControls;  // fork: mounted under the timeline, not in the player row
 
     const zoomOutBtn = document.createElement("button");
     zoomOutBtn.className = "mmxd-icon-btn";
@@ -3901,7 +3953,7 @@ class TimelineEditor {
     playerControls.appendChild(this.playBtn);
     playerControls.appendChild(this.loopBtn);
     playerControls.appendChild(this.seekBar);
-    playerControls.appendChild(zoomControls);
+    // fork: zoom controls are appended under the timeline instead (see wrapper mount below)
 
 
 
@@ -4418,6 +4470,9 @@ class TimelineEditor {
 
     this.wrapper.appendChild(toolbar);
     this.wrapper.appendChild(this.layoutContainer);
+    // fork: zoom controls sit directly beneath the timeline they act on — not down in the
+    // player/guide-strength row, where they read as belonging to the audio track.
+    if (this.zoomControls) this.wrapper.appendChild(this.zoomControls);
 
 
     const controlsGroup = document.createElement("div");
@@ -4580,14 +4635,36 @@ class TimelineEditor {
     return dpr * Math.max(1, graphScale);
   }
 
+  // Briefly ring the segment-prompt editor so a click on the timeline visibly points at
+  // the field to type in. Restarting the animation requires a reflow between removes/adds.
+  _flashPromptField() {
+    const el = this.promptWrapper;
+    if (!el) return;
+    el.classList.remove("mmxd-flash");
+    void el.offsetWidth;
+    el.classList.add("mmxd-flash");
+    clearTimeout(this._flashTimer);
+    this._flashTimer = setTimeout(() => el.classList.remove("mmxd-flash"), 750);
+  }
+
   resizeCanvas(widthPx) {
     const scale = this.getRenderScale();
-    const targetWidth = Math.round(widthPx * scale);
+    const MAX_CANVAS_PX = 32767; // browser hard limit for one canvas dimension
+    let targetWidth = Math.round(widthPx * scale);
+    let sx = scale;
+    if (targetWidth > MAX_CANVAS_PX) {
+      // Safety net for a stale zoom state (e.g. the graph was zoomed in after the timeline
+      // was): never let the backing store exceed the browser limit, or the whole canvas
+      // blanks. Clamp the backing width and rescale the x-transform so drawing coordinates
+      // (which assume `widthPx` CSS px) still land on the canvas — softer, but never blank.
+      targetWidth = MAX_CANVAS_PX;
+      sx = targetWidth / Math.max(1, widthPx);
+    }
     const targetHeight = Math.round(this.canvasHeight * scale);
 
     this.canvas.width = targetWidth;
     this.canvas.height = targetHeight;
-    this.ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    this.ctx.setTransform(sx, 0, 0, scale, 0, 0);
     this.render();
   }
 
@@ -5439,9 +5516,10 @@ class TimelineEditor {
           this.timeline.audioSegments.push(seg);
           this.timeline.audioSegments.sort((a, b) => a.start - b.start);
 
-          if (!this.retakeMode) {
-            this.growTimelineIfNeeded(seg.start + seg.length);
-          }
+          // A dropped audio clip must NOT grow the render duration: dropping a full song used
+          // to balloon duration_frames to the track's length (a 30s render became the whole
+          // ~6min song). The clip still displays fully on the audio track — the render window
+          // stays exactly as set. Image/video drops still grow (see those sites).
 
           this.selectionType = "audio";
           this.selectedIndex = this.timeline.audioSegments.findIndex(s => s.id === seg.id);
@@ -5742,7 +5820,9 @@ class TimelineEditor {
     this.selectionType = copiedTrack;
     this.selectedIndex = this.getSegmentArray(copiedTrack).findIndex(s => s.id === mainSeg.id);
 
-    if (!this.retakeMode) {
+    // Pasting an audio clip must not grow the render duration either (same reason as an audio
+    // drop — a long track would balloon duration_frames). Non-audio pastes still grow.
+    if (!this.retakeMode && copiedTrack !== "audio") {
       this.growTimelineIfNeeded(mainSeg.start + mainSeg.length);
     }
 
@@ -7823,6 +7903,35 @@ class TimelineEditor {
         this.ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
         this.ctx.fillRect(cutoffX, 0, width - cutoffX, RULER_HEIGHT);
       }
+
+      // --- Generation seam markers (fork addition) ---
+      // Amber dashed lines where each chained window meets the next (see getWindowBoundaries).
+      // Segment edges snap to the same positions, so a cut/fade dropped here hides the seam.
+      const seams = this.getWindowBoundaries();
+      if (seams.length) {
+        const seamBottom = RULER_HEIGHT + this.blockHeight + this.motionTrackHeight + this.audioTrackHeight;
+        this.ctx.save();
+        this.ctx.strokeStyle = "rgba(255, 179, 71, 0.8)";
+        this.ctx.fillStyle = "rgba(255, 179, 71, 0.95)";
+        this.ctx.lineWidth = 1;
+        for (let i = 0; i < seams.length; i++) {
+          const sx = (seams[i] / totalFrames) * width;
+          if (sx <= 0 || sx >= width) continue;
+          this.ctx.setLineDash([4, 3]);
+          this.ctx.beginPath();
+          this.ctx.moveTo(sx, RULER_HEIGHT);
+          this.ctx.lineTo(sx, seamBottom);
+          this.ctx.stroke();
+          // little downward triangle in the ruler so it reads as a snap handle
+          this.ctx.setLineDash([]);
+          this.ctx.beginPath();
+          this.ctx.moveTo(sx - 4, RULER_HEIGHT);
+          this.ctx.lineTo(sx + 4, RULER_HEIGHT);
+          this.ctx.lineTo(sx, RULER_HEIGHT + 5);
+          this.ctx.fill();
+        }
+        this.ctx.restore();
+      }
     }
 
     // --- Draw Playhead ---
@@ -8380,6 +8489,12 @@ class TimelineEditor {
 
       if (hit.type !== "joint") {
         this._dragTargetId = targetArray[hit.index].id;
+      }
+
+      // Clicking a shot's body flashes its editable prompt field, so the on-timeline text
+      // and the field you type into are visibly connected.
+      if (this.selectionType === "image" && hit.type === "center") {
+        this._flashPromptField();
       }
     }
 

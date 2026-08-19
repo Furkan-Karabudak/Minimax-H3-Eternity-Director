@@ -231,8 +231,10 @@ async def compile_prompt_endpoint(request):
         if p["prompt_is_fallback"]:
             warnings.append("No prompt text on the timeline — 'video' would be sent.")
         if p["length"] > plan.TRAINED_MAX_FRAMES:
-            warnings.append("%.1fs is past H3's trained range (~4-15s). Expect drift or "
-                            "looping — shorten the window." % p["actual_seconds"])
+            # the model card's envelope, not a cap this node enforces (issue #12)
+            warnings.append("%.1fs is past H3's trained range (the model card's 4-15s). It "
+                            "renders, but expect drift or looping, and a render time that "
+                            "climbs faster than the length." % p["actual_seconds"])
         if not p["ref_mode_on"]:
             middles = sum(1 for e in p["events"] if e["role"] == plan.ROLE_MIDDLE)
             if middles:
@@ -240,6 +242,14 @@ async def compile_prompt_endpoint(request):
                                 "first and last frame. Switch to 'Refs ON (ref2va)'." % middles)
         if p["ref_mode_on"] and len(p["ref_image_slots"]) >= plan.MAX_REF_IMAGES:
             warnings.append("Reference images are capped at %d." % plan.MAX_REF_IMAGES)
+        # The batch on the ref_images socket only exists once the graph runs, so the
+        # preview cannot number around it. Say so: the alternative is a prompt that shows
+        # <Picture 2> where the render will send <Picture 5>, with nothing to explain why.
+        if (p["ref_mode_on"] and bool(data.get("ref_images_connected"))
+                and not int(data.get("extra_ref_image_count") or 0)):
+            warnings.append(
+                "Images on the ref_images socket are not counted here — every <Picture i> "
+                "below shifts up by that batch size when you render.")
         warnings.extend(p.get("ref_warnings") or [])
 
         return web.json_response({
@@ -250,9 +260,16 @@ async def compile_prompt_endpoint(request):
             "shots": len(p["shots"]),
             "length": p["length"],
             "seconds": round(p["actual_seconds"], 2),
+            # shown in the badge rather than warned about: the guide's 350-500 is a lot of
+            # words for a 5-15s clip, so being under it is the ordinary state here
+            "words": p.get("description_words") or 0,
             "refs": {"images": len(p["ref_image_slots"]),
                      "videos": len(p["ref_video_segs"]),
                      "audios": len(p["ref_audio_segs"])},
+            # slot -> <Subject N>, so the editor's "Voice of" menu can name subjects the way
+            # the prompt does instead of counting slots and getting a different answer
+            "subject_of_slot": {str(k): v for k, v in
+                                (p.get("subject_of_slot") or {}).items()},
             "overridden": bool(p.get("prompt_overridden")),
             # what the timeline would produce, so the panel can offer it back without
             # having to recompile behind the user's back
@@ -262,6 +279,75 @@ async def compile_prompt_endpoint(request):
     except Exception as e:
         log.warning("[MiniMaxDirector] compile_prompt failed: %s", e)
         return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.post("/minimax_director/probe_video")
+async def probe_video_endpoint(request):
+    """Duration, size and a first frame for a video the browser could not open.
+
+    The editor builds a reference-video segment from a local blob: it needs the duration
+    to size the clip on the timeline and a frame for the thumbnail. That path goes through
+    a <video> element, so it only works for what the browser can decode — and a browser
+    decodes far less than the renderer does. HEVC, ProRes and 10-bit footage inside a
+    perfectly ordinary .mp4 or .mov are all refused by Chrome and all read fine here,
+    because PyAV is what loads reference videos at generation time anyway.
+
+    Without this the editor silently rejected files it would have rendered without
+    complaint. The codec is reported back so a failure can at least name itself.
+    """
+    try:
+        data = await request.json()
+        path = resolve_input_path(data.get("file") or "")
+        if not path:
+            return web.json_response({"status": "error",
+                                      "message": "File not found on the server."})
+
+        with av.open(path) as container:
+            if not container.streams.video:
+                return web.json_response({"status": "error",
+                                          "message": "No video stream in that file."})
+            stream = container.streams.video[0]
+            codec = getattr(stream.codec_context, "name", "") or ""
+            width = stream.width or stream.codec_context.width or 0
+            height = stream.height or stream.codec_context.height or 0
+
+            # Container duration first — a stream's own is missing often enough to matter.
+            duration = 0.0
+            if container.duration:
+                duration = float(container.duration) / av.time_base
+            elif stream.duration and stream.time_base:
+                duration = float(stream.duration * stream.time_base)
+
+            rate = stream.average_rate or stream.guessed_rate
+            fps = float(rate) if rate else 0.0
+
+            # Some containers report no duration at all. Frame count over rate is the
+            # fallback, and it has to be read while the container is still open.
+            if duration <= 0 and fps > 0 and stream.frames:
+                duration = float(stream.frames) / fps
+
+            thumb = ""
+            try:
+                frame = next(container.decode(video=0), None)
+                if frame is not None:
+                    image = frame.to_image()
+                    image.thumbnail((512, 512))
+                    buffer = _io.BytesIO()
+                    image.convert("RGB").save(buffer, format="JPEG", quality=90)
+                    thumb = "data:image/jpeg;base64," + \
+                        base64.b64encode(buffer.getvalue()).decode("ascii")
+            except Exception as e:
+                # a thumbnail is a nicety; the clip is still usable without one
+                log.debug("[MiniMaxDirector] probe thumbnail failed for %s: %s", path, e)
+
+        log.info("[MiniMaxDirector] probed '%s': %s %dx%d, %.2fs @ %.2f fps",
+                 os.path.basename(path), codec or "unknown", width, height, duration, fps)
+        return web.json_response({"status": "success", "duration": round(duration, 3),
+                                  "fps": round(fps, 4), "width": width, "height": height,
+                                  "codec": codec, "thumb": thumb})
+    except Exception as e:
+        log.warning("[MiniMaxDirector] probe_video failed: %s", e)
+        return web.json_response({"status": "error", "message": str(e)})
 
 
 @PromptServer.instance.routes.get("/minimax_director_get_audio")
@@ -360,11 +446,43 @@ _PROVIDER_DEFAULTS = {
     "custom": {"url": "", "model": ""},
 }
 
-_ANALYZE_PROMPT = (
-    "Describe the character's physical appearance in two concise sentences. "
-    "Specify their hair color/style, face details, and their clothing type/color. "
-    "Keep the entire response very brief."
-)
+# What to look at, per subject kind. A slot is not necessarily a character — the reference
+# guide's <Subject N> covers scenes, props, styles and poses too — and asking for hair and
+# clothing when the image is a coffee shop produced exactly the answer you would expect.
+_ANALYZE_SUBJECT = {
+    "person": ("person", "hair colour and style, face, build, and clothing type and colour"),
+    "animal": ("animal", "species, markings, coat, and build"),
+    "object": ("object", "shape, material, colour, and any markings"),
+    "environment": ("place", "architecture, furnishing, materials, and lighting"),
+    "clothing": ("garment", "cut, colour, material, and fastenings"),
+    "prop": ("prop", "shape, material, colour, and signs of wear"),
+    "interface": ("interface", "layout, typography, iconography, and colour"),
+    "effect": ("visual effect", "shape, colour, motion, and how it interacts with the scene"),
+    "style": ("visual style", "palette, contrast, grain, and grade"),
+    "action": ("action", "the movement, its timing, and the body mechanics"),
+    "expression": ("facial expression", "the eyes, mouth, and what it conveys"),
+    "pose": ("pose", "posture, limb placement, and weight distribution"),
+}
+
+
+def analyze_prompt(kind):
+    """Ask the vision model for the slot's two sentences, in labelled lines.
+
+    Two answers, not one: `DESCRIPTION` becomes the `<Subject N>` definition and
+    `RETAINED` becomes its retention_analysis line. They are different sentences in
+    different sections — one says what the thing is, the other says what has to survive
+    into the generated video — and the guide's own example writes both.
+    """
+    noun, look_for = _ANALYZE_SUBJECT.get(kind or "", _ANALYZE_SUBJECT["person"])
+    return (
+        "Look at the reference image(s) of this %s and answer in exactly two lines, "
+        "using these labels and nothing else:\n"
+        "DESCRIPTION: one concise sentence naming the %s.\n"
+        "RETAINED: a short comma-separated list of the specific features that must stay "
+        "identical in a generated video.\n"
+        "Do not add any other text, headings or commentary."
+        % (noun, look_for)
+    )
 
 
 def normalize_base_url(url, fallback=""):
@@ -389,6 +507,48 @@ def _resolve_provider(data):
     return provider, base_url, model
 
 
+# Env vars tried in order when nothing else supplies a key. The pack-specific one first so
+# a cloud VLM here does not have to share a name with whatever else on the machine reads
+# OPENAI_API_KEY.
+API_KEY_ENV_VARS = ("MINIMAX_DIRECTOR_VLM_API_KEY", "OPENAI_API_KEY")
+
+
+def resolve_api_key(data=None):
+    """Find the bearer token for a cloud endpoint, without ever storing one in a workflow.
+
+    A hosted OpenAI-compatible endpoint needs authentication, and until now nothing here
+    sent any, so `custom` only ever reached a server on the local network (issue #15).
+
+    Where a key may come from, in order:
+
+    1. `api_key` in the request — the Director's gear menu, which keeps it in ComfyUI's
+       user settings. **Not** in `timeline_data`: that is serialised into the workflow
+       JSON, so a key typed there would travel with every workflow the user shares.
+    2. the environment variable named in `api_key_env` — how a node widget asks for a key
+       without carrying one, since widget values *are* saved with the workflow.
+    3. MINIMAX_DIRECTOR_VLM_API_KEY, then OPENAI_API_KEY.
+
+    Returns "" when there is nothing to send, which is the normal case for local Ollama
+    and LM Studio.
+    """
+    data = data or {}
+    key = (data.get("api_key") or "").strip()
+    if key:
+        return key
+    named = (data.get("api_key_env") or "").strip()
+    for var in ([named] if named else []) + list(API_KEY_ENV_VARS):
+        value = (os.environ.get(var) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _auth_headers(api_key):
+    """Bearer header, or nothing at all — an empty Authorization is worse than none."""
+    key = (api_key or "").strip()
+    return {"Authorization": "Bearer %s" % key} if key else None
+
+
 class VLMError(RuntimeError):
     """A VLM round-trip that failed with a message worth showing the user verbatim."""
 
@@ -405,7 +565,8 @@ def strip_thinking(text):
 
 
 async def vlm_generate(images_b64, prompt, provider, base_url, model,
-                       system_prompt=None, timeout=120, keep_alive=0, max_tokens=None):
+                       system_prompt=None, timeout=120, keep_alive=0, max_tokens=None,
+                       api_key=None):
     """One vision-model round-trip, shared by the Analyze endpoint and the Enhance node.
 
     Kept provider-shaped rather than generic on purpose: Ollama takes raw base64 in an
@@ -414,6 +575,9 @@ async def vlm_generate(images_b64, prompt, provider, base_url, model,
 
     `keep_alive=0` makes Ollama drop the model right after answering, so it is not still
     holding VRAM when H3 starts sampling.
+
+    `api_key` goes out as a bearer token on both paths — hosted Ollama and reverse proxies
+    in front of a local server want one too, and an absent key sends no header at all.
 
     Raises VLMError with a user-facing message; returns the answer with any thinking
     preamble removed.
@@ -424,8 +588,10 @@ async def vlm_generate(images_b64, prompt, provider, base_url, model,
         raise VLMError("No model name set for %s. Enter the name of the model you have "
                        "loaded there." % provider)
 
+    headers = _auth_headers(api_key)
+
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers=headers) as session:
             if provider == "ollama":
                 payload = {"model": model, "prompt": prompt, "images": images_b64,
                            "stream": False, "keep_alive": keep_alive,
@@ -458,6 +624,15 @@ async def vlm_generate(images_b64, prompt, provider, base_url, model,
                            "stream": False}
                 async with session.post("%s/v1/chat/completions" % base_url, json=payload,
                                         timeout=timeout) as response:
+                    if response.status in (401, 403):
+                        # the one HTTP status worth naming: the fix is somewhere else
+                        # entirely, and the endpoint's own body rarely says where
+                        raise VLMError(
+                            "%s refused the request (HTTP %s)%s. Set an API key in the "
+                            "Analyze settings, or put one in the %s environment variable."
+                            % (provider, response.status,
+                               "" if headers else " and no API key was sent",
+                               API_KEY_ENV_VARS[0]))
                     if response.status != 200:
                         raise VLMError("%s HTTP %s: %s" % (provider, response.status, await response.text()))
                     resp_json = await response.json()
@@ -489,10 +664,13 @@ async def vlm_generate(images_b64, prompt, provider, base_url, model,
 @PromptServer.instance.routes.post("/minimax_director/analyze_character")
 async def analyze_character_endpoint(request):
     try:
+        from . import minimax_plan as plan
         data = await request.json()
         image_b64 = data.get("image_b64", "")
         char_index = int(data.get("char_index", 0))
+        kind = plan.sanitize_kind(data.get("kind"))
         provider, base_url, model_name = _resolve_provider(data)
+        api_key = resolve_api_key(data)
 
         if provider == "off":
             return web.json_response({"status": "error", "message": "Analyze is set to Off / Manual."})
@@ -504,22 +682,26 @@ async def analyze_character_endpoint(request):
         if not cleaned:
             return web.json_response({"status": "error", "message": "No valid base64 images decoded."})
 
-        log.info("[MiniMaxDirector] Analyzing Character %d via %s (%s, model '%s')...",
-                 char_index + 1, provider, base_url, model_name)
+        # the key itself is never logged, only whether one is going out
+        log.info("[MiniMaxDirector] Analyzing reference slot %d (%s) via %s (%s, model "
+                 "'%s'%s)...", char_index + 1, kind, provider, base_url, model_name,
+                 ", authenticated" if api_key else "")
         try:
-            generated_text = await vlm_generate(cleaned, _ANALYZE_PROMPT, provider,
-                                                base_url, model_name)
+            generated_text = await vlm_generate(cleaned, analyze_prompt(kind), provider,
+                                                base_url, model_name, api_key=api_key)
         except VLMError as e:
             return web.json_response({"status": "error", "message": str(e)})
 
+        description, retained = plan.split_analysis(generated_text)
         log.info("[MiniMaxDirector] Analysis complete: %s", generated_text)
-        return web.json_response({"status": "success", "description": generated_text})
+        return web.json_response({"status": "success", "description": description,
+                                  "retention_note": retained})
     except Exception as e:
         log.error("[MiniMaxDirector] Failed to analyze character: %s", e)
         return web.json_response({"status": "error", "message": str(e)}, status=500)
 
 
-async def unload_model(provider, base_url, model):
+async def unload_model(provider, base_url, model, api_key=None):
     """Evict the model from VRAM. Never raises — freeing memory must not fail a render.
 
     Two servers can be asked, by two different protocols:
@@ -533,6 +715,9 @@ async def unload_model(provider, base_url, model):
       `--sleep-idle-seconds`, which nothing here can set remotely.
 
     LM Studio manages residency itself and exposes no unload over HTTP.
+
+    `api_key` is carried through for the same reason the generate call carries it: a
+    server that needs a bearer token to answer needs one to be told to unload as well.
     """
     if not model:
         return False
@@ -541,9 +726,11 @@ async def unload_model(provider, base_url, model):
     except Exception:
         return False
 
+    headers = _auth_headers(api_key)
+
     if provider == "ollama":
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=headers) as session:
                 async with session.post("%s/api/generate" % base_url,
                                         json={"model": model, "keep_alive": 0},
                                         timeout=10) as response:
@@ -557,7 +744,7 @@ async def unload_model(provider, base_url, model):
     # Anything else: try the llama.cpp router, and say plainly when it is not there rather
     # than leaving a checkbox that quietly does nothing (issue #9).
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers=headers) as session:
             async with session.post("%s/models/unload" % base_url,
                                     json={"model": model}, timeout=10) as response:
                 body = await response.text()
@@ -592,7 +779,7 @@ async def unload_ollama_endpoint(request):
         provider, base_url, model_name = _resolve_provider(data)
         # one code path for every provider, so the gear menu and the Enhance node cannot
         # disagree about what "unload" means
-        freed = await unload_model(provider, base_url, model_name)
+        freed = await unload_model(provider, base_url, model_name, resolve_api_key(data))
         return web.json_response({
             "status": "ok", "provider": provider, "released": freed,
             "note": "" if freed else "server exposes no unload — give it its own idle timeout",
@@ -791,6 +978,17 @@ def resize_image(tensor: torch.Tensor, target_w: int, target_h: int,
     def snap(val, div):
         return max(div, (int(val) // div) * div)
 
+    def scaled(edge, ratio):
+        # Round, don't truncate. A ratio that is exact in arithmetic comes back a hair under
+        # its integer in floating point — 704 * (480 / 704) is 479.99999999999994 — and
+        # int() then throws a whole pixel away. That pixel is not cosmetic: in the
+        # cover-crop below it made `new_w` one short of the target, so the centre slice ran
+        # from -1 and yielded a 1px-wide image (a 704x1408 timeline image fitted to 480x640
+        # reached the Director's canvas guard as "the canvas came out 1x640"). In the
+        # aspect-preserving branches it cost a whole 32-block: a 1920x1080 image in a 1024
+        # box snapped to 992x544 instead of the 1024x576 this module's caller documents.
+        return int(round(edge * ratio))
+
     tw, th = snap(target_w, divisible_by), snap(target_h, divisible_by)
     N, H, W, C = tensor.shape
     if H == th and W == tw:
@@ -800,11 +998,13 @@ def resize_image(tensor: torch.Tensor, target_w: int, target_h: int,
 
     if method == "maintain aspect ratio":
         ratio = min(tw / W, th / H)
-        out = F.interpolate(t, size=(snap(int(H * ratio), divisible_by), snap(int(W * ratio), divisible_by)),
+        out = F.interpolate(t, size=(snap(scaled(H, ratio), divisible_by), snap(scaled(W, ratio), divisible_by)),
                             mode="bilinear", align_corners=False)
     elif method in ("pad", "pad green"):
         ratio = min(tw / W, th / H)
-        new_w, new_h = snap(int(W * ratio), divisible_by), snap(int(H * ratio), divisible_by)
+        # min() with the box: the inner image is padded up to it, so an edge that came out
+        # even a pixel over would turn F.pad's padding negative and crop instead.
+        new_w, new_h = snap(min(tw, scaled(W, ratio)), divisible_by), snap(min(th, scaled(H, ratio)), divisible_by)
         inner = F.interpolate(t, size=(new_h, new_w), mode="bilinear", align_corners=False)
         pad_l, pad_t = (tw - new_w) // 2, (th - new_h) // 2
         if method == "pad green":
@@ -816,7 +1016,9 @@ def resize_image(tensor: torch.Tensor, target_w: int, target_h: int,
                         mode="constant", value=0)
     elif method == "crop":
         ratio = max(tw / W, th / H)
-        new_w, new_h = int(W * ratio), int(H * ratio)
+        # max() with the box: a cover has to be at least the size it is covering, so the
+        # centre slice below cannot start at a negative offset whatever the arithmetic does.
+        new_w, new_h = max(tw, scaled(W, ratio)), max(th, scaled(H, ratio))
         inner = F.interpolate(t, size=(new_h, new_w), mode="bilinear", align_corners=False)
         left, top = (new_w - tw) // 2, (new_h - th) // 2
         out = inner[:, :, top:top + th, left:left + tw]

@@ -1,47 +1,51 @@
-# ComfyUI MiniMax H3 Director — Extended
+# ComfyUI MiniMax H3 Director — MV fork
 
-> ### A fork of [**ComfyUI MiniMax H3 Director**](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director) — genuinely excellent work.
+> ### A fork of [**ComfyUI MiniMax H3 Director**](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director) by **seesee75-commits** — genuinely excellent work.
 >
-> That node — by **seesee75-commits**, itself a port of **WhatDreamsCost**'s [LTX Director](https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyUI) — is the entire foundation here: the timeline, the storyboard compiler, the live prompt preview. **Go star the original.** This fork keeps all of it and pushes hard on long-form video, the reference system, and dialogue. The [original documentation](#-original-readme) below still applies in full.
+> That node is the entire foundation here: the timeline, the storyboard compiler, the live
+> prompt preview, typed references, dialogue, audio roles. **Go star the original.** This fork
+> stays *aligned* with it and rebases onto upstream releases — it adds a **long-form rendering
+> path** (chaining past H3's ~15s ceiling in one node, two-phase GPU decode, audio-seam
+> handling, a saveable gen-log). The [original documentation](#-original-readme) below applies
+> in full.
 
 **A timeline editor for [MiniMax H3](https://huggingface.co/Comfy-Org/MiniMax-H3) inside ComfyUI.**
 Drag images, videos and music onto tracks, trim them on a ruler, write a prompt per shot,
-press Run — a storyboard instead of one prompt box, with the exact model prompt visible as
-you edit.
+press Run. Instead of one prompt box for a whole clip you get a storyboard — and you can
+see the exact prompt the model will receive while you are still editing it.
 
 [![license](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-%E2%89%A5%200.30.0-1a1a1a)](https://github.com/comfyanonymous/ComfyUI)
-[![fork](https://img.shields.io/badge/fork-Extended-brightgreen)](CUSTOM_ADDITIONS.md)
+[![fork](https://img.shields.io/badge/fork-MV%20%E2%80%A2%20on%200.2.2-brightgreen)](CUSTOM_ADDITIONS.md)
 
 ![The MiniMax H3 Director node](docs/images/director-node.png)
+
+<!-- TODO: demo video -->
 
 ---
 
 ## What this fork adds
 
-Full detail in [**CUSTOM_ADDITIONS.md**](CUSTOM_ADDITIONS.md). The headlines:
+Full detail — and honest credit for what's upstream's — in
+[**CUSTOM_ADDITIONS.md**](CUSTOM_ADDITIONS.md). The headlines:
 
-- **Long-form in one node.** Wire a `sampler` + `sigmas` and the Director renders *past H3's
-  ~15s ceiling* on a single timeline, as evenly-split anchored windows — no second node, no
-  JSON copy-paste. Your LoRAs and turbo schedule stay on the wire and apply to every window.
-- **Two-phase decode.** Sampling and the heavy VAE decode are separated — anchor-frame decode
-  in the loop, full decode once the DiT is freed — so long renders stay on the GPU instead of
-  spilling to CPU and OOM-freezing the machine.
-- **Seam handling.** 12 ms equal-power audio de-click, per-window audio-reference slicing, a
-  length-matched `combined_audio` output, and amber **seam markers** on the timeline that
-  segment edges snap to — so cuts land exactly on a window join.
-- **Typed references.** Every reference slot is *Character / Animal / Object / Scene / Style*,
-  and the `subject_definitions` line matches the type **and finally uses your description.**
-- **Per-shot dialogue.** A dialogue section per shot (time · speaker · language · line) compiles
-  to H3's own `<Subject N> (SN) says, <d>[Language] …</d>`, with ♪ markers on the timeline and
-  hover-sync between markers and the editor rows.
-- **Audio roles.** *Voice / Background Music / Ambient* — each written as its own `<Audio N>`
-  definition instead of assuming every clip is a voice.
-- **Gen-log output.** The `prompt` output is a full, saveable record — storyboard, timings,
-  every reference filename, audio prompts, and a per-window breakdown.
-- **UI & robustness.** Zoom no longer blanks on long timelines, zoom controls sit under the
-  timeline, dropping a long song no longer balloons the render duration, sub-frame prompt-bleed
-  at seams is eliminated, and a front-end performance pass.
+- **Long-form in one node, two ways.** Wire a `sampler` + `sigmas` and the Director renders
+  *past H3's ~15s ceiling* on a single timeline — as anchored windows (`chained`) or as one
+  co-denoised latent with no stitch (`seamless`). No second node, no JSON copy-paste. Your
+  LoRAs and turbo schedule stay on the wire and apply to every window.
+- **Two-phase decode.** Anchor-frame decode in the loop, full VAE decode once the DiT is freed
+  — long renders stay on the GPU instead of spilling to CPU and OOM-freezing the machine.
+- **Audio-seam handling.** A `seam_audio` choice at every window join — full-overlap aligned
+  crossfade (default), a fixed ~12 ms equal-power de-click, or a hard cut — plus per-window
+  audio-reference slicing, the duplicate seam frame dropped, and a length-matched
+  `combined_audio` output.
+- **Gen-log output.** In chaining mode the `prompt` output is a full, saveable record —
+  shared context once, then each window's exact compiled prompt.
+- **UI robustness.** Zoom no longer blanks on long timelines, dropping a long song no longer
+  balloons the render duration, and clicking a shot flashes its prompt field.
+
+Everything else — typed references, dialogue, audio roles, the compiled-prompt structure — is
+**upstream's**, adopted as-is.
 
 > **Deploy after updating:** restart ComfyUI (backend) **and** hard-refresh the browser
 > (frontend). If a node on the canvas looks stale after the input/output changes, right-click →
@@ -49,10 +53,16 @@ Full detail in [**CUSTOM_ADDITIONS.md**](CUSTOM_ADDITIONS.md). The headlines:
 
 ---
 
+> This is the [LTX Director](https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyUI)
+> timeline editor by **WhatDreamsCost**, ported to MiniMax H3 by seesee75-commits. See
+> [Credits](#credits).
+
+---
+
 ## <a id="-original-readme"></a>📖 Original documentation
 
-Everything below is the upstream README — installation, usage, prompt format, retakes, the lot —
-and all of it still applies to this fork.
+Everything below is the upstream README — installation, usage, prompt format, retakes, the lot
+— and all of it still applies to this fork.
 
 ---
 
@@ -70,6 +80,7 @@ and all of it still applies to this fork.
 - [Writing it yourself](#writing-it-yourself)
 - [Live preview while sampling](#live-preview-while-sampling)
 - [Writing the prompt for you](#writing-the-prompt-for-you)
+- [Keeping the last frame](#keeping-the-last-frame)
 - [Retake Mode](#retake-mode)
 - [Longer than 15 seconds](#longer-than-15-seconds)
 - [Troubleshooting](#troubleshooting)
@@ -82,9 +93,36 @@ and all of it still applies to this fork.
 
 ## News
 
-**0.1.6** · 2026-08-10 — the compiled prompt can be written by hand and reverted, subject
-slots go from 1 to 9, an audio clip can name whose voice it is, and the live preview lets
-you choose between true speed and the shot's own frame rate.
+**0.2.2** · 2026-08-16 — a **spoken line stays where it was written** instead of being
+appended to the end of its shot, so first appearance and `(Sx)` follow one order, and a
+voice reference's declaration ends on the speaker ID the guide reuses. The resolution panel
+carries a preset for every aspect ratio in H3's envelope, in both orientations and two size
+tiers, or takes a ratio and a megapixel budget and works the canvas out for you — and a
+cover-cropped timeline image can no longer collapse the canvas to one pixel. New node:
+**Save Last Frame**, which writes the last frame of a batch and passes the batch on
+untouched.
+
+**0.2.1** · 2026-08-16 — **width and height can be wired in** from a resolution node, as
+connection-only inputs beside `start` / `end` / `duration`. The **Analyze** button can now
+reach a cloud endpoint: there is an API-key field, kept in ComfyUI's settings and never in
+your workflow. A subject description written for `@ref1` reaches the prompt in the
+**ComfyUI** prompt format too, where it used to be dropped. And **4–15 s is the trained
+range, not a limit** — longer renders work, they just leave the envelope the model card
+describes.
+
+**0.2.0** · 2026-08-16 — full reference mode. A reference is no longer always a character
+and no longer always followed exactly: subject slots carry a **kind** (scene, prop, style,
+…) and every reference carries a **retention marker** from `fully_preserved` to
+`weak_reference`, plus a box to write the sentence that follows it in your own words.
+Timeline images can be frame anchors, storyboard references, or subject-defining images
+that get no `<Picture>` entry at all. Prompts gain a `summary` section with a derived
+`[task type]` prefix, and `retention_analysis` uses the guide's own line format. Dialogue
+written as `@ref1 says: …` is given speaker IDs and `<d>` tags for you. The reference panel
+resizes, with the extra height going to the image previews.
+
+**0.1.6** · 2026-08-10 — the compiled prompt can be written by hand and reverted, images on
+the `ref_images` wire can be described, an audio clip can name whose voice it is, and the
+live preview lets you choose between true speed and the shot's own frame rate.
 
 **0.1.5** · 2026-08-06 — picture notes in `Refs ON` now use the reference guide's own
 phrasing for frame anchors: `[Shot 1] begins from <Picture 1>`, `ends on`, and
@@ -126,7 +164,7 @@ can read it before you spend a render on it.
 
 ## What you get
 
-Four nodes, category **MiniMax H3**:
+Five nodes, category **MiniMax H3**:
 
 | Node | What it does |
 |---|---|
@@ -134,12 +172,13 @@ Four nodes, category **MiniMax H3**:
 | **MiniMax H3 Preview Override** | Watch the whole shot denoise, not a single frozen frame. |
 | **MiniMax H3 Retake Stitch** | Splices a regenerated range back into the base video. |
 | **MiniMax H3 Enhance Prompt** | A local vision model writes the prompt from your reference images. |
+| **MiniMax H3 Save Last Frame** | Saves the last frame of a batch and passes the batch on unchanged. |
 
 Editing features carried over from LTX Director: main track, reference-video track, audio
 track, ruler in seconds or frames, drag / resize / copy / paste, prompt zones per segment,
 waveform preview, filename labels, gear menu, workspace folder, chunked upload for large
-videos, drag-and-drop straight onto the node, and the `@char1` / `@char2` / `@char3`
-character slots including the optional local VLM "Analyze" button (Ollama / LM Studio /
+videos, drag-and-drop straight onto the node, and the `@ref1` … `@ref9` subject
+slots including the optional local VLM "Analyze" button (Ollama / LM Studio /
 any OpenAI-compatible endpoint) with automatic VRAM release before a run.
 
 ## Requirements
@@ -164,7 +203,7 @@ any OpenAI-compatible endpoint) with automatic VRAM release before a run.
 Not listed yet? Use **Manager → Install via Git URL** and paste:
 
 ```
-https://github.com/vomitselfie/ComfyUI-MiniMaxH3-Director-Extended
+https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director
 ```
 
 ### Manual
@@ -173,7 +212,7 @@ Clone into your `custom_nodes` folder and restart:
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/vomitselfie/ComfyUI-MiniMaxH3-Director-Extended
+git clone https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director
 ```
 
 On the Windows portable build the folder is
@@ -217,7 +256,7 @@ ComfyUI/models/
 | Toolbar switch | Checkpoint | Use it for |
 |---|---|---|
 | **Refs OFF** | `minimax_h3_fl2va_*` | text→video, and first/last keyframes from the timeline |
-| **Refs ON** | `minimax_h3_ref2va_*` | character slots, reference images, reference videos, reference audio |
+| **Refs ON** | `minimax_h3_ref2va_*` | subject slots, reference images, reference videos, reference audio |
 
 Connect both to the Director's two model inputs and the toolbar switch picks the right
 one. Connecting only one is fine — the node warns rather than silently using the wrong path.
@@ -241,8 +280,13 @@ Other quantisations on the repo work too: `*_bf16` (66 GB, best quality),
 5. **Run.**
 
 Read the **COMPILED PROMPT** panel under the timeline before running: it shows the exact
-text the model will get, the shot count, the frame count and the reference tally, plus
-warnings for the things that silently bite.
+text the model will get, the shot count, the frame count, the reference tally and the
+`detailed_description` word count, plus warnings for the things that silently bite.
+
+The word count is there because the guide suggests **350–500 words** for generation tasks,
+which is more than most people write. It is a figure, not a verdict — being under it is
+perfectly normal for a short clip, and the guide itself warns against "mechanical
+word-count adherence". Only going *past* 500 raises a warning.
 
 Defaults that matter, if you wire it yourself:
 
@@ -276,6 +320,29 @@ readable; open them if you want to change sampler, scheduler or steps.
 | **Main** | prompt zones | `[Shot N]` entries with timestamps |
 | **Reference video** | video clips | `<Video k>` motion/style references |
 | **Audio** | music, SFX | `<Audio j>` reference and/or the muxed soundtrack |
+| **Subject slots** | images | `<Subject N>` definitions — people, scenes, props, styles |
+
+### Driving it from other nodes
+
+The settings panel owns the canvas and the window, and hides the widgets behind them so
+there is one place to look. Five sockets exist for the cases where another node should
+decide instead — they are **connection-only**, so they take up no space until you wire
+something to one:
+
+| Input | Unit | Replaces |
+|---|---|---|
+| `width`, `height` | pixels | the panel's Width / Height |
+| `start`, `end` | seconds | the panel's window start and end |
+| `duration` | seconds | the panel's Duration |
+
+Wire a resolution node — `Resolution Selector`, an `Empty Latent` sidecar, anything that
+outputs two integers — into `width` and `height` and the panel's own fields step aside.
+Leave them unconnected and nothing changes.
+
+A wire carries no minimum, and a node whose value was never set hands over **0**. Zero
+pixels and zero seconds are refused by name rather than passed on, because what they break
+breaks a long way from the wire that caused it. If you want the canvas derived from the
+first image, leave the sockets alone — that is what the panel's `0` already means.
 
 ### Reference limits
 
@@ -284,44 +351,360 @@ These are enforced, with a warning naming exactly what was dropped:
 
 | Limit | Value |
 |---|---|
-| Reference images | ≤ 9 — the three character slots *and* the `ref_images` input share this pool |
+| Reference images | ≤ 9 — the subject slots *and* the `ref_images` input share this pool |
 | Reference videos | ≤ 3 clips, each 2–15 s, **≤ 15 s total** |
 | Reference audio | ≤ 3 clips |
 | **All types together** | **≤ 12 files** |
 
-Output envelope: 4–15 s at 24 fps. Aspect ratios 21:9, 16:9, 4:3, 1:1, 3:4, 9:16.
+Output envelope: 4–15 s at 24 fps — the range H3 was trained on, and **not** a limit this
+pack enforces; see [Longer than 15 seconds](#longer-than-15-seconds). Aspect ratios 21:9,
+16:9, 4:3, 1:1, 3:4, 9:16.
+
+**About "2K".** The model card's 2K does not come from these weights. It comes from
+`H3-Regenerate-2K`, a separate in-context regeneration pass, and MiniMax says of it: "this
+module is not yet open-sourced. We will release it once it is ready." The base model's
+canvas is a 768 px short edge. The `1920×1088` preset is therefore labelled *past native*
+— it renders, at real cost in time, outside the canvas the model knows.
+
+### Picking the canvas
+
+Every ratio in that envelope is a **Preset**, in both orientations, at two sizes:
+
+| Ratio | Native | Fast |
+|---|---|---|
+| 21:9 | 1344×576 | 1120×480 |
+| 2:1 | 1344×672 | 960×480 |
+| 16:9 | 1344×768 | 864×480 |
+| 3:2 | 1152×768 | 736×480 |
+| 4:3 | 1024×768 | 640×480 |
+| 5:4 | 960×768 | 608×480 |
+| 1:1 | 992×992 | 640×640 |
+| 4:5 | 768×960 | 480×608 |
+| 3:4 | 768×1024 | 480×640 |
+| 2:3 | 768×1152 | 480×736 |
+| 9:16 | 768×1344 | 480×864 |
+| 1:2 | 672×1344 | 480×960 |
+| 9:21 | 576×1344 | 480×1120 |
+
+**Native** keeps H3's 768 px short edge, and holds the long edge at 1344 for the two widest
+ratios, letting the short edge give way instead. That 1344 is this table's own ceiling, not
+a rule of the model's: H3's canvas policy is a 768 short edge and an **area** cap of
+768×1344, so at 21:9 the model itself would go to 1536×672 and the preset's 1344×576 spends
+a quarter less canvas than it is allowed. Deliberately — a preset should be the safe answer.
+Reach for **Aspect / MP** when you want the whole budget at a wide ratio.
+
+**Fast** is the same list at a 480 px short edge — 1:1 aside, which stays area-matched to
+the rest of its tier rather than dropping to 480×480. Every edge is a multiple of 32 — H3's
+own step, and what `divisible_by` defaults to — so a preset is never quietly floored to
+something else on the way in.
+
+One entry sits under its own **Past native** heading: `16:9 — 1920×1088`, which renders
+outside the canvas the model knows and is named for that rather than for a 2K module that is
+not here. It costs time and memory in proportion; everything above it does not.
+
+**Aspect / MP** is the same question from the other end: name a shape and a pixel budget in
+megapixels, and Width and Height are filled with the best pair of /32 edges that holds the
+ratio. Holding the ratio outweighs hitting the budget exactly, and overshooting the budget
+counts against a fit twice as hard as undershooting it, because memory is what a budget is
+protecting — 16:9 at 1.03 MP lands on H3's own 1344×768 rather than the 1376×768 that is
+closer to true 16:9 and 2.6% more canvas. Either box works on its own: a budget with no ratio
+picked rescales the shape already in the boxes, and a ratio with an empty budget uses the
+native 1.03 MP. The MP box shows what the edges came to, not what was asked for.
+
+Typing Width and Height by hand still works — both menus follow along, and read `—` for a
+shape the ratio list does not name. Leave both at 0 and the canvas comes from the first
+timeline image instead, through H3's own policy: 768 short edge, 768×1344 area cap, per-axis
+round to 32.
+
+### When a reference video runs you out of memory
+
+A reference video is the most expensive thing you can put on the timeline. Its frames are
+VAE-encoded **whole**, and the resulting latents then ride through every sampling step — so
+cost scales with frames × width × height, and a long or large clip is the usual cause of an
+OOM render.
+
+Select the clip on the reference-video track and the properties panel gives you the three
+numbers that matter:
+
+| Field | Effect |
+|---|---|
+| **start** | First frame taken from the source. Lets you use the interesting middle of a clip without paying for the run-up. |
+| **frames** | How many frames are encoded — linear on memory. At 24 fps this is also the clip's length, so the panel shows the seconds beside it and flags the model card's 2–15 s window. |
+| **size** | Short edge it is decoded at. **The biggest lever**: memory goes with the square, so 384 costs about a quarter of 768. |
+
+Rough figures for a 5 s output (124 frames), pixel data alone, before VAE activations:
+
+| size | per frame | 124 frames |
+|---|---|---|
+| 768 (default) | 1.03 MP | ~1.5 GB |
+| 512 | 0.46 MP | ~683 MB |
+| 384 | 0.26 MP | ~384 MB |
+| 256 | 0.11 MP | ~171 MB |
+
+Try **size** first — a `<Video k>` contributes movement and camera work, which survives a
+lower resolution far better than a character's face would. Nothing changes unless you turn
+it down; the default is exactly what the node used before.
+
+**Do not** expect a lower frame rate to help: H3 reads reference video at 24 fps and stamps
+its own timestamps on that basis, so feeding it fewer frames per second would tell the
+model the motion is faster than it is. Frames and duration are the same dial.
+
+**Video formats**: anything your ComfyUI can decode. The editor previews a reference video
+in the browser, which is fussier than the renderer — HEVC, ProRes and 10-bit footage inside
+an ordinary `.mp4` or `.mov` are commonly refused. When that happens the server reads the
+file instead and the clip lands on the track as usual; you may lose the filmstrip preview,
+never the clip. If the server cannot read it either, you get a message saying so.
 
 Anything you drop on a track is uploaded to `ComfyUI/input/whatdreamscost/`. That is the
 same folder LTX Director uses, deliberately — if you run both, assets and saved timelines
 carry over between them.
 
-### Character slots and the Analyze button
+### Subject slots and the Analyze button
 
-Drop a face or a full-body shot into `@char1` … `@char3` and write `@char1` in a prompt;
-it expands to `<Subject 1>` (MiniMax notation) or `<Picture 1>` (ComfyUI notation) and the
-image is attached as a reference. This is the **Refs ON (ref2va)** path.
+Drop an image into a slot and write `@ref1` in a prompt; it expands to `<Subject 1>`
+(MiniMax notation) or `<Picture 1>` (ComfyUI notation) and the image is attached as a
+reference. This is the **Refs ON (ref2va)** path. `@char1` … `@char3` still work, so
+prompts written against the old three-slot panel keep resolving.
 
-**How many slots is up to you** — the stepper next to them goes from 1 to 9, starting at 3.
-Each slot holds two images, and H3 takes nine reference images in total, so nine slots is
-where it stops being useful rather than where the model gives up.
+A slot is **not** only for characters. The reference guide defines `<Subject N>` as any
+reusable visible content — "people, animals, or objects; scenes, backgrounds, or
+environments; clothing, props, interfaces, or visual effects; styles, actions,
+expressions, or poses" — so each slot carries a **kind** telling the prompt what it is:
+
+| Control | What it does |
+|---|---|
+| **kind** | Supplies the noun in `<Subject N> is the environment shown in <Picture 1>.` A typed description replaces it entirely. |
+| **retention** | How closely to follow it. Written into `retention_analysis` verbatim. |
+
+Slots start at three and a new empty one appears as you fill them, up to the nine-image
+cap.
+
+**A subject does not need an image.** On the **Refs OFF (fl2va)** path H3 is sent no
+reference images at all, so `references/base-en.txt` has no `subject_definitions` section
+to declare one in — a subject there is prose, "established when a speaker first appears"
+inside `integrated_multimodal_description` and referred to consistently after that. That
+is exactly what a slot with a description and no image does: `@ref1` drops the description
+in where the tag sits.
+
+Which is why the slot has a second box on that path:
+
+| Box | Becomes |
+|---|---|
+| **describes** | the full identity, written where the subject first appears |
+| **called** | what to call it at every mention after that |
+
+```
+@ref1 places a fresh loaf on the counter.
+@ref1 says: First batch of the morning.
+```
+```
+[Shot 1] a middle-aged baker with a calm, slightly raspy voice places a fresh loaf on the
+counter. the baker (S1) says, <d>[English] First batch of the morning.</d>
+```
+
+First means first in the finished video, across the global block and every shot in order,
+prose before dialogue — so a subject introduced by its own spoken line is named in full
+there and abbreviated afterwards. Leave **called** empty and the description is repeated
+at every mention, which is what timelines written before this field did.
+
+The same applies with references **on** to a slot that has a description but no image:
+without a picture there is no `<Subject 1>` to name it by, so the prose carries it. A slot
+that does have a picture ignores **called** — `<Subject 1>` is already a stable handle
+that survives every cut.
+
+Images left in a slot on the fl2va path are kept, so switching the toolbar back costs you
+nothing, but they are dimmed and the prompt panel says they are not being sent.
+
+### How closely a reference is followed
+
+Every reference carries a **retention marker** — the guide's term for "exactly or
+loosely". These are fixed English values written straight into the prompt, so the
+dropdowns show them under their own names rather than friendlier ones:
+
+| Marker | Meaning |
+|---|---|
+| `fully_preserved` | The defined role of the referenced content is fully preserved |
+| `partially_preserved` | Still used, but some defined characteristics change |
+| `attribute_transfer` | Its characteristics move onto a different target subject |
+| `weak_reference` | Broad similarity in style, category, composition or atmosphere only |
+
+Audio has its own set, because copying a signal and imitating one are different jobs:
+`fully_copy`, `partially_copy`, `reference`, `weak_reference`.
+
+Right-click any reference — a timeline image, a reference video, an audio clip — to set
+its marker. Subject slots have theirs in the panel.
+
+### Saying what is retained
+
+The marker is only half the line. After it comes a sentence naming what actually has to
+survive, and the guide's own example is specific rather than generic:
+
+```
+<Subject 2> (appears in [Shot 1], [Shot 2]): fully_preserved - the Samoyed's thick white
+fur, pointed ears, dark nose, and curved tail are retained.
+```
+
+Every reference has boxes for exactly that — up to two, one per section of the prompt it
+feeds:
+
+| Box | Becomes |
+|---|---|
+| **describes** | the reference's line in `subject_definitions` — what the thing *is* |
+| **retained** | the sentence after the marker in `retention_analysis` — what must *survive* |
+
+Subject slots carry both in the panel. Timeline images, reference videos and audio clips
+carry theirs in the properties panel when selected. Leave either empty and a sentence is
+generated instead — the boxes are overrides, never obligations.
+
+**describes** is what lets you write relationships the timeline cannot work out — anything
+beyond what the panel's own fields already state:
+
+```
+<Audio 1> is the gravel in his voice and nothing else about the take.
+```
+
+Type the part after `is` — the label is added for you, so it cannot come out wrong or
+doubled. Paste a whole line that already starts with its label and it is taken as written.
+
+One such relationship has its own control rather than a box: an audio clip's **Voice of**
+picks a subject, and the declaration becomes the guide's `<Audio 1> is the voice-timbre
+reference for <Subject 1> (S1).` A **describes** line still wins over it, for when the
+binding is not the whole story.
+
+Frame anchors and storyboard references are the one exception: they have **retained**
+alone. Their declaration states where the image sits in the video (`<Picture 2> is the
+first frame of [Shot 1].`), which the timeline already knows.
+
+### Dialogue
+
+A line in a shot prompt that **starts** with a reference tag and contains a colon is
+dialogue. Everything between the tag and the colon is how it is delivered:
+
+```
+@ref1 exclaims with light annoyance: Hey! Watch your dog!
+```
+
+becomes
+
+```
+<Subject 1> (S1) exclaims with light annoyance, <d>[English] Hey! Watch your dog!</d>
+```
+
+`(S1)` is a **speaker ID**. You never write one: they are handed out in the order people
+actually speak across the whole timeline, and the same speaker keeps the same ID at every
+later line — so a subject who talks in shots 1 and 3 is `(S1)` in both. They are also kept
+out of `retention_analysis`, which the guide forbids; type one into a **retained** box and
+the preview says so.
+
+| Write | For |
+|---|---|
+| `@ref1 says: …` | a subject from the panel — the delivery defaults to `says` |
+| `@ref1 [French] murmure: …` | another language; `[English]` is assumed |
+| `@voice(a low male narrator) says: …` | someone with no panel slot. Reuse the same description and they keep one ID |
+| `@audio2: …` | words carried by a reused track. Names `<Audio 2>` as the source and gets **no** speaker ID, per the guide |
+
+Only a line that *starts* with a tag counts, so prose that merely mentions `@ref1` or
+contains a colon is left alone — the same rule the `Audio:` / `Music:` lines follow. A shot
+whose only content is a spoken line is still a numbered shot.
+
+**The colon is what makes it dialogue**, and quotes are not a substitute:
+
+```
+@ref1 says "hello sir"   →  <Subject 1> says "hello sir".            prose
+@ref1 says: hello sir    →  <Subject 1> (S1) says, <d>[English] hello sir</d>
+```
+
+The first line reaches the model as narration — no speaker ID, no `<d>` tag, and nothing for
+an `<Audio N>` voice reference to reuse. Nothing is silently reinterpreted, because a line
+that quotes something is not always a line somebody speaks, but the preview now says when a
+line reads as dialogue and stayed prose. Dialogue also wants `@refN`: `@char1` and
+`@character1` still resolve to a subject *label* everywhere, but they do not speak, and the
+preview says that too.
+
+**A spoken line stays where you wrote it.** Dialogue is lifted out of the prompt to be
+rendered, then put back in the same place, so a line between two paragraphs stays between
+them — which is how the guide writes a shot: action, the line it motivates, then more action.
+
+```
+@ref1: before mid segment
+mid segment
+@ref1: after mid segment
+
+→ [Shot 1] a woman (S1) says, <d>[English] before mid segment</d> mid segment.
+  a woman (S1) says, <d>[English] after mid segment</d>
+```
+
+Whichever comes first in the shot — prose or a spoken line — is where the subject is named in
+full, and **called** takes over from there. `</d>` closes a tag rather than ending a sentence,
+so the next words run straight out of it with no full stop, exactly as the guide's example
+does.
+
+`<scenetrans>` and `<cutoff>`, for dialogue crossing a cut or speech that is cut short, are
+passed through untouched if you type them.
+
+### Resizing the panel
+
+The reference panel drags from the strip along its bottom edge, like the prompt and global
+prompt panels. All the extra height goes to the image previews rather than the text boxes,
+so drag it taller when you need to actually see what you are referencing. The height is
+remembered per node.
+
+### What an image is *for*
+
+The guide only gives an image its own `<Picture N>` entry when the image really is a
+frame. Right-click a timeline image to say which of the three it is:
+
+| Used as | Result |
+|---|---|
+| **frame anchor** (default) | `<Picture 2> is the first frame of [Shot 1].` — an image opens its own shot, so this is what it is unless you flag the segment as an end frame; one with no text of its own is a composition anchor instead |
+| **storyboard** | `<Picture 3> is a storyboard reference for [Shot 2], defining its viewpoint, subject placement, and shot order.` |
+| **defines a subject** | No `<Picture>` entry at all. Cited inside a `<Subject N>` line instead, exactly as the guide requires for an image that "is used only to define a character, scene, costume, or style". |
+
+A subject-only image also stops being a keyframe, so it is no longer fitted to the output
+canvas — the full reference reaches the model instead of a cropped one.
+
+**How many slots there are is yours to set** — the stepper above the panel goes from 1 to
+9, starting at 3. Each slot holds two images, and H3 takes nine reference images in total,
+so nine is where slots stop being useful rather than where the model gives up. `−` takes
+the last slot away along with whatever is in it, which is the one control here that throws
+work away; the tooltip says so.
 
 An **audio clip on the timeline can name whose voice it is**: pick a subject in the clip's
 info panel and the prompt says so in the guide's own words — `<Audio 1> is the voice-timbre
-reference for <Subject 1> (S1).` Leave it unset and the clip stays a general voice
-reference, as before.
+reference for <Subject 1> (S1).` Leave it unset and the clip stays a general voice reference.
+The speaker ID at the end is the subject's global one, so it is the *speaking* order and not
+the subject number: bind the clip to a subject who talks second and the line ends
+`<Subject 2> (S2)`. The guide is firm that this sentence "reuses the same `(Sx)` but never
+assigns a new one independently", so a subject who never speaks has no ID to reuse and the
+sentence ends on the label alone — which still says whose voice the clip is. The preview says
+when that happens, since a voice reference for someone with no line is usually a missing line
+rather than a deliberate choice.
 
-**Analyze** is optional and off the critical path. It sends the slot image to a local
-vision model and pastes back a one-line description, so `@char1` still means something in
+**Analyze** is optional and off the critical path. It sends the slot image to a vision
+model and pastes back a one-line description, so `@ref1` still means something in
 **Refs OFF** mode, where H3 gets no image at all. Nothing is installed for you and nothing
 is sent anywhere unless you press the button.
 
-To use it, run a vision model locally and point the gear menu's provider row at it:
+To use it, point the gear menu's provider row at a vision model:
 
 | Provider | Default URL | Set up |
 |---|---|---|
 | Ollama | `http://127.0.0.1:11434` | `ollama pull qwen2.5vl:7b` — any vision model works, the field is free text |
 | LM Studio | `http://127.0.0.1:1234` | load a vision model, start the local server |
-| Custom | — | any OpenAI-compatible `/v1/chat/completions` endpoint |
+| Custom | — | any OpenAI-compatible `/v1/chat/completions` endpoint, local or hosted |
+
+**Using a hosted endpoint.** Pick **Custom**, enter its base URL and model name, and put
+the key in the **API key** row that appears. Two things about where that key is kept:
+
+* it goes into **ComfyUI's own user settings** (`user/<name>/comfy.settings.json`), which
+  stay on your machine — *not* into the timeline, which is serialised into the workflow
+  JSON and would carry the key into every copy you share;
+* leave the field empty and the environment is used instead:
+  `MINIMAX_DIRECTOR_VLM_API_KEY`, then `OPENAI_API_KEY`.
+
+The same key reaches the **Enhance Prompt** node through the environment. Its widget is
+called `api_key_env` and takes the **name of a variable**, not a key — widget values *are*
+saved inside the workflow, so a key typed into one would travel with it.
 
 The node also asks the server to release the model before a render, so the VLM is not still
 in VRAM while H3 samples. Ollama takes `keep_alive: 0`; llama-server does too **in router
@@ -339,12 +722,22 @@ Gear menu → **Prompt Format**. The default is **MiniMax**, the notation from t
 `VIDEO_PROMPT_WRITING_GUIDE`:
 
 ```
-subject_definitions: <Subject 1> is the character shown in <Picture 1>.
+subject_definitions:
+<Subject 1> is a baker in a flour-dusted apron, shown in <Picture 1>.
+<Subject 2> is the environment shown in <Picture 2>.
+<Picture 3> is the first frame of [Shot 1].
 
-retention_analysis: Keep the identity, face and clothing of <Subject 1> consistent across every shot.
+summary: [keyframe completion + reference generation] The target video follows <Subject 1>
+opening the bakery.
 
-detailed_description: Live-action, cinematic. [Shot 1] the baker opens the shutters
-[Shot 2] At 00:01.500, <Subject 1> lifts the loaf onto the counter
+retention_analysis:
+<Subject 1> (appears in [Shot 1], [Shot 2]): fully_preserved - the flour-dusted apron and the wire-rimmed glasses are retained.
+<Subject 2> (appears in [Shot 1]): weak_reference - only a broad similarity to <Subject 2> in style, category, composition and atmosphere is kept.
+<Picture 3> ([Shot 1] first frame): fully_preserved - the framing and composition of <Picture 3> are retained.
+
+detailed_description: Live-action, cinematic. [Shot 1] the baker opens the shutters.
+The shot begins from <Picture 3>. [Shot 2] At 00:01.500, <Subject 1> lifts the loaf onto
+the counter
 
 overall_soundscape: street ambience, a distant tram
 non_diegetic_music: soft piano
@@ -353,9 +746,26 @@ non_diegetic_music: soft piano
 The first shot carries no timestamp; every later cut carries a strictly increasing
 `MM:SS.mmm` one. Sections appear only when there is something real to put in them.
 
-The two sound sections have their own boxes under the Global Prompt. What you type there
-goes straight into `overall_soundscape` and `non_diegetic_music`. Leave them empty and the
-sections are omitted entirely — an empty heading is worse than none.
+`summary` opens with a **task type** derived from what the references are actually used
+for — `keyframe completion`, `reference generation`, `audio reuse`, `audio reference`,
+joined with ` + `. A reference video that only supplies camera movement counts as
+`reference generation`, never `video editing`; the guide is explicit that "the mere
+presence of video or audio does not automatically create a corresponding task type". The
+gear menu's **Task Type** field overrides it, which is how you reach `video editing` and
+`video continuation` — neither of which this node has a path to produce on its own.
+
+`summary` is the reference guide's section and appears on that path only. The base guide's
+structure is closed — the alignment instruction, then three required core fields — so with
+**Refs OFF** the box is hidden rather than writing a section H3 was never trained to read
+there. Your text is kept for when the toolbar goes back.
+
+The two sound sections have their own boxes under the Global Prompt, on both paths. What
+you type there goes straight into `overall_soundscape` and `non_diegetic_music`. Both
+guides list them as required, so an empty `non_diegetic_music` is written as `N/A` — their
+own value for having none. An empty `overall_soundscape` is **not** filled in the same way:
+there `N/A` says the video was asked to be silent, which is a claim only you can make, so
+the prompt panel points the omission out instead. H3 generates the audio; leaving that
+field out hands the whole soundtrack to a guess.
 
 `Audio:` / `Sound:` / `SFX:` and `Music:` / `Score:` lines written in the prompt text are
 still lifted into the same two sections, so older workflows and the Enhance node keep
@@ -364,8 +774,13 @@ working. A filled box wins over a lifted line.
 **`<Subject N>` vs `<Picture N>`** is worth knowing: the guide reserves `<Subject N>` for
 reusable content — a person, a place, a style — and `<Picture N>` for concrete frame
 anchors. ComfyUI's tokenizer only ever labels images `<Picture i>`, so
-`subject_definitions` binds the two. That is what lets a character keep one name across
-every cut. `@char1` therefore expands to `<Subject 1>` here.
+`subject_definitions` binds the two. That is what lets a subject keep one name across
+every cut. `@ref1` therefore expands to `<Subject 1>` here.
+
+Note what that means for a subject slot's image: it is passed to the model as
+`<Picture 1>`, but it gets **no** `<Picture 1>` declaration of its own. The guide is
+explicit — an image used only to define something is cited inside its `<Subject N>` line
+instead. Only real frame and storyboard anchors are declared as pictures.
 
 **ComfyUI** switches to `[0s-1.5s] …`, the notation the ComfyUI H3 templates use. Same
 timeline, same references, only the wording changes — so it is a fair A/B.
@@ -499,6 +914,27 @@ filtered anyway, because small models do not reliably obey.
 (`unload_after`). Ollama has no per-request device selection, so to put it on a different
 card you set `CUDA_VISIBLE_DEVICES` on the Ollama *service*, not here.
 
+## Keeping the last frame
+
+**MiniMax H3 Save Last Frame** goes straight after `VAEDecode`. It writes the last frame of
+the batch as a PNG — whatever the length — and passes the whole batch on to whatever comes
+next, unchanged.
+
+That frame is the one you reach for: it is the opening keyframe of the next shot, and
+without this node getting at it means a second graph with `ImageFromBatch` wired to a
+`SaveImage`, rebuilt every time the render length changes.
+
+| Widget | |
+|---|---|
+| `save` | Off writes nothing and still passes the frames through, so the node never has to be bypassed between runs. |
+| `filename_prefix` | Under ComfyUI's output folder. The same tokens as Save Image, e.g. `%date:yyyy-MM-dd%`. |
+
+The file, the counter and the embedded workflow metadata are Save Image's own, so a frame
+saved here is a frame Save Image would have written. The IMAGE output is the same tensor
+that came in — the node cannot change what anything downstream decodes, encodes or muxes.
+
+Picking a frame other than the last one is not there yet.
+
 ## Retake Mode
 
 Load a base video, turn on **Retake Mode** in the toolbar, mark a range: the Director
@@ -513,13 +949,52 @@ across the whole thing instead of the generated one.
 
 ## Longer than 15 seconds
 
-Not solved yet. There was a **Director Chain** node that rendered a long timeline as a
-chain of anchored windows, and its sampling worked — but there was no usable way to hand
-it a timeline, so it has been withdrawn rather than shipped as a feature nobody can
-operate. The code stays in the repository; the reasoning is written down at the top of
-`minimax_chain.py`.
+**4–15 s is H3's trained range, not a cap** — but past it a single window drifts and loops,
+with render time climbing faster than the video does (attention is quadratic in sequence
+length; memory grows roughly linearly). The dependable answer is several in-range windows
+joined into one timeline, which this fork does *inside* the Director. Wire a `sampler` +
+`sigmas` and pick a `long_form_mode`:
 
-Until it returns, H3's trained range is the limit: 4-15 s per render.
+**`chained`** *(default)* — each window is sampled independently and anchored on the previous
+window's last decoded frame, then joined. Sharp per window (nothing is blended across
+windows), but a seam is a real cut: motion can hitch and the audio switches at the join.
+`seam_audio` controls that join:
+
+- `aligned` *(default)* — full-overlap equal-gain crossfade; each window's loud middle covers
+  the other's tapered edge. Best when the audio follows a continuous reference track.
+- `crossfade` — a fixed ~12 ms equal-power de-click. For independent-but-coherent takes.
+- `hard cut` — no blend, for deliberately unrelated windows.
+
+**`seamless`** — the whole clip is held as one latent and co-denoised over overlapping
+windows, averaging the overlaps every step so they converge with no stitch (temporal
+MultiDiffusion). `window_seconds` and `overlap_seconds` set the schedule. **Video comes out
+genuinely seam-free.** Audio is the open problem: audio latents can't be averaged (they decode
+to noise), so each audio-latent frame is assigned to a single window, and that hard assignment
+can still skip a beat at the boundary. Design notes in
+[`docs/SEAMLESS_LONGFORM_SPEC.md`](docs/SEAMLESS_LONGFORM_SPEC.md).
+
+Dialogue flows into both modes through the timeline — each window compiles its own time-slice,
+so a spoken line is injected wherever it falls. In `seamless`, a line sitting inside a window
+overlap is spoken by *both* windows, so the words agree across the seam even while the audio
+join itself is still being refined.
+
+**Measured** (Arch-based Linux, RTX 3090, ~52 GB RAM used): rendered up to **60 s** as
+5-second windows; at **4 steps a 60 s clip takes ~30 min**. Video holds up well at the seams;
+audio still skips a beat at the join. Longer renders are possible — quality past H3's envelope
+is your call.
+
+### Performance
+
+Two levers cut render time without changing the pipeline:
+
+- **Turbo / step-distilled LoRA.** The Director applies its own `SigmaShift` internally
+  (defaults 12/3) and keeps your LoRAs on the wire, so a turbo LoRA at ~8 steps (Euler + Beta)
+  applies to every window. **Do not add an external `SigmaShift` node** — it double-shifts and
+  corrupts the schedule. Tighter per-step convergence also sharpens the `seamless` overlaps.
+- **Latent upscale.** The `latent` output carries the sampled AV latent *before* decode. Render
+  at low resolution, run an H3 latent upscaler on that output, and decode externally — the fast
+  path to high resolution with no re-sampling. Skip any hi-res *refine* pass on long clips: a
+  >15 s re-sample exceeds H3's window, and a windowed refine reintroduces the seams.
 
 ## Troubleshooting
 
@@ -578,7 +1053,7 @@ frames → 5.17 s. This is the model's grid, not a bug.
 
 ## Reporting a bug
 
-Open an [issue](https://github.com/vomitselfie/ComfyUI-MiniMaxH3-Director-Extended/issues). The three
+Open an [issue](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director/issues). The three
 things that make a report fixable:
 
 1. the **full traceback** from the ComfyUI console (not just the last line),

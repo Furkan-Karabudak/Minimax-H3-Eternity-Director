@@ -438,6 +438,16 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
                                default="passthrough", optional=True,
                                tooltip="'passthrough' hands your raw idea on and warns, so a "
                                        "stopped Ollama does not kill the whole run."),
+                # Last, and it always will be: widgets are serialised positionally, so
+                # inserting one anywhere else hands every value after it to the wrong
+                # input in workflows already saved (see MAINTAINING, trap 9).
+                io.String.Input("api_key_env", default="", optional=True,
+                                tooltip="Name of an ENVIRONMENT VARIABLE holding the API key "
+                                        "for a cloud endpoint — not the key itself. Widget "
+                                        "values are saved inside the workflow, so a key typed "
+                                        "here would travel with every copy you share. Empty "
+                                        "falls back to MINIMAX_DIRECTOR_VLM_API_KEY, then "
+                                        "OPENAI_API_KEY. Local Ollama and LM Studio need none."),
             ],
             outputs=[
                 io.String.Output(display_name="prompt",
@@ -456,7 +466,7 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
     async def execute(cls, images=None, idea="", preset=PRESET_GLOBAL, system_prompt="",
                       duration_seconds=5.0, provider="ollama", base_url="", model="",
                       seed=0, max_image_size=768, max_words=500, unload_after=True,
-                      on_error="passthrough") -> io.NodeOutput:
+                      on_error="passthrough", api_key_env="") -> io.NodeOutput:
         tensors = _collect(images)
         if len(tensors) > MAX_IMAGES:
             log.warning("[MiniMaxEnhance] %d images connected, MiniMax H3 takes at most %d — "
@@ -479,6 +489,8 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
         defaults = media._PROVIDER_DEFAULTS.get(provider, media._PROVIDER_DEFAULTS["ollama"])
         url = media.normalize_base_url(base_url, defaults["url"])
         model_name = model or defaults["model"]
+        # the widget names an environment variable; the key is read here and never stored
+        api_key = media.resolve_api_key({"api_key_env": api_key_env})
         system = (system_prompt or "").strip() or system_for(preset, max_words)
 
         user = (idea or "").strip() or "Describe what these images show as a video."
@@ -490,9 +502,9 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
                  "and write nothing after them.")
 
         b64 = _tensor_to_b64(batched, int(max_image_size), 88) if batched is not None else []
-        log.info("[MiniMaxEnhance] %s via %s (%s, model '%s'), %d image(s)...",
+        log.info("[MiniMaxEnhance] %s via %s (%s, model '%s'%s), %d image(s)...",
                  "storyboard" if preset == PRESET_STORYBOARD else "global",
-                 provider, url, model_name, len(b64))
+                 provider, url, model_name, ", authenticated" if api_key else "", len(b64))
 
         # The token cap is only a runaway backstop; the shaping is done afterwards by
         # _trim_to_words and _first_sentences. It has to stay generous, because the model
@@ -509,7 +521,8 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
         try:
             raw = await media.vlm_generate(b64, user, provider, url, model_name,
                                            system_prompt=system, timeout=300,
-                                           max_tokens=cap, keep_alive=keep_alive)
+                                           max_tokens=cap, keep_alive=keep_alive,
+                                           api_key=api_key)
             prompt = clean_prompt(raw, preset, max_words=int(max_words))
             if not prompt:
                 raise media.VLMError("The model returned nothing usable.")
@@ -528,7 +541,7 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
                     tail = await media.vlm_generate(
                         [], prompt, provider, url, model_name,
                         system_prompt=SYSTEM_AUDIO_ONLY, timeout=120, max_tokens=300,
-                        keep_alive=keep_alive)
+                        keep_alive=keep_alive, api_key=api_key)
                     merged = clean_prompt("%s\n%s" % (prompt, tail), preset)
                     if re.search(r"^\s*(?:audio|sound|sfx)\s*:", merged, re.I | re.M):
                         prompt = merged
@@ -549,7 +562,7 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
             # Backstop for keep_alive, and it also runs when the call blew up half way —
             # that is exactly when a model is left sitting in VRAM.
             if unload_after:
-                await media.unload_model(provider, url, model_name)
+                await media.unload_model(provider, url, model_name, api_key)
 
         log.info("[MiniMaxEnhance] %d chars:\n%s", len(prompt), prompt)
         return io.NodeOutput(prompt, batched, float(duration_seconds))

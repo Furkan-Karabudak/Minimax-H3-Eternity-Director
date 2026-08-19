@@ -1,7 +1,17 @@
-# Custom Additions — MiniMax H3 Director (fork)
+# Custom Additions — MiniMax H3 Director (MV fork)
 
-Everything added on top of the upstream node, since branching out. Backend changes
-(`minimax_director.py`, `minimax_plan.py`) need a **ComfyUI restart**; frontend
+This fork tracks upstream **[ComfyUI MiniMax H3 Director](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director)**
+closely and adds a **long-form rendering path** on top of it. As of this release it is
+rebased onto **upstream 0.2.2**.
+
+> **Alignment, not divergence.** Typed references, per-shot dialogue, audio roles, the
+> guide-aligned compiled prompt (`subject_definitions` / `summary` / `retention_analysis` /
+> `detailed_description` / `overall_soundscape` / `non_diegetic_music`), the summary box,
+> resolution presets and the Save-Last-Frame node are **upstream's** — this fork adopts them
+> as-is and stays aligned with their core concepts. Everything documented below is what this
+> fork adds *on top* of that.
+
+Backend changes (`minimax_director.py`) need a **ComfyUI restart**; frontend
 (`minimax_director.js`) needs a **hard-refresh** (Ctrl-Shift-R). If a node on the canvas
 looks stale after the input/output changes below, right-click → **Fix node (recreate)**.
 
@@ -13,144 +23,127 @@ Render **past H3's ~15s ceiling** on a single timeline — no second node, no JS
 
 - **Optional `sampler` + `sigmas` inputs.** Wire them and the Director samples internally,
   splitting the render into anchored windows (each opens on the previous window's last
-  decoded frame). Leave them unwired → behaves exactly as before (emits `latent` for an
-  external `SamplerCustomAdvanced`, keeps the live denoise preview).
-- **New outputs `images` + `audio`** (decoded, concatenated). `None` in normal mode.
-- **New widgets:** `noise_seed` (base seed, +index per window) and `window_seconds`
-  (per-window length, clamped to H3's 4–15s trained range).
+  decoded frame — a tensor that only exists after that window is sampled, which is why it
+  can't be a static graph). Leave them unwired → behaves exactly like upstream (emits
+  `latent` for an external `SamplerCustomAdvanced`, keeps the live denoise preview).
+- **Two new outputs `images` + `audio`** (decoded, concatenated, de-clicked). Empty in normal
+  mode. Wire `images` into `CreateVideo`; use `audio` for the generated soundtrack or
+  `combined_audio` for your own track.
+- **Three new widgets:** `noise_seed` (base seed, `+index` per window), `window_seconds`
+  (per-window length, clamped to H3's 4–15s trained range), `tiled_vae_decode` (off by
+  default — the two-phase decode below is the real memory fix).
 - **Even-distribution windows.** A 13s render at a 5s target → three 4.33s windows, not
   `[5, 5, 3]`. Failsafes keep every window inside 4–15s and sum exactly to the requested
-  length (a 30s render at 5s = exactly 6 windows; at 15s = exactly 2).
+  length (a 30s render at 5s = exactly 6 windows; at 15s = exactly 2). No window lands below
+  the trained floor, and the seams are evenly spaced.
 - **LoRA + turbo intact.** LoRAs stay on the `model` wire; wire your 4-step turbo schedule
   into `sigmas` and every window gets the speedup.
+
+Retake is single-window by definition and always takes the normal path.
 
 ## Two-phase decode (prevents the RAM crash)
 
 Sampling and decoding are separated so decoding stays on the GPU instead of spilling to CPU
-and OOM-freezing the machine:
+and OOM-freezing the machine on a long chain:
 
-1. **During the loop:** each window decodes *only its anchor frame* (cheap) to seed the next
-   window, and stashes the latent.
-2. **After the last window:** the DiT is freed **once**, then every stashed window is fully
-   decoded on the GPU with the card to itself.
+1. **During the loop:** each window decodes *only its anchor frame* (a cheap tail-decode) to
+   seed the next window, and stashes the latent.
+2. **After the last window:** the DiT is freed **once** (`unload_all_models`), then every
+   stashed window is fully decoded on the GPU with the card to itself.
 
-`tiled_vae_decode` toggle also exists (routes through `VAEDecodeTiled`) — but on a 24GB
-card it can still fall back to CPU; the two-phase path is the real fix, leave tiling off.
+`tiled_vae_decode` also exists (routes through `VAEDecodeTiled`) — but on a 24 GB card it can
+still fall back to CPU; the two-phase path is the real fix, so leave tiling off unless you're
+on a small card.
 
-## Seam handling
+## Audio: three use cases, one node
 
-- **Audio declick:** 12ms equal-power cross-fade at every window seam (kills the splice pop).
+The Director covers all three ways you'd want audio on a long-form render — pick per workflow:
+
+1. **Generate audio** (H3's native joint audio). Drop no audio clip. Keep the `audio` output.
+   Set **`seam_audio` = `hard cut`**: each window is an independent take, and any blend would
+   smear two unrelated textures.
+2. **Provide audio to *guide* generation** (`<Audio N>` reference, ref2va). Drop an audio clip
+   and set `use_custom_audio` **ON**; the model generates audio that *follows your track* —
+   often reproducing it closely *plus* adding synchronized dialogue/SFX. Keep the `audio`
+   output. Use **`seam_audio` = `aligned`** — the windows carry the same continuous track, so
+   the seam is phase-matched before the join (see below).
+3. **Passthrough** (your own track muxed over the video — the music-video flow). Wire
+   **`combined_audio`** into `CreateVideo`. The generated audio is ignored, so `seam_audio`
+   doesn't apply.
+
+## Seam handling (audio) — `seam_audio`
+
+Three ways to join per-window generated audio at a seam (generated `audio` output only):
+
+- **`aligned`** *(default)* — **phase-matches the waveform before cross-fading.** When the
+  audio reproduces a continuous track (case 2), two windows carry the *same* song but at a
+  sub-sample phase offset; a blind blend of two mis-registered copies is exactly the
+  flam/stutter you'd hear at every seam. This slides the next window against the tail of the
+  running audio (small cross-correlation search), splices at the lag where the song lines up,
+  then does an **equal-gain** (linear) cross-fade — equal-gain, not equal-power, because the
+  two are now correlated, so equal-power would sum ~+3 dB and bump loudness. It also skips the
+  fixed per-window audio cut and lets the correlation find the real overlap, then locks the
+  total to the video length so A/V can't drift. *Offline check: RMS error through the join
+  ~0.0006 vs ~0.43 for a blind cross-fade.*
+- **`crossfade`** — fixed ~12 ms equal-power cross-fade, no alignment. For audio that's
+  coherent but not a literal continuous track.
+- **`hard cut`** — plain splice. Cleanest for purely generated audio (case 1), where each
+  window is an independent take and any blend smears two unrelated textures.
 - **Per-window audio references:** each window pulls the audio-reference slice matching *its*
-  time range (previously every window used the segment's opening).
-- **`combined_audio` matches the actual rendered length** — windows snap up on the frame
-  grid, so the mixdown is built to the real output length and audio/video end together.
-  Wire `combined_audio` (not the generated `audio`) when muxing your own track.
-- **Timeline seam markers:** amber dashed lines mark where windows join; segment edges snap
-  to them (priority + a wider grab, locking to the exact frame), so a cut or fade placed on a
-  seam hides it.
-- **No sub-frame prompt bleed:** a segment must overlap a window by more than half a frame to
-  count, so a segment snapped to — or a hair over — a boundary can never leak its prompt into
-  the neighbouring generation.
+  time range `[start, start+span)`, the same way its video reference is offset — so
+  guided-generation audio (case 2) actually tracks your song across windows instead of
+  restarting from the song's opening every window.
+- **Duplicate seam frame dropped:** the opening frame of each chained window *is* the previous
+  window's last frame; it's dropped on decode (video + the matching audio samples) so seams
+  don't stutter.
+- **`combined_audio` matches the actual rendered length.** Windows snap up on the frame grid,
+  so the timeline mixdown is built to the real output length and audio/video end together.
 
-## Reference subjects — typed
+> **On seam quality:** the *video* join is resolution-bound — upstream measured join error at
+> 5.2× the median frame-to-frame difference at 480×288 but only 2.3× at 1024×576, so render at
+> a real resolution for clean cuts. The generated-*audio* seam is inherent to per-window
+> generation and no merge math removes it; for polished results, case 3 (mux your own track)
+> sidesteps it entirely.
 
-Each reference slot has a **type dropdown** — Character / Animal / Object / Scene & Background
-/ Style — mapped to H3's own subject buckets. The compiled `subject_definitions` line matches
-the type and **weaves in the slot's description** (previously dropped for image slots):
+## Output / logging — long-form gen-log
 
-- Character → `<Subject 1> is the character shown in <Picture 1>, <desc>. Preserve the exact face, identity, hair, and wardrobe.`
-- Scene → `<Subject 2> is the environment shown in <Picture 3>, <desc>. Preserve the exact layout, palette, and key elements.`
-- Style → `<Subject 3> is the visual-style reference from <Picture 4>, <desc>.` *(transferred, not preserved — no lock)*
+In chaining mode the `prompt` output is a **clean, saveable record** instead of the same
+payload repeated once per window. The shared context — style / global, subjects & references,
+audio — is written **once**, then each window's **exact compiled prompt** is listed under its
+label. Reads top-to-bottom as *what it looks like → who's in it → what it sounds like → the
+prompt each window actually received*. Wire it into a "Save Text File" node for one log per
+render. (Single-window mode returns upstream's compiled prompt directly, unchanged.)
 
-Each concrete subject gets a type-appropriate **`Preserve …`** identity lock appended; a
-Style subject gets none because it's an attribute transfer.
+## UI / quality-of-life (frontend)
 
-## Per-shot dialogue
+- **Zoom no longer blanks.** The max-zoom ceiling and the canvas backing-store are both capped
+  against the *backing* width (`cssWidth × devicePixelRatio × graph-zoom`), not the raw CSS
+  width — so a long timeline no longer silently blanks the canvas when the graph itself is
+  zoomed in or on a HiDPI / fractional-scaled display.
+- **Click a shot → its prompt field flashes**, tying the on-timeline block to the editor field
+  you type into.
+- **Audio no longer grows the render duration.** Dropping (or pasting) a long song no longer
+  balloons `duration_frames` to the track's length — a 30 s render stays 30 s. The clip still
+  displays in full on the audio track; the render window stays exactly as set.
+- **Generation seam markers + snapping.** Amber dashed lines mark where each chained window
+  meets the next (`getWindowBoundaries()` mirrors the backend's `split_windows()` exactly, so
+  a marker lands on the precise boundary frame). Segment edges snap to them with priority and
+  a wider grab, so a cut or fade placed on a seam hides the join.
+- **Zoom controls relocated** beneath the timeline they act on, instead of down in the
+  player/guide-strength row where they read as belonging to the audio track.
 
-A **Dialogue** section under the selected shot's prompt. **+ Line** adds rows: start-time
-(s from shot start), speaker, language (typeable, with suggestions), and the line. Compiles
-to H3's exact form inside the `[Shot N]` block, ordered by time:
+### Planned (not in this release)
 
-```
-<Subject 1> (S1) says, <d>[Japanese] …疲れた…</d>
-```
-
-- Speaker dropdown offers **only Character/Animal** slots.
-- Each line drops a **♪ marker at the bottom of the timeline**, with a finely-dotted line
-  rising up through the audio + reference-video tracks. Hovering a marker highlights its
-  editor row and vice-versa.
-- Coexists with a voice-timbre `<Audio N>` reference — the `(S1)` tag is shared, so audio =
-  *how it sounds*, `<d>` = *the words*.
-
-## Audio roles
-
-Audio clips carry a **Type dropdown** — Voice / Dialogue, Background Music, Ambient / SFX.
-The `<Audio N>` definition matches the role (voice-timbre reference vs background-music
-reference vs ambient), and the "Voice of" subject binding only shows for Voice.
-
-## Compiled prompt structure (guide-aligned)
-
-The encoded storyboard follows the reference guide's field shape, one member per line the way
-its own examples are written (subjects blank-line separated, one retention directive per line,
-each `[Shot N]` its own paragraph). Order: `subject_definitions` → `summary` →
-`retention_analysis` → `detailed_description` → `overall_soundscape` → `non_diegetic_music`.
-
-- **`summary:`** — an auto scaffold the node computes from the render (duration + how the audio
-  is driven) followed by your hand-written global brief. On ref2va the style/global **moves
-  here**, out of `detailed_description`. The audio clause adapts: *"…follows the reference
-  track"* when an `<Audio>` clip is wired, *"native synchronized stereo sound"* when you prompt
-  it. No LLM — pure templating.
-- **`retention_analysis:`** — generated from the reference **types** in H3's own vocabulary:
-  `fully_preserved` for characters/animals/objects, `partially_preserved` for scenes,
-  `attribute_transfer` for styles and video motion — plus an automatic
-  **`Never merge the subjects. Never exchange their faces, hair, eyes, clothing, or
-  accessories.`** whenever two or more concrete subjects share the frame (the anti-bleed lock).
-  Audio references are retained by role, so a reference-track workflow gets the clip preserved
-  rather than assumed-prompted.
-
-> **Credit:** this field discipline — the `summary` / `subject_definitions` /
-> `retention_analysis` shape, the `fully_preserved` / `attribute_transfer` vocabulary, the
-> `Preserve …` locks and the never-merge line — is adapted from
-> [@renataro9's prompt example](https://x.com/renataro9/status/2088597222778974473), which
-> laid it out unusually well. H3 doesn't mandate this structure; it just works.
-
-## Output / logging — restructured gen-log
-
-The `prompt` output is a **clean, saveable record**, organised for a human instead of
-repeating the model payload once per window. Shared context is written **once** — style /
-global, subjects & references, audio — then the **shots are listed by window**, and a single
-raw window is kept at the bottom for exact reference. (A 30s render's log dropped from
-~20.7k to ~10k characters, most of that the one raw appendix.) It reads top-to-bottom as
-*what it looks like → who's in it → what it sounds like → what happens when*. Wire it into a
-"Save Text File" node to file one log per render.
-
-## UI / quality-of-life
-
-- **Audio prompts** (`overall_soundscape` / `non_diegetic_music`) pulled into their own
-  labeled section (were crammed in a strip under the global prompt).
-- **5 reference slots** by default (was 3).
-- **Zoom fixed:** the timeline canvas no longer blanks when zoomed in — the backing-store
-  cap now accounts for `devicePixelRatio × graph zoom`. Zoom controls relocated **directly
-  beneath the timeline** (were down in the player/guide-strength row).
-- **Audio no longer grows the render duration:** dropping a long song no longer balloons
-  `duration_frames` to the song's length (it still displays fully on the timeline).
-- **Click a shot → its prompt field flashes**, tying the on-timeline block to the editor.
-- **Florence-2** available as a reference-image captioner (alongside Ollama).
-- Front-end perf pass: killed per-frame reflow, off-screen culling, `.find()`→`Map` in the
-  render loop, memoized text-fitting, rAF-coalesced renders, listener cleanup.
-
-## Removed inputs
-
-`global_prompt`, `ref_images`, `ref_image_notes` sockets removed — the UI global prompt
-reaches the backend via `timeline_data`, and the node's 9 internal reference slots cover
-references.
+**Render-loop performance pass** (rAF-coalesced renders, off-screen culling, memoized
+text-fitting, `Map` lookups in the hot path). Deferred deliberately: upstream rewrote the
+render loop, so this is a diffuse change across ~90 `render()` call sites that can only be
+validated by profiling a running editor — not worth a silent redraw regression until it's
+done live with a profiler.
 
 ---
 
-## Storyboard format reference (unchanged, for context)
+## Node identity
 
-Segments compile to `[Shot N] At MM:SS.mmm, <text>` (first shot has no timestamp). The node
-writes `[Shot N]` and the timestamp — **write only the shot content in each segment**, never
-`[Shot 1]` yourself. Shot durations are implicit (next shot's start); a lone action in a
-longer span, or several actions crammed in one short shot, will loop to fill — split actions
-into contiguous timed segments to pace them.
+The node id is unchanged — **`MiniMaxH3DirectorCS`** — so existing workflows (including the
+one embedded in an exported `.mp4`) keep loading. Only the package name, version and repo URLs
+differ from upstream.

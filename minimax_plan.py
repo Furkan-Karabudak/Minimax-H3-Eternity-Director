@@ -15,6 +15,7 @@ actually sent would be worse than no preview.
 
 import json
 import logging
+import re
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,13 @@ MAX_REF_FILES = 12          # "at most 12 files in total across all input types"
 REF_VIDEO_MIN_SEC = 2.0     # "each clip must be 2-15 seconds long"
 REF_VIDEO_MAX_SEC = 15.0
 REF_VIDEO_TOTAL_SEC = 15.0  # "total duration <= 15 seconds"
+# Decode bound for a reference video. Its frames are VAE-encoded whole and the resulting
+# latents ride through every sampling step, so this is the biggest lever on memory there
+# is — memory goes with the square of the short edge. 768 x 1344 is the native canvas;
+# the ratio is kept so a lowered cap scales the area with it instead of squaring it away.
+REF_VIDEO_SHORT_EDGE = 768
+REF_VIDEO_ASPECT_BUDGET = 1344 / 768.0
+REF_VIDEO_SIZES = (768, 640, 512, 384, 256)
 # Output envelope: "4-15 seconds" at 24 fps
 TRAINED_MIN_FRAMES = 96
 TRAINED_MAX_FRAMES = 360
@@ -36,6 +44,82 @@ TRAINED_MAX_FRAMES = 360
 ROLE_FIRST = "first"
 ROLE_LAST = "last"
 ROLE_MIDDLE = "middle"
+
+# --- the full-reference vocabulary (references/ref-en.txt) ---------------------------
+# The retention markers are "fixed English values in the output format", so they are
+# emitted verbatim and never paraphrased. Whatever the editor sends is clamped back to a
+# default rather than allowed to reach the prompt as an invented word.
+RETENTION_VISIBLE = ("fully_preserved", "partially_preserved",
+                     "attribute_transfer", "weak_reference")
+RETENTION_AUDIO = ("fully_copy", "partially_copy", "reference", "weak_reference")
+# fully_preserved is the right default even for a motion reference: the marker preserves
+# the *defined role* of the content, and a reference video's defined role is its camera
+# work, not its pixels. Audio defaults to `reference` because nothing here copies a
+# signal — the track guides timbre and delivery.
+RETENTION_DEFAULT = "fully_preserved"
+RETENTION_AUDIO_DEFAULT = "reference"
+
+# <Subject N> is not a character slot. The guide lists "people, animals, or objects;
+# scenes, backgrounds, or environments; clothing, props, interfaces, or visual effects;
+# styles, actions, expressions, or poses". The noun is only used when a slot has no
+# description of its own to put there.
+SUBJECT_KINDS = {
+    "person": "the person",
+    "animal": "the animal",
+    "object": "the object",
+    "environment": "the environment",
+    "clothing": "the outfit",
+    "prop": "the prop",
+    "interface": "the interface",
+    "effect": "the visual effect",
+    "style": "the visual style",
+    "action": "the action",
+    "expression": "the expression",
+    "pose": "the pose",
+}
+SUBJECT_KIND_DEFAULT = "person"
+
+# What "retained" means per kind, so a fully_preserved line says something the model can
+# act on instead of repeating the marker back at it. `picture` and `video` are not subject
+# kinds; they share the table because they need the same sentence.
+RETAINED_DETAIL = {
+    "person": "identity, face and clothing",
+    "animal": "markings, coat and build",
+    "object": "shape, colour and markings",
+    "environment": "layout, furnishing and lighting",
+    "clothing": "cut, colour and material",
+    "prop": "shape, colour and wear",
+    "interface": "layout, typography and iconography",
+    "effect": "shape, colour and behaviour",
+    "style": "palette, texture and grade",
+    "action": "timing and body mechanics",
+    "expression": "expression and gaze",
+    "pose": "posture and limb placement",
+    "picture": "framing and composition",
+    "storyboard": "viewpoint, subject placement and shot order",
+    "video": "camera work and motion",
+}
+
+# How a timeline image is used. `auto` keeps the behaviour the timeline already implies —
+# classify_events decides whether it opens, closes or anchors a shot. The other two cover
+# the guide's remaining cases: a shot-planning image, and an image that only *defines*
+# something and therefore earns no standalone <Picture N> entry at all.
+REF_ROLE_AUTO = "auto"
+REF_ROLE_STORYBOARD = "storyboard"
+REF_ROLE_SUBJECT = "subject"
+REF_ROLES = (REF_ROLE_AUTO, REF_ROLE_STORYBOARD, REF_ROLE_SUBJECT)
+
+MAX_SUBJECT_SLOTS = 9
+
+TASK_KEYFRAME = "keyframe completion"
+TASK_REFERENCE = "reference generation"
+TASK_EDITING = "video editing"
+TASK_CONTINUATION = "video continuation"
+TASK_AUDIO_REUSE = "audio reuse"
+TASK_AUDIO_REFERENCE = "audio reference"
+# the guide's own table order, so a combined prefix always reads the same way round
+TASK_ORDER = (TASK_KEYFRAME, TASK_REFERENCE, TASK_EDITING, TASK_CONTINUATION,
+              TASK_AUDIO_REUSE, TASK_AUDIO_REFERENCE)
 
 
 def align_frame_count(n):
@@ -53,31 +137,68 @@ def fmt_seconds(value):
     return "%.1fs" % rounded
 
 
-def substitute_char_tags(text, replacements):
-    """Swap @character<n>/@char<n> for its resolved text, for however many slots exist.
+CHAR_TAG_RE = re.compile(r"@(?:character|char|ref)(\d+)")
 
-    The slot count is the editor's to decide, so this follows whatever it sends rather
-    than a hardcoded three. Highest number first: without that, replacing @char1 inside
-    "@char10" would leave a stray "0" behind.
+
+def substitute_char_tags(text, replacements, later=None, seen=None):
+    """Swap @ref1/@character1/@char1 .. @ref9 for their resolved text.
+
+    A slot is no longer necessarily a character, so @refN is the name that fits what the
+    slots now hold. @characterN/@charN keep working for every slot — prompts written
+    against the old three-slot panel must not break.
+
+    The whole number is read at once, so a slot number that does not exist is left alone
+    rather than half-substituted: @ref11 used to come out as the slot-1 value with a
+    stray "1" welded to it.
+
+    `later` is the base guide's rule for a subject that has no <Subject N> label to lean
+    on. There the identity lives in the prose, so it is written out in full where the
+    subject first appears and named by a short handle afterwards — otherwise "a woman in
+    a red coat" walks into every shot as a different woman. Tags resolve left to right
+    and `seen` carries that across the global block and each shot in turn, so "first"
+    means first in the finished video rather than first in whichever string this is.
     """
     if not text:
         return text or ""
-    for slot in sorted((s for s in replacements if replacements.get(s)), reverse=True):
-        value = replacements[slot]
-        for tag in ("@character%d" % slot, "@char%d" % slot):
-            text = text.replace(tag, value)
-    return text
+    if seen is None:
+        seen = set()
+
+    def swap(match):
+        slot = int(match.group(1))
+        value = replacements.get(slot)
+        if not value:
+            return match.group(0)
+        if later and slot in seen:
+            value = later.get(slot) or value
+        seen.add(slot)
+        return value
+
+    return CHAR_TAG_RE.sub(swap, text)
 
 
-def overlaps(seg, win_start, win_end, eps=0.5):
-    """A segment counts as inside [win_start, win_end) only if it overlaps by more than
-    `eps` frames. Half a frame kills a sub-frame straddle — a segment snapped to a window
-    boundary (or landing a hair over it) can never bleed its prompt into the neighbouring
-    generation — while any real overlap (a segment that genuinely spans the seam) still
-    counts on both sides."""
+def sanitize_retention(value, audio=False):
+    """Clamp a retention marker to the guide's fixed vocabulary."""
+    allowed = RETENTION_AUDIO if audio else RETENTION_VISIBLE
+    text = str(value or "").strip().lower()
+    if text in allowed:
+        return text
+    return RETENTION_AUDIO_DEFAULT if audio else RETENTION_DEFAULT
+
+
+def sanitize_kind(value):
+    text = str(value or "").strip().lower()
+    return text if text in SUBJECT_KINDS else SUBJECT_KIND_DEFAULT
+
+
+def sanitize_ref_role(value):
+    text = str(value or "").strip().lower()
+    return text if text in REF_ROLES else REF_ROLE_AUTO
+
+
+def overlaps(seg, win_start, win_end):
     start = float(seg.get("start", 0))
     length = float(seg.get("length", 1))
-    return start < win_end - eps and start + length > win_start + eps
+    return start < win_end and start + length > win_start
 
 
 def parse_timeline(timeline_data):
@@ -129,181 +250,121 @@ def fmt_timestamp(seconds):
     return "%02d:%06.3f" % (minutes, rest)
 
 
-# The reference guide groups subjects as "people, animals, or objects" / "scenes,
-# backgrounds, or environments" / styles. The editor's type dropdown maps onto these; the
-# noun goes in the sentence and the user's description becomes the detail clause the guide
-# asks for ("is the coffee-shop environment in <Picture 1>, featuring …").
-_SUBJECT_NOUNS = {
-    "character": "the character", "person": "the character",
-    "animal": "the animal", "object": "the object",
-    "scene": "the environment", "background": "the environment", "environment": "the environment",
-}
+def retention_note(label, marker, kind=None, audio=False):
+    """The `- …` half of a retention line, for when nothing was written by hand.
 
-
-# The reference guide ends every concrete subject with a "Preserve the exact …" identity
-# lock. A style is transferred, not preserved, so it gets none.
-_PRESERVE_CLAUSE = {
-    "character": "Preserve the exact face, identity, hair, and wardrobe.",
-    "person": "Preserve the exact face, identity, hair, and wardrobe.",
-    "animal": "Preserve the exact appearance, markings, and proportions.",
-    "object": "Preserve the exact shape, colour, and details.",
-    "scene": "Preserve the exact layout, palette, and key elements.",
-    "background": "Preserve the exact layout, palette, and key elements.",
-    "environment": "Preserve the exact layout, palette, and key elements.",
-}
-
-
-def _subject_sentence(subject_n, ref_type, description, pictures):
-    """One subject_definitions line in the reference guide's own shape: the TYPE carried by
-    the noun, the DESCRIPTION as the detail clause, then a per-type "Preserve …" identity
-    lock. Style is an aesthetic rather than a thing in the frame — its own frame, no lock."""
-    ref_type = (ref_type or "character").strip().lower()
-    desc = (description or "").strip().rstrip(".")
-    if ref_type == "style":
-        base = "<Subject %d> is the visual-style reference from %s" % (subject_n, pictures)
-        return ("%s, %s." % (base, desc)) if desc else ("%s." % base)
-    noun = _SUBJECT_NOUNS.get(ref_type, "the character")
-    base = "<Subject %d> is %s shown in %s" % (subject_n, noun, pictures)
-    sentence = ("%s, %s." % (base, desc)) if desc else ("%s." % base)
-    return sentence + " " + _PRESERVE_CLAUSE.get(ref_type, _PRESERVE_CLAUSE["character"])
-
-
-def _format_dialogue(dialogue, subject_of_slot, char_slots):
-    """Compile a segment's dialogue lines into the guide's `<Subject N> (SN) says, <d>[Lang]
-    text</d>` form, ordered by their in-shot timestamp. The speaker is the character slot the
-    line names, mapped to its resolved <Subject N>; if that slot has no reference image (so no
-    subject), fall back to its description, then to a generic voice. Dialogue and a voice-timbre
-    <Audio> reference coexist — the (SN) tag is the same one the audio binding emits."""
-    if not dialogue:
-        return ""
-
-    def _slot(line):
-        try:
-            return int(line.get("slot"))
-        except (TypeError, ValueError):
-            return None
-
-    out = []
-    for line in sorted(dialogue, key=lambda d: float(d.get("time", 0) or 0)):
-        text = (line.get("text") or "").strip()
-        if not text:
-            continue
-        lang = (line.get("lang") or "English").strip() or "English"
-        slot = _slot(line)
-        subject = subject_of_slot.get(slot) if slot else None
-        if subject:
-            speaker = "<Subject %d> (S%d)" % (subject, subject)
-        elif (slot and char_slots and 0 < slot <= len(char_slots)
-              and (char_slots[slot - 1].get("description") or "").strip()):
-            speaker = char_slots[slot - 1]["description"].strip().rstrip(".")
-        else:
-            speaker = "A voice"
-        out.append("%s says, <d>[%s] %s</d>" % (speaker, lang, text))
-    return " ".join(out)
-
-
-def build_subject_definitions(char_slots, ref_image_slots, ref_video_segs, ref_audio_segs):
-    """Bind <Subject N> names to the <Picture i> labels the tokenizer will emit.
-
-    The guide separates <Subject N> (reusable content: a person, a place, a style) from
-    <Picture N> (a concrete frame anchor). ComfyUI's tokenizer only ever labels images
-    <Picture i>, so a subject has to be *defined* in terms of those labels before shots
-    can refer to it — which is exactly what subject_definitions is for.
+    The marker alone is the guide's fixed vocabulary; this is the sentence that says what
+    the marker means *for this particular reference*, so the line carries something the
+    model can act on instead of repeating the marker back at it.
     """
-    lines = []
-    subject_of_slot = {}
-    for slot_index, _slot in enumerate(char_slots):
-        ordinals = [i + 1 for i, s in enumerate(ref_image_slots)
-                    if s.get("source") == "char" and s.get("slot") == slot_index]
-        if not ordinals:
-            continue
-        subject = len(subject_of_slot) + 1
-        subject_of_slot[slot_index + 1] = subject
-        pictures = " and ".join("<Picture %d>" % o for o in ordinals)
-        lines.append(_subject_sentence(subject, _slot.get("type"),
-                                       _slot.get("description"), pictures))
-
-    for i, _seg in enumerate(ref_video_segs):
-        lines.append("<Video %d> is a reference video: follow its motion and camera work."
-                     % (i + 1))
-
-    # An audio clip can name the subject whose voice it carries. The reference guide gives
-    # the sentence for it — "<Audio 1> is the voice-timbre reference for <Subject 1> (S1)."
-    # — and without it a second voice reference is just another <Audio N> with no way to
-    # say who is speaking, which is exactly what issue #10 ran into.
-    bound_audio = {}
-    for i, seg in enumerate(ref_audio_segs):
-        role = str((seg or {}).get("audioRole", "voice") or "voice").lower()
-        if role == "music":
-            lines.append("<Audio %d> is a background-music reference: follow its melody, "
-                         "instrumentation, tempo, and overall style." % (i + 1))
-            continue
-        if role == "ambient":
-            lines.append("<Audio %d> is an ambient sound reference: follow its texture, "
-                         "space, and timbre." % (i + 1))
-            continue
-        # role == "voice" (default): bind it to the subject whose voice it carries, if set
-        subject = subject_of_slot.get(_audio_subject_slot(seg))
-        if subject:
-            bound_audio[i + 1] = subject
-            lines.append("<Audio %d> is the voice-timbre reference for <Subject %d> (S%d)."
-                         % (i + 1, subject, subject))
-        else:
-            lines.append("<Audio %d> is a reference audio clip: follow its voice and timbre."
-                         % (i + 1))
-    return lines, subject_of_slot, bound_audio
+    if audio:
+        return {
+            "fully_copy": "%s is reused as the target video's complete final audio track.",
+            "partially_copy": "part of %s is copied; other sounds are added, removed or "
+                              "replaced.",
+            "reference": "the target follows %s without copying the original signal.",
+            "weak_reference": "only a broad similarity to %s in category and atmosphere "
+                              "is kept.",
+        }[marker] % label
+    if marker == "fully_preserved":
+        detail = RETAINED_DETAIL.get(kind or "")
+        if detail:
+            return "the %s of %s are retained." % (detail, label)
+        return "%s is retained as defined." % label
+    return {
+        "partially_preserved": "%s is still used, with some of its defined characteristics "
+                               "changed.",
+        "attribute_transfer": "the characteristics of %s are transferred to a different "
+                              "target subject.",
+        "weak_reference": "only a broad similarity to %s in style, category, composition "
+                          "and atmosphere is kept.",
+    }[marker] % label
 
 
-def build_retention_analysis(char_slots, subject_of_slot, ref_video_segs, ref_audio_segs, bound_audio):
-    """Per-subject preservation directives in the reference guide's structured vocabulary —
-    fully_preserved / partially_preserved / attribute_transfer — keyed off each slot's type,
-    plus a never-merge / never-exchange line when two or more concrete subjects share the
-    frame. Audio references are retained by their role, so a user driving the sound from a
-    reference track (not prompting it) still gets the clip preserved."""
-    lines, concrete = [], []
-    slot_type = {}
-    for slot_index, slot in enumerate(char_slots):
-        subj = subject_of_slot.get(slot_index + 1)
-        if subj:
-            slot_type[subj] = (slot.get("type") or "character").lower()
-    for subj in sorted(slot_type):
-        t = slot_type[subj]
-        if t in ("character", "person"):
-            lines.append("<Subject %d>: fully_preserved identity, face, hair, and wardrobe." % subj)
-            concrete.append(subj)
-        elif t == "animal":
-            lines.append("<Subject %d>: fully_preserved appearance, markings, and proportions." % subj)
-            concrete.append(subj)
-        elif t == "object":
-            lines.append("<Subject %d>: fully_preserved shape, colour, and details." % subj)
-            concrete.append(subj)
-        elif t in ("scene", "background", "environment"):
-            lines.append("<Subject %d>: partially_preserved environment, layout, and key elements." % subj)
-        elif t == "style":
-            lines.append("The style, palette, and rendering of <Subject %d> are attribute_transfer." % subj)
+def picture_texts(ordinal, picture_role, ref_role, shot_no, at):
+    """Every wording a standalone <Picture N> needs, derived once from the job it does.
 
-    for i in range(len(ref_video_segs)):
-        lines.append("<Video %d>: attribute_transfer of camera work and motion." % (i + 1))
+    Four renderings, because the guide asks for the same fact in four places: the
+    subject_definitions declaration (2.2), the retention_analysis parenthetical (4.1), the
+    in-body phrasing (5.3), and — outside the guide entirely — the flat `Reference notes:`
+    line the comfyui format keeps instead of all of the above.
 
-    for i, seg in enumerate(ref_audio_segs):
-        n, role = i + 1, str((seg or {}).get("audioRole", "voice") or "voice").lower()
-        if role == "music":
-            lines.append("<Audio %d>: fully_preserved melody, instrumentation, tempo, and style." % n)
-        elif role == "ambient":
-            lines.append("<Audio %d>: attribute_transfer of ambient texture and space." % n)
-        elif bound_audio.get(n):
-            lines.append("<Subject %d> speaks with the voice and timbre of <Audio %d>." % (bound_audio[n], n))
-        else:
-            lines.append("<Audio %d>: fully_preserved voice and timbre." % n)
+    Deriving them together is the point: they described the same image in three different
+    voices when the wording lived in three places, which is how issue #4 happened.
+    """
+    label = "<Picture %d>" % ordinal
+    shot = "[Shot %d]" % shot_no if shot_no else ""
 
-    if len(concrete) >= 2:
-        lines.append("Never merge the subjects. Never exchange their faces, hair, eyes, "
-                     "clothing, or accessories.")
-    return lines
+    if ref_role == REF_ROLE_STORYBOARD:
+        target = shot or "the target video"
+        return {
+            "declaration": "%s is a storyboard reference for %s, defining its viewpoint, "
+                           "subject placement, and shot order." % (label, target),
+            "where": "storyboard reference for %s" % target,
+            "phrase": "The shot follows the storyboard reference %s." % label if shot else "",
+            "note": "%s is a storyboard reference for %s" % (label, target),
+        }
+    if picture_role == ROLE_FIRST:
+        return {
+            "declaration": "%s is the first frame of %s." % (label, shot or "the target video"),
+            "where": ("%s first frame" % shot) if shot else "first frame",
+            "phrase": ("The shot begins from %s." % label) if shot else "",
+            "note": ("%s begins from %s" % (shot, label)) if shot
+                    else "The video begins from %s" % label,
+        }
+    if picture_role == ROLE_LAST:
+        return {
+            "declaration": "%s is the last frame of %s." % (label, shot or "the target video"),
+            "where": ("%s last frame" % shot) if shot else "last frame",
+            "phrase": ("The shot ends on %s." % label) if shot else "",
+            "note": ("%s ends on %s" % (shot, label)) if shot
+                    else "The video ends on %s" % label,
+        }
+    # The guide's fourth phrasing, "the shot's keyframe corresponds to <Picture 2>", has no
+    # image left to describe: one segment is one shot, so an image with a shot to belong to
+    # is the image that opens it, and one without a shot has no keyframe to be. It is left
+    # out rather than kept unreachable — a wording nothing can emit reads like a case the
+    # planner handles.
+    return {
+        "declaration": "%s is a composition anchor at %s." % (label, at),
+        "where": "composition anchor at %s" % at,
+        "phrase": "",
+        "note": "%s is a composition anchor at %s" % (label, at),
+    }
+
+
+def _subject_sentence(label, description, kind, pictures):
+    """`<Subject 1> is a woman in a red coat, shown in <Picture 1>.`
+
+    The guide's own shape is "<Subject 1> is the young woman in <Picture 1>, with long
+    dark hair…" — description first, source second. A written description replaces the
+    kind noun entirely, which is what makes the kind dropdown a fallback rather than a
+    constraint.
+    """
+    text = (description or "").strip().rstrip(".")
+    if text:
+        return "%s is %s, shown in %s." % (label, text, pictures)
+    return "%s is %s shown in %s." % (label, SUBJECT_KINDS[kind], pictures)
+
+
+def _declaration(label, written, generated):
+    """`<Label> is <what the user wrote>.`, or the generated sentence when nothing was.
+
+    The label is prepended rather than expected in the text, so what gets typed is the
+    predicate — "the voice-timbre reference for <Subject 1> (S1)" — and the label can
+    never end up wrong or duplicated. A sentence that already opens with its own label is
+    taken as written, since that is what someone pasting the guide's example will do.
+    """
+    text = (written or "").strip()
+    if not text:
+        return generated
+    if text.startswith(label):
+        return text if text.endswith((".", "!", "?")) else text + "."
+    return "%s is %s." % (label, text.rstrip("."))
 
 
 def _audio_subject_slot(seg):
-    """Which character slot an audio clip belongs to, 1-based, or None.
+    """Which subject slot an audio clip belongs to, 1-based, or None.
 
     Stored on the segment by the editor. Accepts the string a <select> hands over.
     """
@@ -315,6 +376,210 @@ def _audio_subject_slot(seg):
     except (TypeError, ValueError):
         return None
     return slot if slot > 0 else None
+
+
+def build_subject_definitions(subject_slots, ref_image_slots, ref_video_segs,
+                              ref_audio_segs):
+    """Declare every reference label, and record what each needs in retention_analysis.
+
+    The guide's central rule about images lives here: an image only earns a standalone
+    <Picture N> entry when it *is* a frame — "a shot's first frame, keyframe, last frame,
+    edited keyframe, or composition anchor" — or a storyboard reference. An image that
+    merely defines a character, scene, costume or style is cited inside the corresponding
+    <Subject N> definition instead. ComfyUI's tokenizer still labels every image
+    <Picture i>, so this is about which labels get *declared*, not which exist.
+
+    Returns (lines, subject_of_slot, labels, pic_texts, subject_notes). `labels` is the
+    ledger build_retention_analysis walks; `pic_texts` is keyed by <Picture N> ordinal;
+    `subject_notes` is the same subject declarations in the flat phrasing the comfyui
+    format needs, which is the only place that format can carry them at all (issue #14).
+    """
+    lines = []
+    labels = []
+    subject_of_slot = {}
+    pic_texts = {}
+    subject_notes = []
+    subject_no = 0
+
+    # --- <Subject N>: the panel slots first, so a subject's number does not move when
+    # something is dropped on the timeline
+    for slot_index, slot in enumerate(subject_slots):
+        ordinals = [i + 1 for i, s in enumerate(ref_image_slots)
+                    if s.get("source") == "char" and s.get("slot") == slot_index]
+        if not ordinals:
+            continue
+        subject_no += 1
+        subject_of_slot[slot_index + 1] = subject_no
+        label = "<Subject %d>" % subject_no
+        sentence = _subject_sentence(
+            label, slot.get("description"), slot["kind"],
+            " and ".join("<Picture %d>" % o for o in ordinals))
+        lines.append(sentence)
+        subject_notes.append(sentence.rstrip("."))
+        labels.append({"label": label, "marker": slot["retention"], "kind": slot["kind"],
+                       "note": slot.get("note", ""), "where": "", "audio": False,
+                       "subject": subject_no})
+
+    # ...then any timeline image the user marked as defining something rather than
+    # anchoring a frame. It gets a subject of its own and no picture entry.
+    for i, s in enumerate(ref_image_slots):
+        if s.get("source") != "timeline" or s.get("ref_role") != REF_ROLE_SUBJECT:
+            continue
+        subject_no += 1
+        label = "<Subject %d>" % subject_no
+        s["subject"] = subject_no
+        # `desc` says what the image defines, `note` says what survives into the target —
+        # two different sentences in two different sections, so they are two fields. One
+        # field would mean a subject-defining image could carry one or the other and never
+        # both, and would have to mean something else again on a frame anchor.
+        sentence = _subject_sentence(label, s.get("desc"), s["kind"],
+                                     "<Picture %d>" % (i + 1))
+        lines.append(sentence)
+        subject_notes.append(sentence.rstrip("."))
+        labels.append({"label": label, "marker": s["retention"], "kind": s["kind"],
+                       "note": s.get("note", ""), "where": "", "audio": False,
+                       "subject": subject_no})
+
+    # --- <Picture N>: the real frame and storyboard anchors, plus any image on the
+    # ref_images socket whose `ref_image_notes` line says what it is.
+    # Character-slot images are deliberately absent — they are cited above instead. An
+    # undescribed socket image stays absent too: the node knows nothing about it beyond the
+    # pixels, and a vacuous "is an additional reference image" line would cost the model
+    # attention without telling it anything.
+    for i, s in enumerate(ref_image_slots):
+        ordinal = i + 1
+        if s.get("source") == "input":
+            desc = (s.get("desc") or "").strip()
+            if not desc:
+                continue
+            label = "<Picture %d>" % ordinal
+            sentence = _declaration(label, desc, "")
+            pic_texts[ordinal] = {"declaration": sentence, "where": "", "phrase": "",
+                                  "note": sentence.rstrip(".")}
+            lines.append(sentence)
+            labels.append({"label": label, "marker": RETENTION_DEFAULT, "kind": "picture",
+                           "note": "", "where": "", "audio": False})
+            continue
+        if s.get("source") != "timeline" or s.get("ref_role") == REF_ROLE_SUBJECT:
+            continue
+        texts = picture_texts(ordinal, s.get("picture_role"), s.get("ref_role"),
+                              s.get("shot_no"), s.get("at"))
+        pic_texts[ordinal] = texts
+        lines.append(texts["declaration"])
+        labels.append({"label": "<Picture %d>" % ordinal, "marker": s["retention"],
+                       "kind": "storyboard" if s.get("ref_role") == REF_ROLE_STORYBOARD
+                               else "picture",
+                       "note": s.get("note", ""),
+                       "where": texts["where"], "audio": False})
+
+    # A <Video N> or <Audio N> declaration is pure prose — unlike a <Picture N>, it states
+    # no structural fact the planner already knows — so a written one simply replaces it.
+    # That is the only way to reach the guide's own shapes, which name things this node
+    # cannot infer: "<Audio 1> is the voice-timbre reference for <Subject 1> (S1)", or
+    # "<Video 1> is the source video for the target video edit".
+    for i, seg in enumerate(ref_video_segs):
+        label = "<Video %d>" % (i + 1)
+        lines.append(_declaration(
+            label, seg.get("refDesc"),
+            "%s is a reference video: follow its motion and camera work." % label))
+        labels.append({"label": label, "kind": "video", "audio": False,
+                       "marker": sanitize_retention(seg.get("retention")),
+                       "note": (seg.get("refNote") or "").strip(),
+                       "where": "motion and camera work"})
+    for i, seg in enumerate(ref_audio_segs):
+        label = "<Audio %d>" % (i + 1)
+        marker = sanitize_retention(seg.get("retention"), audio=True)
+        copied = marker in ("fully_copy", "partially_copy")
+        # A clip can name the subject whose voice it carries, which is the one thing a
+        # written sentence should not have to spell out: with two voice references and no
+        # binding there is nothing in the prompt saying which voice belongs to whom
+        # (issue #10). The guide ends that sentence with the speaker's global ID,
+        # "<Subject 1> (S1)", which is not knowable here — IDs are assigned in vocal-event
+        # order, further down. apply_speaker_ids fills it in afterwards, which is what
+        # `line_index` is for.
+        subject = subject_of_slot.get(_audio_subject_slot(seg))
+        if subject:
+            # the generated declaration has to agree with the marker: telling the model to
+            # follow a clip's timbre while retention_analysis says the signal is copied
+            # wholesale describes two different jobs
+            generated = ("%s carries the voice of <Subject %d>: its signal is reused in the "
+                         "target video." % (label, subject) if copied else
+                         "%s is the voice-timbre reference for <Subject %d>."
+                         % (label, subject))
+        else:
+            generated = ("%s is a reference audio clip: %s"
+                         % (label, "its signal is reused in the target video." if copied
+                            else "follow its voice and timbre."))
+        lines.append(_declaration(label, seg.get("refDesc"), generated))
+        # `voice_of` rather than `subject`: build_retention_analysis reads that key as "this
+        # entry *is* a subject" and would replace the audio line's "(voice of <Subject 2>)"
+        # with a shot list belonging to somebody else.
+        labels.append({"label": label, "kind": "audio", "audio": True, "marker": marker,
+                       "note": (seg.get("refNote") or "").strip(),
+                       "voice_of": subject, "line_index": len(lines) - 1,
+                       "where": "voice of <Subject %d>" % subject if subject else ""})
+
+    return lines, subject_of_slot, labels, pic_texts, subject_notes
+
+
+def build_retention_analysis(labels, subject_shots=None):
+    """One line per reference label, in the guide's `label (where): marker - note` shape.
+
+    A subject's parenthetical names the shots it actually appears in, read back off the
+    shot text after tag substitution rather than assumed — a subject defined in the panel
+    but never mentioned in any shot simply has no shot list to give.
+    """
+    subject_shots = subject_shots or {}
+    lines = []
+    for entry in labels:
+        where = entry.get("where") or ""
+        if entry.get("subject"):
+            shots = subject_shots.get(entry["subject"]) or []
+            if shots:
+                where = "appears in " + ", ".join("[Shot %d]" % n for n in shots)
+        note = (entry.get("note") or "").strip()
+        if note:
+            if not note.endswith((".", "!", "?")):
+                note += "."
+        else:
+            note = retention_note(entry["label"], entry["marker"], entry.get("kind"),
+                                  entry.get("audio", False))
+        head = "%s (%s)" % (entry["label"], where) if where else entry["label"]
+        lines.append("%s: %s - %s" % (head, entry["marker"], note))
+    return lines
+
+
+def task_type_prefix(ref_image_slots, ref_video_segs, ref_audio_segs, override=None):
+    """The square-bracketed task type the guide puts at the head of `summary`.
+
+    Derived from the jobs the references actually do, not from what happens to be
+    connected: the guide is explicit that "the mere presence of video or audio does not
+    automatically create a corresponding task type", and that a reference video supplying
+    only camera movement, cuts or rhythm is reference generation, not video editing.
+
+    `video editing` and `video continuation` are therefore never derived — this node has
+    no path that edits or continues a source video. The override exists for the day one
+    is added, and for anything else the timeline cannot know.
+    """
+    if (override or "").strip():
+        return "[%s]" % override.strip().strip("[]").strip()
+
+    types = set()
+    for s in ref_image_slots:
+        if s.get("source") == "timeline" and s.get("ref_role") == REF_ROLE_AUTO:
+            types.add(TASK_KEYFRAME)
+        else:
+            types.add(TASK_REFERENCE)
+    if ref_video_segs:
+        types.add(TASK_REFERENCE)
+    for seg in ref_audio_segs:
+        types.add(TASK_AUDIO_REUSE
+                  if sanitize_retention(seg.get("retention"), audio=True)
+                  in ("fully_copy", "partially_copy")
+                  else TASK_AUDIO_REFERENCE)
+
+    ordered = [t for t in TASK_ORDER if t in types]
+    return ("[%s]" % " + ".join(ordered)) if ordered else ""
 
 
 def alignment_instruction(has_first, has_last, shot_count, seconds):
@@ -357,45 +622,80 @@ def compile_storyboard_minimax(global_prompt, shots, soundscape="", music="",
                                instruction="", summary=""):
     """The notation MiniMax documents in VIDEO_PROMPT_WRITING_GUIDE_*.md.
 
-    Each field is on its own line and its members are line-broken the way the guide's own
-    examples are: subjects separated by a blank line, one retention directive per line, each
-    `[Shot N]` its own paragraph. Order: subject_definitions, summary, retention_analysis,
-    detailed_description, then the two sound fields. Sections are only emitted when there is
-    something real to put in them.
+    `integrated_multimodal_description: [Shot 1] … [Shot 2] At 00:05.000, …`, with the
+    first shot carrying no timestamp and every later cut carrying a strictly increasing
+    one, followed by the soundscape fields. Sections are only emitted when there is
+    something real to put in them — an empty heading is worse than none.
+
+    Section order is the reference guide's: subject_definitions, summary,
+    retention_analysis, detailed_description, then the two sound fields.
+
+    subject_definitions and retention_analysis are written one entry per line, the way the
+    guide's own example lays them out. Both are lists of records — one per reference label
+    — rather than prose, and running them together into a paragraph makes it genuinely
+    hard to see where one label's definition ends and the next begins. detailed_description
+    stays a single flowing block, because that one really is prose.
     """
     parts = []
 
-    # fl2va keyframe-alignment line, when present, leads (the guide puts it first).
+    # the guide: "must be the first line of the final prompt, followed by one blank line
+    # before the core fields" — joining parts with a blank line gives exactly that
     if (instruction or "").strip():
         parts.append(instruction.strip())
 
     if subject_lines:
-        parts.append("subject_definitions:\n" + "\n\n".join(subject_lines))
+        parts.append("subject_definitions:\n" + "\n".join(subject_lines))
     if (summary or "").strip():
-        parts.append("summary:\n" + summary.strip())
+        parts.append("summary: " + summary.strip())
     if retention_lines:
         parts.append("retention_analysis:\n" + "\n".join(retention_lines))
 
-    written = [s for s in shots if (s["prompt"] or "").strip()]
-    blocks = []
+    written = [s for s in shots if shot_has_text(s)]
+    body = []
     gp = (global_prompt or "").strip()
-    if gp:                          # fl2va only — ref2va moves the global into `summary`
-        blocks.append(gp)
+    if gp:
+        body.append(gp)
     for index, shot in enumerate(written):
-        text = shot["prompt"].strip()
+        pieces = list(shot.get("pieces") or [])
+        # guide 5.3: a frame anchor is named in the shot itself, in natural phrasing, as
+        # well as being declared above. It rides with the prose rather than trailing the whole
+        # shot — it says how the shot opens, and a spoken line is not something a shot "begins
+        # from" — so it goes after the last prose piece, which for a shot that is all prose is
+        # where it has always gone.
+        phrases = " ".join(shot.get("ref_phrases") or [])
+        if phrases:
+            last_prose = max((i for i, (kind, _) in enumerate(pieces) if kind == "prose"),
+                             default=-1)
+            if last_prose < 0:
+                # nothing of the user's own to attach to, and a later shot opens
+                # "At 00:05.000, " — so our own sentence has to continue out of that comma
+                pieces.insert(0, ("prose", phrases if not index
+                                  else phrases[0].lower() + phrases[1:]))
+            else:
+                pieces.insert(last_prose + 1, ("prose", phrases))
+        text = join_shot_pieces([piece for _, piece in pieces])
         if index == 0:
-            blocks.append("[Shot 1] %s" % text)
+            body.append("[Shot 1] %s" % text)
         else:
-            blocks.append("[Shot %d] At %s, %s"
-                          % (index + 1, fmt_timestamp(shot["start_sec"]), text))
-    if blocks:
-        label = "detailed_description" if subject_lines else "integrated_multimodal_description"
-        parts.append(label + ":\n" + "\n\n".join(blocks))
+            body.append("[Shot %d] At %s, %s"
+                        % (index + 1, fmt_timestamp(shot["start_sec"]), text))
+    if body:
+        parts.append(("detailed_description: " if subject_lines
+                      else "integrated_multimodal_description: ") + " ".join(body))
 
     if (soundscape or "").strip():
-        parts.append("overall_soundscape:\n" + soundscape.strip())
+        parts.append("overall_soundscape: " + soundscape.strip())
     if (music or "").strip():
-        parts.append("non_diegetic_music:\n" + music.strip())
+        parts.append("non_diegetic_music: " + music.strip())
+    elif parts:
+        # Both guides list non_diegetic_music as a required field, and both write "N/A"
+        # in it — the base guide says to do so "when there is no non-diegetic music",
+        # which is exactly what an empty box means. overall_soundscape deliberately does
+        # not get the same treatment: there "N/A" is reserved for a video the user asked
+        # to be silent, so filling it in would state something nobody said.
+        #
+        # `parts` guards against writing a prompt that is nothing but this line.
+        parts.append("non_diegetic_music: N/A")
 
     return "\n\n".join(parts).strip()
 
@@ -438,9 +738,297 @@ def split_audio_music(text):
     return "\n".join(kept).strip(), " ".join(sound).strip(), " ".join(music).strip()
 
 
+# A dialogue line in a shot prompt. Same rule as split_audio_music: it only counts at the
+# start of a line, so prose that merely contains an @ref tag or a colon is left alone.
+#
+#   @ref1 exclaims with light annoyance: Hey! Watch your dog!
+#   @ref1 [French] murmure: Bonjour
+#   @voice(a low male narrator) says: In the beginning...
+#   @audio2: the chorus line carried by the track itself
+#
+# The clause between the tag and the colon is the delivery, kept verbatim — the guide's own
+# example carries the performance there ("says in a casual young male voice with a playful
+# tone"), and generating a flat "says" would throw that away.
+DIALOGUE_RE = re.compile(
+    r"^@(?:ref(?P<slot>\d+)|voice\((?P<voice>[^)]*)\)|audio(?P<audio>\d+))"
+    r"\s*(?:\[(?P<lang>[^\]]+)\])?"
+    r"\s*(?P<delivery>[^:]*):\s*(?P<line>.+)$", re.IGNORECASE)
+
+DIALOGUE_DEFAULT_LANG = "English"
+DIALOGUE_DEFAULT_DELIVERY = "says"
+
+SPEAKER_ID_RE = re.compile(r"\(S\d+\)")
+
+# "Generation tasks typically span 350-500 words", which the preview reports as a figure so
+# the range is visible without being nagged about. The guide itself warns against
+# "mechanical word-count adherence".
+DESCRIPTION_MIN_WORDS = 350
+DESCRIPTION_MAX_WORDS = 500
+
+
+# Where a lifted dialogue line sat, left behind in the prose so render_shot can put the
+# spoken line back exactly there. A shot is not a paragraph followed by its dialogue — the
+# guide's own Shot 1 goes action, spoken line, more action — so a line written between two
+# paragraphs has to stay between them. Invisible to the user: every mark is consumed during
+# rendering, and any \x00 in the incoming text is dropped before one can be confused for it.
+DIALOGUE_MARK = "\x00%d\x00"
+DIALOGUE_MARK_RE = re.compile("\x00(\\d+)\x00")
+
+# The guide runs an action straight out of a spoken line with no punctuation between them:
+# "…<d>[English] Hey! Watch your dog!</d> She closes her lips…"
+DIALOGUE_CLOSE = "</d>"
+
+
+def split_dialogue(text):
+    """Lift `@ref1 says: …` lines out of a shot prompt into structured vocal events.
+
+    Returns (remaining prose, events). The prose keeps a DIALOGUE_MARK where each lifted line
+    sat, so the shot can be reassembled in the order it was written.
+
+    Speaker IDs are deliberately *not* assigned here: the guide numbers them "according to the
+    order of actual vocal events in the target video", which is a property of the whole
+    timeline, not of one shot.
+    """
+    if not text:
+        return text or "", []
+    kept, events = [], []
+    for line in text.replace("\x00", "").splitlines():
+        match = DIALOGUE_RE.match(line.strip())
+        if not match:
+            kept.append(line)
+            continue
+        kept.append(DIALOGUE_MARK % len(events))
+        events.append({
+            "slot": int(match.group("slot")) if match.group("slot") else None,
+            "voice": (match.group("voice") or "").strip() or None,
+            "audio": int(match.group("audio")) if match.group("audio") else None,
+            "language": (match.group("lang") or DIALOGUE_DEFAULT_LANG).strip(),
+            "delivery": (match.group("delivery") or "").strip() or DIALOGUE_DEFAULT_DELIVERY,
+            "line": match.group("line").strip(),
+        })
+    return "\n".join(kept).strip(), events
+
+
+# Two ways a line that was meant to be spoken reaches the model as narration instead:
+#
+#   @ref1 says "hello sir"     no colon, so DIALOGUE_RE never claimed it
+#   @char1 says: hello sir     an alias substitute_char_tags resolves and DIALOGUE_RE does not
+#
+# Both are reported rather than repaired. The colon is the whole rule, and widening it to take
+# quoted text would claim prose that quotes something nobody says out loud.
+#
+# The quoted words have to *end* the line, which is where dialogue puts them — the same place
+# the colon form puts them. That is what separates the near-miss from ordinary prose that
+# happens to quote a thing: `@ref1 reads the sign "Closed" and frowns` carries on afterwards
+# and is left alone. A line that genuinely ends on a quoted noun — `@ref1 points at the sign
+# "CLOSED"` — is still caught, which costs one sentence in the warnings strip and changes
+# nothing about the prompt. A verb list would settle those, and would break on the first
+# prompt written in another language.
+NEAR_MISS_QUOTE_RE = re.compile(
+    u"^@(?:ref|char|character)\\d+[^:\"“«]*[\"“«][^\"”»]+[\"”»][\\s.!?,;]*$",
+    re.IGNORECASE)
+NEAR_MISS_ALIAS_RE = re.compile(r"^@(?:char|character)(\d+)[^:]*:\s*\S", re.IGNORECASE)
+
+
+def near_miss_dialogue(text):
+    """Lines in a shot's prose that read as dialogue but did not become any.
+
+    Returns (line, reason) pairs, `reason` being "colon" or "alias" — enough for the caller to
+    say which rule was missed without this having to know about shot numbering or warnings.
+    """
+    found = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if NEAR_MISS_ALIAS_RE.match(stripped):
+            found.append((stripped, "alias"))
+        elif ":" not in stripped and NEAR_MISS_QUOTE_RE.match(stripped):
+            found.append((stripped, "colon"))
+    return found
+
+
+def shot_has_text(shot):
+    """Does this shot appear in the body, and therefore carry a [Shot N] number?
+
+    A shot whose only content is dialogue still counts. Testing the prompt alone would
+    drop it from the body once the dialogue was lifted out — losing the line and shifting
+    every later shot number, including the ones picture notes point at.
+    """
+    return bool((shot.get("prompt") or "").strip() or shot.get("dialogue"))
+
+
+def render_event(event, ids, label_for_slot):
+    """One vocal event, numbering any speaker met here for the first time.
+
+    `(Sx)` is assigned once per speaker, in the order vocal events actually occur, and reused
+    at every later event by that speaker — so the same person keeps one ID across cuts, exactly
+    as <Subject N> does. Verbal content carried by reused audio names <Audio N> as its source
+    and gets no ID at all: the guide is explicit that a cue inside a soundtrack has no
+    independent vocal source to number.
+    """
+    tag = "<d>[%s] %s</d>" % (event["language"], event["line"])
+    if event["audio"]:
+        return "<Audio %d> carries %s" % (event["audio"], tag)
+    if event["slot"]:
+        who = label_for_slot(event["slot"]) or "an unnamed speaker"
+        key = ("slot", event["slot"])
+    else:
+        who = event["voice"] or "an unnamed speaker"
+        key = ("voice", who.strip().lower())
+    if key not in ids:
+        ids[key] = len(ids) + 1
+    return "%s (S%d) %s, %s" % (who, ids[key], event["delivery"], tag)
+
+
+def join_shot_pieces(parts):
+    """Run a shot's pieces together, supplying the full stop the next one needs.
+
+    A piece ending on `</d>` is left alone — the guide continues straight out of a spoken line
+    into the next action, with no punctuation between them.
+    """
+    out = ""
+    for part in parts:
+        part = (part or "").strip()
+        if not part:
+            continue
+        if not out:
+            out = part
+            continue
+        if not out.endswith((".", "!", "?", ",", ";", ":", DIALOGUE_CLOSE)):
+            out += "."
+        out += " " + part
+    return out
+
+
+def render_shot(shot, values, later=None, seen=None, ids=None, label_for_slot=None):
+    """Resolve one shot's tags and spoken lines, in the order they were written.
+
+    A single pass, because both orderings the guide cares about are properties of the finished
+    shot read left to right: "the first appearance" of a subject, which decides whether it is
+    named in full or by its short name, and "the order of actual vocal events", which decides
+    `(Sx)`. Reading all the prose and then all the dialogue gets both wrong for a shot whose
+    dialogue is not simply trailing — and moves the line, which is worse than either.
+
+    Fills `shot["pieces"]`, ("prose"|"dialogue", text) in written order, and `shot["text"]`,
+    the pieces run together. The pieces are kept so a frame anchor can be placed against the
+    prose instead of after a spoken line.
+    """
+    events = shot.get("dialogue") or []
+    pieces = []
+    # re.split with one group alternates prose, mark, prose, mark, … so odd indices are marks
+    for index, part in enumerate(DIALOGUE_MARK_RE.split(shot.get("prompt") or "")):
+        if index % 2:
+            slot = int(part)
+            text = (render_event(events[slot], ids, label_for_slot)
+                    if 0 <= slot < len(events) else "")
+            kind = "dialogue"
+        else:
+            text = substitute_char_tags(part, values, later, seen).strip()
+            kind = "prose"
+        if text:
+            pieces.append((kind, text))
+    shot["pieces"] = pieces
+    shot["text"] = join_shot_pieces([text for _, text in pieces])
+
+
+def apply_speaker_ids(lines, labels, speaker_of_subject):
+    """Fill each voice clip's declaration in with the speaker's global ID.
+
+    The guide asks a bound `<Audio N>` to "reuse that speaker's global ID in the definition":
+    `<Audio 1> is the voice-timbre reference for <Subject 1> (S1).` The ID cannot be known
+    when that sentence is written — speakers are numbered in the order vocal events occur,
+    which is a property of the finished body, not of one declaration — so the line is patched
+    here, once the numbering pass has run.
+
+    A subject that never speaks has no ID and its declaration keeps the label alone, which is
+    still an unambiguous binding. `(Sx)` deliberately does not reach retention_analysis: the
+    guide reserves it for detailed_description, and only these declaration lines are touched.
+    """
+    for entry in labels:
+        subject = entry.get("voice_of")
+        index = entry.get("line_index")
+        if not subject or index is None:
+            continue
+        speaker = speaker_of_subject.get(subject)
+        if not speaker:
+            continue
+        line = lines[index]
+        # a sentence that spells out its own ID is taken as written, the same way
+        # _declaration takes a sentence that opens with its own label
+        if SPEAKER_ID_RE.search(line):
+            continue
+        # A written sentence need not name the subject it was bound to, and an ID attached to
+        # nothing reads as belonging to whoever is named instead. The closing ">" keeps
+        # <Subject 1> from matching inside <Subject 10>.
+        ref = "<Subject %d>" % subject
+        if ref not in line:
+            continue
+        lines[index] = line.replace(ref, "%s (S%d)" % (ref, speaker), 1)
+
+
+ANALYSIS_DESC_PREFIX = "description:"
+ANALYSIS_KEEP_PREFIX = "retained:"
+
+
+def split_analysis(text):
+    """Split the Analyze button's two labelled lines into (description, retained).
+
+    The vision model is asked for `DESCRIPTION:` and `RETAINED:`, which fill the slot's
+    two boxes: what the subject *is*, and what has to survive into the target video.
+
+    Local models ignore an output format often enough that the unlabelled case has to be
+    the safe one — everything becomes the description, which is where a single blob of
+    text was going before there was a second box. A label may also arrive lowercased, in
+    bold, or with the model's own preamble above it, so matching is case-insensitive,
+    tolerant of `*` and `#` decoration, and picks up wherever the first label appears.
+
+    Lives here rather than in minimax_media so it can be tested without importing
+    aiohttp or ComfyUI — the same reason split_audio_music is here.
+    """
+    if not text:
+        return "", ""
+    rows = []
+    labelled = False
+    for line in str(text).splitlines():
+        stripped = line.strip().lstrip("*#-• ").strip()
+        low = stripped.lower()
+        if low.startswith(ANALYSIS_DESC_PREFIX):
+            rows.append(("desc", stripped.split(":", 1)[1]))
+            labelled = True
+        elif low.startswith(ANALYSIS_KEEP_PREFIX):
+            rows.append(("keep", stripped.split(":", 1)[1]))
+            labelled = True
+        else:
+            rows.append((None, stripped))
+
+    desc, keep, current = [], [], None
+    for kind, value in rows:
+        if kind:
+            current = desc if kind == "desc" else keep
+        elif current is None:
+            # Before any label. With labels present this is the model's own preamble
+            # ("Sure! Here is the analysis:") and belongs in neither box; with no labels
+            # anywhere it is the whole answer, and the description is where a single blob
+            # of text went before there was a second box.
+            if labelled:
+                continue
+            current = desc
+        value = value.strip().strip("*").strip()
+        if value:
+            current.append(value)
+    return " ".join(desc).strip(), " ".join(keep).strip()
+
+
 def compile_storyboard(global_prompt, shots, total_seconds):
     """Global block, then timed shot lines in the ComfyUI templates' `[0s-1.5s]` notation."""
-    written = [s for s in shots if (s["prompt"] or "").strip()]
+    written = [s for s in shots if shot_has_text(s)]
+
+    # Dialogue was lifted out of the prompt before this format ever saw it, so it has to be
+    # put back or a spoken line would vanish from a comfyui-format prompt entirely. render_shot
+    # has already done that, in the order it was written.
+    def body(shot):
+        return (shot.get("text") or "").strip()
 
     parts = []
     gp = (global_prompt or "").strip()
@@ -451,11 +1039,10 @@ def compile_storyboard(global_prompt, shots, total_seconds):
             written[0]["end_sec"] >= total_seconds - 0.01:
         # One shot covering the whole window is just a prompt — wrapping it in
         # storyboard syntax would imply a cut that isn't there.
-        parts.append(written[0]["prompt"].strip())
+        parts.append(body(written[0]))
     elif written:
         parts.append("Timeline:\n" + "\n".join(
-            "[%s-%s] %s" % (fmt_seconds(s["start_sec"]), fmt_seconds(s["end_sec"]),
-                            s["prompt"].strip())
+            "[%s-%s] %s" % (fmt_seconds(s["start_sec"]), fmt_seconds(s["end_sec"]), body(s))
             for s in written))
 
     return "\n\n".join(parts).strip()
@@ -493,7 +1080,7 @@ def classify_events(events, duration_frames, fps):
 def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
                   use_custom_motion=True, use_custom_audio=False, override_audio=False,
                   extra_ref_image_count=0, soundscape="", music="", prompt_format=None,
-                  ref_image_notes=""):
+                  summary="", ref_image_notes=""):
     """Work out shots, keyframe roles, reference ordinals and the final prompt.
 
     Returns a dict; `execute` uses it to decide what media to load, the endpoint just
@@ -523,16 +1110,30 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
     if prompt_format not in (FORMAT_MINIMAX, FORMAT_COMFYUI):
         prompt_format = FORMAT_MINIMAX
 
-    # --- character slots (metadata only) ---
-    char_slots = []          # [{"count": n, "images": [{"b64","name"}], "description": str}]
-    for char_info in tdata.get("characters", []) or []:
-        images_list = char_info.get("images", []) or []
-        legacy_b64 = char_info.get("imageB64", "")
+    # --- subject slots (metadata only) ---
+    # `subjects` is what the editor writes now; `characters` is the same panel's old key
+    # and is still read, because a slot holding a scene or a prop is the same structure
+    # that used to hold only characters.
+    subject_slots = []
+    raw_slots = tdata.get("subjects")
+    if not isinstance(raw_slots, list):
+        raw_slots = tdata.get("characters", []) or []
+    for info in raw_slots[:MAX_SUBJECT_SLOTS]:
+        images_list = info.get("images", []) or []
+        legacy_b64 = info.get("imageB64", "")
         if legacy_b64 and not images_list:
-            images_list = [{"b64": legacy_b64, "name": char_info.get("fileName", "")}]
-        char_slots.append({"images": images_list,
-                           "description": char_info.get("description", "") or "",
-                           "type": (char_info.get("type", "") or "character").lower()})
+            images_list = [{"b64": legacy_b64, "name": info.get("fileName", "")}]
+        subject_slots.append({
+            "images": images_list,
+            "description": info.get("description", "") or "",
+            # what to call the subject after its first appearance, when there is no
+            # <Subject N> label to name it with. Empty repeats the description, which is
+            # what every timeline written before this field did.
+            "short_name": (info.get("shortName", "") or "").strip(),
+            "kind": sanitize_kind(info.get("kind")),
+            "retention": sanitize_retention(info.get("retention")),
+            "note": info.get("retentionNote", "") or "",
+        })
 
     # --- shots + image events ---
     shots, events = [], []
@@ -546,7 +1147,9 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
                 if overlaps(seg, win_start, win_end) and (seg.get("prompt") or "").strip():
                     text = seg["prompt"]
                     break
-        shots.append({"prompt": text, "start_sec": 0.0, "end_sec": window_seconds})
+        text, spoken = split_dialogue(text)
+        shots.append({"prompt": text, "dialogue": spoken,
+                      "start_sec": 0.0, "end_sec": window_seconds})
     else:
         segments = [s for s in (tdata.get("segments", []) or [])
                     if overlaps(s, win_start, win_end)]
@@ -556,8 +1159,10 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
             seg_len = float(seg.get("length", 1))
             rel_start = max(0.0, seg_start - win_start)
             rel_end = min(float(duration_frames), seg_start + seg_len - win_start)
-            shots.append({"prompt": seg.get("prompt", "") or "",
-                          "dialogue": seg.get("dialogue", []) or [],
+            # dialogue is lifted before anything else touches the text, so a shot
+            # whose whole content is a spoken line still becomes a numbered shot
+            prose, spoken = split_dialogue(seg.get("prompt", "") or "")
+            shots.append({"prompt": prose, "dialogue": spoken,
                           "start_sec": rel_start / fps, "end_sec": rel_end / fps})
 
             kind = seg.get("type", "image")
@@ -576,19 +1181,18 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
 
     # --- reference ordinals, in the order the tokenizer will present them ---
     char_tag_values = {}
+    char_tag_later = {}      # what a tag resolves to after its first appearance
     ref_notes = []
     ref_image_slots = []     # {"source": "char"/"input"/"timeline", ...} in <Picture i> order
 
     if ref_mode_on:
-        for slot_idx, slot in enumerate(char_slots):
+        for slot_idx, slot in enumerate(subject_slots):
             if not slot["images"] or len(ref_image_slots) >= MAX_REF_IMAGES:
                 continue
-            char_tag_values[slot_idx + 1] = "<Picture %d>" % (len(ref_image_slots) + 1)
             for img in slot["images"]:
                 if len(ref_image_slots) >= MAX_REF_IMAGES:
                     break
                 ref_image_slots.append({"source": "char", "slot": slot_idx, "image": img})
-                ref_image_slots[-1]["slot"] = slot_idx
 
         # Images arriving through the `ref_images` input used to be numbered and never
         # described — they took a <Picture N> and the prompt said nothing about what was
@@ -596,15 +1200,16 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
         # per image fills that in, in the guide's own sentence shape
         # ("<Picture 3> is a storyboard reference for [Shot 1] …"). Blank lines are kept as
         # placeholders so line 3 always describes the third image (issue #8).
+        #
+        # The line is kept on the slot rather than written out here, because every other
+        # declaration is built once the caps have trimmed: a note written at this point
+        # would describe a picture that may not survive to be sent.
         notes = [n.strip() for n in (ref_image_notes or "").splitlines()]
         for index in range(max(0, int(extra_ref_image_count))):
             if len(ref_image_slots) >= MAX_REF_IMAGES:
                 break
-            ordinal = len(ref_image_slots) + 1
             text = notes[index] if index < len(notes) else ""
-            if text:
-                ref_notes.append("<Picture %d> is %s" % (ordinal, text.rstrip(".")))
-            ref_image_slots.append({"source": "input"})
+            ref_image_slots.append({"source": "input", "desc": text})
 
         # Timeline images in the order they appear on the timeline. `events` is already
         # chronological, so <Picture n> counts up with time. Character slots and the
@@ -626,50 +1231,68 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
         # text. An image whose own segment has no prompt gets the guide's shot-free
         # phrasing rather than a number the reader cannot find.
         #
-        # Which of the three sentences applies is decided by where the image sits in *its
-        # own shot*, not by the fl2va anchor roles. One timeline segment is one shot and
-        # the image opens it, so a picture is what its shot begins from — even the last
-        # one on the timeline, which starts the final shot rather than ending it. 0.1.5
-        # read `last` off the fl2va classifier and announced a hard cut's opening image as
-        # what the shot "ends on" (issue #4). "Ends on" is now reserved for the segment
-        # the user explicitly flagged as an end frame, which is the only place the
-        # intention is actually stated.
+        # Only what the wording will be *derived from* is recorded here. The sentences
+        # themselves are built after the total-file cap has trimmed the list, so a
+        # reference that did not survive never had a note to prune — the old code wrote
+        # the notes first and then parsed the strings back apart to drop them again.
         #
-        # The role still lives on the slot, where it is not about wording at all: it picks
-        # which frame of a *video* segment becomes the reference and whether it is fitted
-        # to the canvas. It follows the same rule, so the picture the prompt describes is
-        # the frame that gets encoded. See minimax_director.py.
+        # `picture_role` is what the image does inside *its own shot*; `ref_role` is what
+        # the user says the image is *for*. Only an untouched `auto` image is a real
+        # keyframe: that flag is not about wording at all, it picks which frame of a video
+        # segment becomes the reference and whether it is fitted to the canvas. See
+        # minimax_director.py.
+        #
+        # The fl2va anchor roles are deliberately not consulted here. One timeline segment
+        # is one shot and the image opens it, so a picture is what its shot begins from —
+        # including the last one on the timeline, which starts the final shot rather than
+        # ending the video. Reading `last` off the fl2va classifier announced a hard cut's
+        # opening image as what the shot "ends on", and made the wording depend on whether
+        # a segment happened to finish flush with the window: three frames shorter and the
+        # same image was something else entirely. `ends on` is now reserved for a segment
+        # explicitly flagged as an end frame, the only place that intention is stated
+        # rather than inferred from geometry.
         written_shot_no = {}
         counted = 0
         for shot_i, shot in enumerate(shots):
-            if (shot["prompt"] or "").strip():
+            if shot_has_text(shot):
                 counted += 1
                 written_shot_no[shot_i] = counted
 
         for ev in events:
             if len(ref_image_slots) >= MAX_REF_IMAGES:
                 break
-            ordinal = len(ref_image_slots) + 1
-            slot = {"source": "timeline", "event": ev}
+            seg = ev["seg"]
+            ref_role = sanitize_ref_role(seg.get("refRole"))
             shot_no = written_shot_no.get(ev.get("shot_index"))
-            at = fmt_seconds(ev["rel_start_f"] / fps)
             if ev["is_end"]:
-                slot["keyframe"] = ROLE_LAST
-                ref_notes.append("[Shot %d] ends on <Picture %d>" % (shot_no, ordinal)
-                                 if shot_no else
-                                 "The video ends on <Picture %d>" % ordinal)
+                picture_role = ROLE_LAST
             elif shot_no:
-                slot["keyframe"] = ROLE_FIRST
-                ref_notes.append("[Shot %d] begins from <Picture %d>" % (shot_no, ordinal))
+                picture_role = ROLE_FIRST
             else:
-                # no text on its own segment, so there is no [Shot N] to point at
-                ref_notes.append("<Picture %d> is a composition anchor at %s"
-                                 % (ordinal, at))
+                # no text on its own segment, so there is no [Shot N] to point at and
+                # nothing it can be said to open: it is an anchor, and stays uncropped
+                picture_role = ROLE_MIDDLE
+            slot = {"source": "timeline", "event": ev, "ref_role": ref_role,
+                    "picture_role": picture_role,
+                    "kind": sanitize_kind(seg.get("refKind")),
+                    "retention": sanitize_retention(seg.get("retention")),
+                    "desc": (seg.get("refDesc") or "").strip(),
+                    "note": (seg.get("refNote") or "").strip(),
+                    "shot_no": shot_no,
+                    "at": fmt_seconds(ev["rel_start_f"] / fps)}
+            if ref_role == REF_ROLE_AUTO and picture_role in (ROLE_FIRST, ROLE_LAST):
+                slot["keyframe"] = picture_role
             ref_image_slots.append(slot)
     else:
-        for slot_idx, slot in enumerate(char_slots):
+        # The base guide has no subject_definitions section: with references off, a subject
+        # exists only as prose inside integrated_multimodal_description, established "when
+        # a speaker first appears" and referred to consistently after that. So the slot's
+        # description *is* the definition, dropped in where the tag sits.
+        for slot_idx, slot in enumerate(subject_slots):
             if slot["description"]:
                 char_tag_values[slot_idx + 1] = slot["description"]
+                if slot["short_name"]:
+                    char_tag_later[slot_idx + 1] = slot["short_name"]
 
     # --- reference video / audio tracks ---
     ref_video_segs, ref_audio_segs = [], []
@@ -690,6 +1313,17 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
     # The per-type caps are not the whole story: H3 also takes at most 12 reference files
     # across all types. Trim from the back so the earlier, more deliberate references win.
     ref_warnings = []
+
+    # The panel keeps its images either way, so switching the toolbar back does not cost
+    # the work — but on this path they are never sent, and a slot that looks filled and
+    # does nothing is worth one line.
+    if not ref_mode_on:
+        unsent = sum(1 for s in subject_slots if s["images"])
+        if unsent:
+            ref_warnings.append(
+                "%d subject slot(s) hold reference images; fl2va sends none of them. Only "
+                "the written description reaches the prompt." % unsent)
+
     total_files = len(ref_image_slots) + len(ref_video_segs) + len(ref_audio_segs)
     if total_files > MAX_REF_FILES:
         excess = total_files - MAX_REF_FILES
@@ -701,11 +1335,6 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
         ref_warnings.append(
             "H3 takes at most %d reference files in total; %d were dropped."
             % (MAX_REF_FILES, total_files - MAX_REF_FILES))
-        # drop the notes for every picture that was trimmed, not just the first one
-        kept_pictures = len(ref_image_slots)
-        ref_notes = [n for n in ref_notes
-                     if not (n.startswith("<Picture ")
-                             and int(n[9:n.index(">")]) > kept_pictures)]
 
     # reference videos: each 2-15s, and no more than 15s of them together
     if ref_video_segs:
@@ -735,22 +1364,113 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
     length = align_frame_count(max(5, int(round(window_seconds * MODEL_FPS))))
     actual_seconds = length / MODEL_FPS
 
-    # --- prompt ---
-    subject_lines, subject_of_slot, bound_audio = [], {}, {}
-    if ref_mode_on and prompt_format == FORMAT_MINIMAX:
-        subject_lines, subject_of_slot, bound_audio = build_subject_definitions(
-            char_slots, ref_image_slots, ref_video_segs, ref_audio_segs)
-        # a named subject beats a bare picture label: it survives across cuts
-        for slot, subject in subject_of_slot.items():
-            char_tag_values[slot] = "<Subject %d>" % subject
+    # --- reference labels ---
+    # Built after the caps have done their trimming, so every declaration describes a
+    # reference that is actually being sent.
+    subject_lines, subject_of_slot, ref_labels, pic_texts = [], {}, [], {}
+    if ref_mode_on:
+        (subject_lines, subject_of_slot, ref_labels, pic_texts,
+         subject_notes) = build_subject_definitions(
+            subject_slots, ref_image_slots, ref_video_segs, ref_audio_segs)
+        # the comfyui format has no sections to put any of this in, so it keeps the one
+        # flat notes line — which is the same set of facts in the guide's older phrasing.
+        # Subjects go in front of the pictures: this format resolves a tag to the bare
+        # <Picture N> that shows the subject, so a description typed into a slot had
+        # nowhere at all to go and was simply dropped (issue #14).
+        ref_notes = subject_notes + [pic_texts[o]["note"] for o in sorted(pic_texts)]
 
-    global_prompt = substitute_char_tags(global_prompt, char_tag_values)
+        # A slot whose pictures were all trimmed away must not keep pointing at an ordinal
+        # that no longer exists; it falls back to its description, exactly as it would
+        # with references off.
+        char_tag_values, char_tag_later = {}, {}
+        for slot_index, slot in enumerate(subject_slots):
+            ordinals = [i + 1 for i, s in enumerate(ref_image_slots)
+                        if s.get("source") == "char" and s.get("slot") == slot_index]
+            if ordinals:
+                char_tag_values[slot_index + 1] = "<Picture %d>" % ordinals[0]
+            elif slot["description"]:
+                # no picture, so no label — this slot is prose here too, and takes the
+                # base guide's first-in-full-then-a-handle treatment with it
+                char_tag_values[slot_index + 1] = slot["description"]
+                if slot["short_name"]:
+                    char_tag_later[slot_index + 1] = slot["short_name"]
+
+        if prompt_format == FORMAT_MINIMAX:
+            # a named subject beats a bare picture label: it survives across cuts
+            for slot, subject in subject_of_slot.items():
+                char_tag_values[slot] = "<Subject %d>" % subject
+
+    # A line meant to be spoken that the dialogue rule did not claim, reported before the
+    # tags resolve — afterwards there is no "@ref1" left to point at, only the label it
+    # became. The shot number is the body's, which counts only shots carrying text.
+    near_miss_no = 0
     for shot in shots:
-        shot["prompt"] = substitute_char_tags(shot["prompt"], char_tag_values)
-        spoken = _format_dialogue(shot.get("dialogue"), subject_of_slot, char_slots)
-        if spoken:
-            base = shot["prompt"].rstrip()
-            shot["prompt"] = (base + " " + spoken) if base else spoken
+        if not shot_has_text(shot):
+            continue
+        near_miss_no += 1
+        for line, reason in near_miss_dialogue(shot["prompt"]):
+            if reason == "alias":
+                ref_warnings.append(
+                    "[Shot %d] `%s` names a subject with @char, which does not speak. Write "
+                    "@ref%s for a spoken line, so it gets a speaker ID and <d>[Language] …</d>."
+                    % (near_miss_no, line, NEAR_MISS_ALIAS_RE.match(line).group(1)))
+            else:
+                ref_warnings.append(
+                    "[Shot %d] `%s` reads as dialogue but has no colon, so it stayed narration "
+                    "— no speaker ID, no <d>[Language] …</d>. Dialogue is `@ref1 <how it is "
+                    "said>: the words`." % (near_miss_no, line))
+
+    # Left to right through the finished video — `summary`, then the global block, then
+    # each shot in turn, its prose before its dialogue. `seen_slots` is what makes "the
+    # first appearance" mean the first one anywhere rather than the first one in this
+    # particular string: a subject that speaks in shot 1 and is described in shot 2 is
+    # introduced by its spoken line, not re-introduced afterwards.
+    #
+    # Speakers are numbered in the same pass, which also has to happen after the tags
+    # resolve to their labels and before the shot text is read back for
+    # `(appears in [Shot N])` — a subject that only ever speaks still appears in the
+    # shots where it speaks.
+    seen_slots = set()
+
+    # `summary` is a box like any other, so a tag typed in it has to resolve like any
+    # other — it reached the model as a literal "@ref1" before this. It goes first because
+    # the guide's section order puts it above detailed_description, which is what "first
+    # appearance" has to mean here. Only ref2va emits the section: substituting it on the
+    # fl2va path would mark a slot as already introduced on the strength of a sentence
+    # that never gets written out, and the global prompt would then open with a short name
+    # for someone nothing had named yet.
+    summary_text = (summary or "").strip() or (tdata.get("summary", "") or "").strip()
+    if ref_mode_on:
+        summary_text = substitute_char_tags(summary_text, char_tag_values, char_tag_later,
+                                            seen_slots)
+
+    global_prompt = substitute_char_tags(global_prompt, char_tag_values, char_tag_later,
+                                         seen_slots)
+
+    def label_for_slot(slot):
+        value = char_tag_values.get(slot)
+        if slot in seen_slots:
+            value = char_tag_later.get(slot) or value
+        seen_slots.add(slot)
+        return value
+
+    speaker_ids = {}
+    for shot in shots:
+        render_shot(shot, char_tag_values, char_tag_later, seen_slots, speaker_ids,
+                    label_for_slot)
+
+    # Now that every speaker has an ID, the voice-reference declarations can end the way the
+    # guide ends them. Only the panel-slot speakers map onto subjects — a @voice(…) speaker
+    # has no <Subject N> to be the timbre reference for.
+    speaker_of_subject = {subject_of_slot[slot]: speaker
+                          for (kind, slot), speaker in speaker_ids.items()
+                          if kind == "slot" and slot in subject_of_slot}
+    apply_speaker_ids(subject_lines, ref_labels, speaker_of_subject)
+    slot_of_subject = {subject: slot for slot, subject in subject_of_slot.items()}
+
+    # only the minimax format has a detailed_description to measure; the key exists either
+    # way so every caller can read it without checking the format first
+    description_words = 0
 
     if prompt_format == FORMAT_MINIMAX:
         # the guide keeps the soundtrack out of the shot description
@@ -765,43 +1485,116 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
                          "Audio:" if label == "overall_soundscape" else "Music:")
         soundscape = (soundscape or "").strip() or found_audio
         music = (music or "").strip() or found_music
-        retention_lines = build_retention_analysis(
-            char_slots, subject_of_slot, ref_video_segs, ref_audio_segs, bound_audio)
-        if ref_notes:
-            retention_lines.extend(n.rstrip(".") + "." for n in ref_notes)
 
-        # summary: a factual scaffold the node computes (duration + how the audio is driven)
-        # followed by the hand-written global brief. On ref2va the style/global moves HERE,
-        # out of detailed_description, matching the guide's structure — subjects, then the
-        # brief, then retention, then the shots. fl2va keeps its keyframe-alignment line and
-        # its global in the body.
-        summary = ""
-        body_global = global_prompt
+        # Which shots each subject actually turns up in, read back off the shot text now
+        # that the tags have been substituted. Numbering matches the body, which counts
+        # only shots carrying text.
+        subject_shots = {}
+        written_no = 0
+        for shot in shots:
+            if not shot_has_text(shot):
+                continue
+            written_no += 1
+            # dialogue counts: a subject that only ever speaks still appears in that shot
+            body = shot.get("text") or ""
+            for entry in ref_labels:
+                num = entry.get("subject")
+                if num and entry["label"] in body:
+                    subject_shots.setdefault(num, []).append(written_no)
+
+        retention_lines = build_retention_analysis(ref_labels, subject_shots)
+        # "Do not write (Sx) in retention_analysis" — the IDs belong to vocal events in
+        # detailed_description. Only a hand-written note can put one here, so say so
+        # rather than quietly editing what was typed.
+        if any(SPEAKER_ID_RE.search(line) for line in retention_lines):
+            ref_warnings.append(
+                "A speaker ID (Sx) appears in retention_analysis; the guide reserves those "
+                "for detailed_description.")
+
+        # guide 5.3: name the frame anchor inside the shot as well as declaring it above
+        for ordinal, texts in pic_texts.items():
+            if not texts["phrase"]:
+                continue
+            shot_index = ref_image_slots[ordinal - 1]["event"].get("shot_index")
+            if shot_index is not None and 0 <= shot_index < len(shots):
+                shots[shot_index].setdefault("ref_phrases", []).append(texts["phrase"])
+
+        # `summary` is the reference guide's section. The base guide's structure is
+        # explicit and closed — the alignment instruction, then "Three Core Fields
+        # (Required, in this order)" — so on the fl2va path a summary line would be a
+        # section H3 was never trained to read there. The box keeps its text for when the
+        # toolbar goes back.
+        summary_line = ""
+        if ref_mode_on:
+            summary_line = " ".join(x for x in (
+                task_type_prefix(ref_image_slots, ref_video_segs, ref_audio_segs,
+                                 tdata.get("task_type_override")),
+                summary_text,
+            ) if x)
+
+        # Only the fl2va path: ref2va has no keyframe slot and its guide asks for no
+        # instruction line. `written` mirrors the shot numbering the body will use.
         instruction = ""
         if not ref_mode_on:
-            written_shots = len([s for s in shots if (s["prompt"] or "").strip()])
+            written_shots = len([s for s in shots if shot_has_text(s)])
             instruction = alignment_instruction(
                 any(e["role"] == ROLE_FIRST for e in events),
                 any(e["role"] == ROLE_LAST for e in events),
                 written_shots, actual_seconds)
-        else:
-            if ref_audio_segs:
-                audio_clause = "synchronized native stereo audio that follows the reference track"
-            elif (soundscape or "").strip() or (music or "").strip():
-                audio_clause = "native synchronized stereo sound designed together with the picture"
-            else:
-                audio_clause = "native synchronized stereo audio"
-            scaffold = ("[reference generation] Generate one continuous %d-second sequence with "
-                        "%s. Treat character cinematography, editing, compositing, graphic "
-                        "transitions, and sound as one unified generation."
-                        % (max(1, round(actual_seconds)), audio_clause))
-            gp = (global_prompt or "").strip()
-            summary = scaffold + ("\n\n" + gp if gp else "")
-            body_global = ""   # the global brief now lives in the summary, not the body
+        prompt = compile_storyboard_minimax(global_prompt, shots, soundscape, music,
+                                            subject_lines, retention_lines, instruction,
+                                            summary_line)
 
-        prompt = compile_storyboard_minimax(body_global, shots, soundscape, music,
-                                            subject_lines, retention_lines,
-                                            instruction=instruction, summary=summary)
+        # Measured on detailed_description alone — the label blocks and the sound sections
+        # are not what the guide is counting.
+        #
+        # Reported as a figure, not a warning. The guide's 350-500 is a lot of words for a
+        # 5-15 second clip, so being under it is the ordinary state here rather than a
+        # fault: warning about it fired on essentially every timeline, which is how a
+        # warning area stops being read at all. Only overshooting the range is called out,
+        # where the prompt really has outgrown what the guide describes.
+        description_words = len(global_prompt.split()) + sum(
+            len((s.get("text") or "").split()) for s in shots if shot_has_text(s))
+        #
+        # Only on the reference path: 350-500 is that guide's figure for its own
+        # detailed_description. The base guide gives no word count at all, so citing one
+        # there would put words in its mouth. The figure is still reported either way.
+        if ref_mode_on and description_words > DESCRIPTION_MAX_WORDS:
+            ref_warnings.append(
+                "detailed_description is about %d words; the guide suggests %d-%d for "
+                "generation tasks."
+                % (description_words, DESCRIPTION_MIN_WORDS, DESCRIPTION_MAX_WORDS))
+
+        # Both guides list the three core fields as required, and this is the one that
+        # cannot be filled in for the user: "N/A" here means the video was asked to be
+        # silent, which is a claim only the user can make. H3 generates the audio, so
+        # leaving it out hands the whole soundtrack to the model's guess.
+        if not (soundscape or "").strip():
+            ref_warnings.append(
+                "overall_soundscape is empty; the guide lists it as a required field. "
+                "Describe the ambience, or write N/A if the video is meant to be silent.")
+
+        # The same rule for the field that carries the whole video. Unlike the soundscape
+        # there is no N/A for it: a prompt with no detailed_description has described nothing,
+        # and the section is simply absent from the output rather than visibly empty.
+        if not description_words:
+            ref_warnings.append(
+                "detailed_description is empty; the guide lists it as a required field. "
+                "Write what happens in the global prompt box or on a timeline segment.")
+
+        # A voice-timbre reference for someone who never speaks. The guide's declaration
+        # "reuses the same (Sx) but never assigns a new one independently", so with no vocal
+        # event there is no ID to reuse and the sentence ends on the label — correct, and
+        # baffling if nothing says why.
+        for entry in ref_labels:
+            subject = entry.get("voice_of")
+            if not subject or subject in speaker_of_subject:
+                continue
+            ref_warnings.append(
+                "%s is the voice of <Subject %d>, who has no spoken line, so the guide's "
+                "speaker ID could not be reused in its definition. Write the line as "
+                "`@ref%s says: …` to give them one."
+                % (entry["label"], subject, slot_of_subject.get(subject, "N")))
     else:
         prompt = compile_storyboard(global_prompt, shots, window_seconds)
         if ref_notes:
@@ -839,11 +1632,16 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
         "prompt": prompt, "prompt_is_fallback": fallback,
         "prompt_overridden": overridden, "compiled_prompt": compiled_prompt,
         "shots": shots, "events": events, "retake": retake,
-        "subject_lines": subject_lines, "retention_lines": retention_lines,
         "ref_mode_on": ref_mode_on, "mode": mode,
+        # Which panel slot became which <Subject N>, keyed by 1-based slot. Not the slot
+        # number: only slots that hand over a reference image are numbered, so slot 2 is
+        # <Subject 1> when slot 1 is empty. The editor needs the answer to label its own
+        # menus, and working it out there would be a second copy of this rule.
+        "subject_of_slot": subject_of_slot,
         "ref_image_slots": ref_image_slots, "ref_notes": ref_notes,
         "ref_video_segs": ref_video_segs, "ref_audio_segs": ref_audio_segs,
         "ref_warnings": ref_warnings, "prompt_format": prompt_format,
+        "description_words": description_words,
         "char_tag_values": char_tag_values,
         "win_start": win_start, "duration_frames": duration_frames, "fps": fps,
         "window_seconds": window_seconds,

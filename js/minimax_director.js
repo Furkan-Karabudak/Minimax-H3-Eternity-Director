@@ -26,22 +26,54 @@ const MOTION_TRACK_HEIGHT = 80; // used as the Reference Video track height
 const CANVAS_HEIGHT = RULER_HEIGHT + BLOCK_HEIGHT + MOTION_TRACK_HEIGHT + AUDIO_TRACK_HEIGHT;
 const HANDLE_HIT_PX = 14;
 const MIN_SEGMENT_LENGTH = 6;
-// The overall_soundscape / non_diegetic_music strip is docked inside the global prompt
-// box, so the box has to be tall enough for both. MUST match .mmxd-sound-row's height in
-// the stylesheet — the CSS shortens the textarea by exactly this much, and if the two
-// disagree the prompt area either overlaps the strip or leaves a gap.
-const SOUND_ROW_HEIGHT = 54;                                      // legacy; audio now has its own section
+// The overall_soundscape / non_diegetic_music / summary strip sits *beside* the global
+// prompt box as a flex sibling, not inside it. It used to be absolutely positioned on top
+// of the textarea, with the textarea shortened by a hard-coded calc() to make room — so
+// the two fought over the same space and the strip sat on the box's own border. As a flex
+// child the panel divides itself, and these constants only have to reserve node height.
+// The 12px of bottom padding clears the panel's absolutely-positioned drag strip.
+const SOUND_ROW_HEIGHT = 66;   // 50px of field + 4 top + 12 bottom to clear the resizer
 const GLOBAL_PROMPT_MIN_H = 60;                                    // the prompt box alone
-const GLOBAL_PROP_MIN_H = GLOBAL_PROMPT_MIN_H;                     // global-prompt box only; audio is its own section below
+const GLOBAL_PROP_MIN_H = GLOBAL_PROMPT_MIN_H + SOUND_ROW_HEIGHT;  // prompt box + strip
+// The per-reference "describes / retained" strip in the segment properties panel, built
+// the same way. Hiding it with display:none gives the prompt box its height straight back.
+const REF_NOTE_ROW_HEIGHT = 66;
+// start / frames / size for a reference video. Reference frames are VAE-encoded whole and
+// their latents ride through every sampling step, so a long or large clip is the usual
+// cause of an out-of-memory render — and until now the only way to shorten one was to drag
+// its edge on the track, with nothing anywhere saying what it currently was.
+const REF_LIMITS_ROW_HEIGHT = 30;
+const REF_VIDEO_SIZES = [768, 640, 512, 384, 256];   // mirrors minimax_plan.REF_VIDEO_SIZES
+const PROP_MIN_H = 90;                                             // prompt box alone
 const MAX_THUMBNAIL_DIM = 512; // Increased to maintain quality for taller images
 
 const HIDDEN_WIDGET_NAMES = ["timeline_data", "local_prompts", "segment_lengths", "guide_strength", "audio_data", "use_custom_audio", "inpaint_audio", "use_custom_motion", "override_audio"];
 
-// Subject slots. Three was a number baked into the code, not a model limit — the card
-// caps total reference images at 9 and each slot holds 2, so there is room for more.
-const CHAR_SLOTS_DEFAULT = 5;
-const CHAR_SLOTS_MIN = 1;
-const CHAR_SLOTS_MAX = 9;
+// The Analyze API key is kept in ComfyUI's own user settings and deliberately NOT in
+// `timeline_data`: that widget is serialised into the workflow JSON, so a key stored
+// there would travel with every workflow the user shares, and with every screenshot of
+// the properties panel (issue #15). Settings live in user/<name>/comfy.settings.json and
+// stay on the machine that typed them.
+const ANALYZE_KEY_SETTING = "MiniMaxH3.Analyze.ApiKey";
+
+function getAnalyzeApiKey() {
+  try {
+    return app.extensionManager?.setting?.get(ANALYZE_KEY_SETTING) || "";
+  } catch (e) {
+    mmxdLog("could not read the Analyze API key setting:", e);
+    return "";
+  }
+}
+
+async function setAnalyzeApiKey(value) {
+  try {
+    await app.extensionManager?.setting?.set(ANALYZE_KEY_SETTING, value || "");
+    return true;
+  } catch (e) {
+    console.warn("[MiniMaxH3] could not save the Analyze API key:", e);
+    return false;
+  }
+}
 
 function hideWidget(w) {
   if (!w) return;
@@ -63,6 +95,19 @@ function hideWidget(w) {
 
   if (w.element) w.element.style.display = "none";
   if (w.callback) w.callback(w.value);
+}
+
+// A hidden widget keeps its input slot, and a slot whose widget is never laid out is not
+// drawn anywhere: LiteGraph leaves it sitting at the node's own origin, so the settings
+// panel left five invisible sockets stacked under the title bar, where a dropped link
+// could still land on one (issue #14). Drop the slot when nothing is wired to it — a link
+// saved in an older workflow keeps its socket, and the settings panel keeps ownership of
+// the value either way. Width and height have proper connection-only inputs now.
+function dropUnlinkedWidgetInput(node, name) {
+  if (window.LiteGraph && window.LiteGraph.vueNodesMode) return;   // Vue hides both already
+  if (!node || !node.inputs) return;
+  const i = node.inputs.findIndex(sl => sl.name === name && sl.widget);
+  if (i !== -1 && node.inputs[i].link == null) node.removeInput(i);
 }
 
 function showWidget(w) {
@@ -179,6 +224,8 @@ const STYLES = `
   .mmxd-prompt-wrapper.focus-active {
     border-color: #888;
   }
+  @keyframes mmxdFlash { 0% { box-shadow: 0 0 0 2px rgba(79,255,143,0.9); } 100% { box-shadow: 0 0 0 2px rgba(79,255,143,0); } }
+  .mmxd-flash { animation: mmxdFlash 0.75s ease-out; }
   .mmxd-wrapper.has-focus .mmxd-prompt-wrapper:not(.focus-active),
   .mmxd-wrapper:has(.mmxd-prompt-wrapper.focus-active) .mmxd-prompt-wrapper:not(.focus-active) {
     opacity: 0.65;
@@ -657,50 +704,41 @@ const STYLES = `
     border-top: 1px solid #333;
     margin: 4px 0;
   }
-  /* --- Character reference slots --- */
-  .mmxd-characters-container { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; margin-bottom: 4px; box-sizing: border-box; width: 100%; flex-shrink: 0; }
-  .mmxd-character-slot { flex: 1; background: #1e1e1e; border: 1.5px dashed #444; border-radius: 8px; height: 326px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 4px; position: relative; cursor: pointer; overflow: hidden; transition: all 0.2s ease; box-sizing: border-box; }
+  /* --- Subject reference slots --- */
+  .mmxd-characters-container { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 12px; margin-top: 6px; margin-bottom: 4px; box-sizing: border-box; width: 100%; flex-shrink: 0; }
+  /* grows to nine slots, so they wrap into rows of three rather than shrinking to slivers */
+  /* height is set inline from the dragged panel size — deliberately not duplicated here */
+  .mmxd-character-slot { flex: 1 1 calc(20% - 10px); min-width: 110px; min-height: 300px; background: #1e1e1e; border: 1.5px dashed #444; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 4px; position: relative; cursor: pointer; overflow: hidden; transition: border-color 0.2s ease, background 0.2s ease; box-sizing: border-box; }
   .mmxd-character-slot:hover { border-color: #666; background: #252525; }
   .mmxd-character-slot.drag-over { border-color: #4fff8f; background: rgba(79, 255, 143, 0.05); }
   .mmxd-character-label { font-size: 10px; font-weight: bold; color: #888; margin-bottom: 2px; pointer-events: none; }
   .mmxd-character-placeholder { font-size: 9px; color: #666; text-align: center; pointer-events: none; margin-top: 10px; }
-  .mmxd-character-previews-row { display: flex; width: 100%; height: 192px; gap: 4px; position: relative; }
+  /* the empty slot's drop target: takes the same slack the previews row takes, so the
+     text boxes below it sit at the same height whether or not an image has been dropped */
+  .mmxd-character-dropzone { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; flex: 1 1 auto; min-height: 44px; pointer-events: none; }
+  .mmxd-character-dropzone .mmxd-character-placeholder { margin-top: 4px; }
+  /* the only part of a slot that flexes, so dragging the panel taller grows the images */
+  .mmxd-character-previews-row { display: flex; width: 100%; flex: 1 1 auto; min-height: 44px; gap: 4px; position: relative; }
   .mmxd-character-preview-wrapper { flex: 1; height: 100%; position: relative; overflow: hidden; border-radius: 3px; background: #111; }
-  .mmxd-character-preview { width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+  .mmxd-character-preview { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
   .mmxd-character-delete { position: absolute; top: 2px; right: 2px; background: rgba(0, 0, 0, 0.85); color: #ff4444; border: none; border-radius: 50%; width: 14px; height: 14px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 9px; transition: background 0.15s; z-index: 10; padding: 0; }
   .mmxd-character-delete:hover { background: #ff4444; color: #fff; }
   .mmxd-character-validate-btn { position: absolute; bottom: -8px; left: 50%; transform: translateX(-50%); background: rgba(0, 0, 0, 0.85); color: #e0e0e0; border: 1px solid #444; border-radius: 3px; padding: 2px 8px; font-size: 9px; font-weight: bold; cursor: pointer; transition: all 0.15s; z-index: 20; }
   .mmxd-character-validate-btn:hover { background: #4fff8f; color: #000; border-color: #4fff8f; }
   .mmxd-character-validate-btn.loading { background: #333; color: #888; cursor: wait; pointer-events: none; }
-  .mmxd-character-desc { width: 100%; height: 56px; background: #111; color: #e0e0e0; border: 1px solid #333; border-radius: 4px; font-size: 9px; resize: none; box-sizing: border-box; padding: 2px 4px; margin-top: 6px; outline: none; font-family: inherit; z-index: 10; }
-  .mmxd-character-desc:focus { border-color: #4fff8f; }
-  .mmxd-character-type { width: 100%; height: 22px; background: #1a1a1a; color: #cfcfcf; border: 1px solid #333; border-radius: 4px; font-size: 9px; box-sizing: border-box; padding: 1px 3px; margin-top: 8px; outline: none; font-family: inherit; cursor: pointer; z-index: 10; }
-  .mmxd-character-type:focus { border-color: #4fff8f; }
-  .mmxd-character-type:hover { border-color: #555; }
-  /* --- per-shot dialogue lines --- */
-  .mmxd-dialogue-area { width: 100%; margin-top: 6px; background: #1a1a1a; border: 1px solid #111; border-radius: 6px; padding: 6px 8px 8px 8px; box-sizing: border-box; }
-  .mmxd-dialogue-header-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }
-  .mmxd-dialogue-header { font-size: 9px; font-weight: bold; color: #666; text-transform: uppercase; letter-spacing: 0.5px; user-select: none; }
-  .mmxd-dialogue-add { font-size: 10px; background: #2a2a2a; color: #cfcfcf; border: 1px solid #444; border-radius: 4px; padding: 2px 8px; cursor: pointer; font-family: inherit; }
-  .mmxd-dialogue-add:hover { background: #383838; border-color: #4fff8f; color: #fff; }
-  .mmxd-dialogue-rows { display: flex; flex-direction: column; gap: 4px; }
-  .mmxd-dialogue-empty { font-size: 9px; color: #555; font-style: italic; }
-  .mmxd-dlg-colhead { display: flex; align-items: center; gap: 4px; padding: 0 1px; margin-bottom: 1px; }
-  .mmxd-dlg-colhead span { font-size: 8px; color: #666; text-transform: uppercase; letter-spacing: 0.4px; user-select: none; }
-  .mmxd-dlg-h-time { width: 44px; } .mmxd-dlg-h-spk { width: 96px; } .mmxd-dlg-h-lang { width: 68px; }
-  .mmxd-dlg-h-text { flex: 1 1 auto; min-width: 0; } .mmxd-dlg-h-del { width: 22px; flex-shrink: 0; }
-  .mmxd-dialogue-row { display: flex; align-items: center; gap: 4px; border-radius: 4px; padding: 1px; transition: background 0.15s ease, box-shadow 0.15s ease; }
-  .mmxd-dialogue-row.mmxd-dlg-hi { background: rgba(79,255,143,0.10); box-shadow: 0 0 0 1px rgba(79,255,143,0.7); }
-  .mmxd-dlg-time { width: 44px; height: 22px; background: #111; color: #e0e0e0; border: 1px solid #333; border-radius: 4px; font-size: 10px; box-sizing: border-box; padding: 0 3px; font-family: inherit; }
-  .mmxd-dlg-speaker { width: 96px; height: 22px; background: #111; color: #cfcfcf; border: 1px solid #333; border-radius: 4px; font-size: 9px; box-sizing: border-box; cursor: pointer; }
-  .mmxd-dlg-lang { width: 68px; height: 22px; background: #111; color: #cfcfcf; border: 1px solid #333; border-radius: 4px; font-size: 9px; box-sizing: border-box; padding: 0 3px; font-family: inherit; }
-  .mmxd-dlg-text { flex: 1 1 auto; min-width: 0; height: 22px; background: #111; color: #e0e0e0; border: 1px solid #333; border-radius: 4px; font-size: 10px; box-sizing: border-box; padding: 0 5px; font-family: inherit; }
-  .mmxd-dlg-text:focus, .mmxd-dlg-time:focus, .mmxd-dlg-lang:focus, .mmxd-dlg-speaker:focus { border-color: #4fff8f; outline: none; }
-  .mmxd-dlg-del { width: 22px; height: 22px; flex-shrink: 0; background: #2a2a2a; color: #d08080; border: 1px solid #444; border-radius: 4px; cursor: pointer; font-size: 13px; line-height: 1; padding: 0; }
-  .mmxd-dlg-del:hover { background: #3a2020; border-color: #d05050; color: #fff; }
-  @keyframes mmxdFlash { 0% { box-shadow: 0 0 0 2px rgba(79,255,143,0.9); } 100% { box-shadow: 0 0 0 2px rgba(79,255,143,0); } }
-  .mmxd-flash { animation: mmxdFlash 0.75s ease-out; }
-  /* --- @char autocomplete popup --- */
+  /* Two captioned boxes per slot: what the subject IS, and what has to survive into the
+     target video. Both are fixed height so the previews row above them takes the slack. */
+  .mmxd-character-field { position: relative; width: 100%; flex: 0 0 32px; margin-top: 6px; background: #111; border: 1px solid #333; border-radius: 4px; box-sizing: border-box; z-index: 10; }
+  .mmxd-character-field.mmxd-field-first { margin-top: 10px; }
+  .mmxd-character-field.focus-active { border-color: #4fff8f; }
+  .mmxd-character-field-label { position: absolute; top: 2px; left: 5px; font-size: 8px; font-weight: bold; color: #5a5a5a; text-transform: uppercase; letter-spacing: 0.5px; pointer-events: none; user-select: none; z-index: 5; }
+  .mmxd-character-desc { position: absolute; top: 12px; left: 0; width: 100%; height: calc(100% - 12px); background: transparent; color: #e0e0e0; border: none; font-size: 9px; line-height: 1.3; resize: none; box-sizing: border-box; padding: 0 4px 2px 4px; outline: none; font-family: inherit; }
+  .mmxd-character-desc::placeholder { color: #4a4a4a; }
+  /* --- per-reference kind / retention controls --- */
+  .mmxd-ref-controls { display: flex; gap: 4px; width: 100%; margin-top: 4px; box-sizing: border-box; }
+  .mmxd-ref-controls .mmxd-msel { flex: 1 1 0; min-width: 0; height: 20px; font-size: 9px; padding: 0 4px 0 6px; }
+  .mmxd-ref-controls .mmxd-msel-caret svg { width: 8px; height: 8px; }
+  /* --- @refN autocomplete popup --- */
   .mmxd-autocomplete-menu { position: fixed; background: #181818; border: 1px solid #444; border-radius: 6px; padding: 4px; display: flex; flex-direction: column; gap: 2px; z-index: 100000; box-shadow: 0 4px 16px rgba(0,0,0,0.6); min-width: 180px; max-height: 200px; overflow-y: auto; }
   .mmxd-autocomplete-item { background: #252525; color: #aaa; border: 1px solid #333; border-radius: 4px; padding: 6px 12px; font-size: 11px; font-family: monospace; cursor: pointer; text-align: left; display: flex; align-items: center; justify-content: space-between; transition: all 0.15s ease; }
   .mmxd-autocomplete-item:hover, .mmxd-autocomplete-item.active { background: #1c222d; color: #4fff8f; border-color: #4fff8f; }
@@ -716,24 +754,38 @@ const STYLES = `
   .mmxd-msel-caret svg { display: block; }
   .mmxd-msel-ic { display: inline-flex; align-items: center; }
   .mmxd-msel-menu { max-height: 60vh; overflow-y: auto; min-width: 120px; }
+  /* group heading inside a menu-select — a label, not a row you can pick */
+  .mmxd-msel-head { padding: 5px 8px 1px 8px; font-size: 9px; font-weight: 700; color: #6f6f6f; letter-spacing: 0.6px; text-transform: uppercase; white-space: nowrap; user-select: none; }
   .mmxd-gap-menu-btn.mmxd-msel-selected { background: #383838; border-color: #555; color: #fff; }
   /* --- Ref-mode toolbar dropdown: green-accent modifier on the menu trigger --- */
   .mmxd-ref-option-select { background: #1e1e1e; border-color: #3a3a3a; border-radius: 6px; height: 28px; font-weight: 500; }
   .mmxd-ref-option-select:hover, .mmxd-ref-option-select.mmxd-msel-open { background: #1e1e1e; border-color: #4fff8f; color: #fff; }
   .mmxd-ref-option-select .mmxd-msel-caret { color: #cfcfcf; }
-  /* --- overall_soundscape / non_diegetic_music — their own section below the prompt --- */
-  /* Pulled out of the cramped strip that used to overlay the bottom of the global prompt.
-     Now a labelled block with two full-height fields side by side. */
-  .mmxd-sound-section { display: flex; flex-direction: column; gap: 6px; padding: 8px 8px 10px 8px; margin-top: 6px; background: #1a1a1a; border: 1px solid #111; border-radius: 6px; box-sizing: border-box; }
-  .mmxd-sound-section-label { font-size: 9px; font-weight: bold; color: #666; text-transform: uppercase; letter-spacing: 0.5px; user-select: none; pointer-events: none; }
-  .mmxd-sound-row { display: flex; gap: 8px; width: 100%; box-sizing: border-box; }
-  .mmxd-sound-field { position: relative; flex: 1 1 0; min-width: 0; height: 96px; background: #1c1c1c; border: 1px solid #111; border-radius: 4px; box-sizing: border-box; }
+  /* --- overall_soundscape / non_diegetic_music, docked under the global prompt --- */
+  /* The wrapper positions its children absolutely, so this row sits at the bottom and
+     the prompt area above it is shortened by exactly the same amount. Nothing here
+     changes the node's height: the container keeps whatever the user resized it to. */
+  /* A flex child of the properties panel, not an overlay inside the prompt box. It was
+     absolutely positioned on top of the textarea, which meant the two fought over the
+     same space: the box shrank by a hard-coded calc() and the strip sat on its border. */
+  .mmxd-sound-row { flex: 0 0 66px; width: 100%; display: flex; gap: 6px; padding: 4px 0 12px 0; box-sizing: border-box; }
+  /* same two-field shape as the sound strip, but a flex child of the properties panel
+     rather than a strip docked inside the prompt box — see REF_NOTE_ROW_HEIGHT */
+  .mmxd-ref-note-row { flex: 0 0 66px; width: 100%; display: flex; gap: 6px; padding: 4px 0 12px 0; box-sizing: border-box; }
+  /* start / frames / size for a reference video — the memory levers, see REF_LIMITS_ROW_HEIGHT */
+  .mmxd-ref-limits-row { flex: 0 0 30px; width: 100%; display: flex; align-items: center; gap: 10px; padding: 2px 0 4px 0; box-sizing: border-box; font-size: 10px; color: #8a8a8a; }
+  .mmxd-ref-limits-row label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .mmxd-ref-limits-row input { width: 58px; background: #111; color: #e0e0e0; border: 1px solid #333; border-radius: 3px; padding: 2px 4px; font-size: 10px; font-family: inherit; outline: none; box-sizing: border-box; }
+  .mmxd-ref-limits-row input:focus { border-color: #4fff8f; }
+  .mmxd-ref-limits-row .mmxd-msel { height: 20px; font-size: 10px; padding: 0 4px 0 6px; }
+  .mmxd-ref-limits-note { margin-left: auto; color: #5a5a5a; }
+  .mmxd-sound-field { position: relative; flex: 1 1 0; min-width: 0; background: #1c1c1c; border: 1px solid #111; border-radius: 4px; box-sizing: border-box; }
   .mmxd-sound-field.focus-active { border-color: #888; }
-  .mmxd-sound-label { position: absolute; top: 4px; left: 7px; font-size: 8px; font-weight: bold; color: #5a5a5a; text-transform: uppercase; letter-spacing: 0.5px; pointer-events: none; user-select: none; z-index: 5; }
-  .mmxd-sound-area { position: absolute; top: 16px; left: 0; width: 100%; height: calc(100% - 16px); background: transparent; color: #d0d0d0; border: none; padding: 0 7px 6px 7px; resize: none; font-size: 12px; line-height: 1.4; font-family: inherit; box-sizing: border-box; outline: none; }
+  .mmxd-sound-label { position: absolute; top: 3px; left: 6px; font-size: 8px; font-weight: bold; color: #5a5a5a; text-transform: uppercase; letter-spacing: 0.5px; pointer-events: none; user-select: none; z-index: 5; }
+  .mmxd-sound-area { position: absolute; top: 14px; left: 0; width: 100%; height: calc(100% - 14px); background: transparent; color: #d0d0d0; border: none; padding: 0 6px 4px 6px; resize: none; font-size: 11px; line-height: 1.35; font-family: inherit; box-sizing: border-box; outline: none; }
   .mmxd-sound-area::placeholder { color: #4a4a4a; }
-  /* --- subject-slot stepper --- */
-  .mmxd-character-stepper { display: flex; align-items: center; gap: 4px; align-self: center; margin-left: 4px; }
+  /* --- subject-slot stepper: its own row above the slots, never inside their flow --- */
+  .mmxd-character-stepper { display: flex; align-items: center; justify-content: flex-end; gap: 4px; height: 22px; margin-top: 6px; }
   .mmxd-character-step-btn { width: 22px; height: 22px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; background: #2a2a2a; color: #d0d0d0; border: 1px solid #444; border-radius: 4px; font-size: 14px; font-family: inherit; cursor: pointer; padding: 0; }
   .mmxd-character-step-btn:hover { background: #383838; border-color: #666; color: #fff; }
   .mmxd-character-step-count { font-size: 9px; color: #6a6a6a; text-transform: uppercase; letter-spacing: 0.5px; user-select: none; min-width: 56px; text-align: center; }
@@ -783,6 +835,13 @@ function createMenuSelect(options, opts) {
     menuEl = document.createElement("div");
     menuEl.className = "mmxd-gap-menu mmxd-msel-menu";
     optList.forEach((o) => {
+      if (o.header) {
+        const h = document.createElement("div");
+        h.className = "mmxd-msel-head";
+        h.textContent = o.label;
+        menuEl.appendChild(h);
+        return;
+      }
       const b = document.createElement("button");
       b.className = "mmxd-gap-menu-btn";
       if (String(o.value) === String(current)) b.classList.add("mmxd-msel-selected");
@@ -830,6 +889,125 @@ function createMenuSelect(options, opts) {
 
   renderLabel();
   return el;
+}
+
+
+// --- Full-reference vocabulary ------------------------------------------------------
+// Mirrors minimax_plan.py, which mirrors the H3 reference guide
+// (skills/h3-prompt-writing/references/ref-en.txt). The retention markers are shown by
+// their own names rather than friendlier ones: the guide calls them "fixed English values
+// in the output format", they are written into the prompt verbatim, and a prettier label
+// would hide which of them you actually picked.
+const MAX_SUBJECT_SLOTS = 9;
+
+const SUBJECT_KIND_OPTIONS = [
+  { value: "person", label: "person" },
+  { value: "animal", label: "animal" },
+  { value: "object", label: "object" },
+  { value: "environment", label: "environment" },
+  { value: "clothing", label: "clothing" },
+  { value: "prop", label: "prop" },
+  { value: "interface", label: "interface" },
+  { value: "effect", label: "visual effect" },
+  { value: "style", label: "style" },
+  { value: "action", label: "action" },
+  { value: "expression", label: "expression" },
+  { value: "pose", label: "pose" },
+];
+
+const RETENTION_OPTIONS = [
+  { value: "fully_preserved", label: "fully_preserved" },
+  { value: "partially_preserved", label: "partially_preserved" },
+  { value: "attribute_transfer", label: "attribute_transfer" },
+  { value: "weak_reference", label: "weak_reference" },
+];
+
+const RETENTION_AUDIO_OPTIONS = [
+  { value: "reference", label: "reference" },
+  { value: "fully_copy", label: "fully_copy" },
+  { value: "partially_copy", label: "partially_copy" },
+  { value: "weak_reference", label: "weak_reference" },
+];
+
+const REF_ROLE_OPTIONS = [
+  { value: "auto", label: "frame anchor" },
+  { value: "storyboard", label: "storyboard" },
+  { value: "subject", label: "defines a subject" },
+];
+
+const RETENTION_TIP =
+  "How closely the model follows this reference (guide 4.1):\n" +
+  "fully_preserved — keep it as defined\n" +
+  "partially_preserved — keep it, but some defined traits change\n" +
+  "attribute_transfer — move its traits onto a different subject\n" +
+  "weak_reference — broad similarity only";
+
+const RETENTION_AUDIO_TIP =
+  "How the reference audio is used (guide 4.2):\n" +
+  "reference — follow its timbre or style, do not copy the signal\n" +
+  "fully_copy — reuse it as the complete final audio track\n" +
+  "partially_copy — copy part of it, add or replace the rest\n" +
+  "weak_reference — broad similarity in category or atmosphere only";
+
+const REF_ROLE_TIP =
+  "What this image is for (guide 2.2):\n" +
+  "frame anchor — it IS a first/last frame or keyframe of its shot\n" +
+  "storyboard — it plans the shot's viewpoint and staging\n" +
+  "defines a subject — it only defines a look, so it gets no <Picture> entry";
+
+// Slots wrap three to a row; the node has to reserve the rows or it crops the last one.
+// The slot height is the user's, dragged from the strip under the panel — the previews
+// row is the only part that flexes, so every pixel gained goes to the images rather than
+// to the text boxes. Unlike SOUND_ROW_HEIGHT there is no matching CSS literal to keep in
+// step: the height is set inline per slot, precisely so there is only one of it.
+// 8 padding + 44 previews + 42 first field + 38 second field + 24 controls
+const SUBJECT_SLOT_MIN_H = 160;
+const SUBJECT_SLOT_DEFAULT_H = 215;
+const SUBJECT_SLOT_GAP = 12;
+const SUBJECT_RESIZER_H = 12;
+const SUBJECT_STEPPER_H = 26;   // the 22px buttons and the gap under them
+function subjectPanelHeight(slotCount, slotHeight) {
+  const rows = Math.max(1, Math.ceil(slotCount / 3));
+  const h = Math.max(SUBJECT_SLOT_MIN_H, slotHeight || SUBJECT_SLOT_DEFAULT_H);
+  return rows * h + (rows - 1) * SUBJECT_SLOT_GAP + 20 + SUBJECT_RESIZER_H
+    + SUBJECT_STEPPER_H;
+}
+
+// The properties panel builds its rows with innerHTML, so text the user typed has to be
+// neutralised on the way in: a description holding a `<` took the row's markup with it.
+function escapeAttr(text) {
+  return String(text == null ? "" : text)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+const SUBJECT_SLOTS_DEFAULT = 3;
+function clampSubjectSlots(n) {
+  const v = parseInt(n, 10);
+  return Math.max(1, Math.min(MAX_SUBJECT_SLOTS, v > 0 ? v : SUBJECT_SLOTS_DEFAULT));
+}
+
+function emptySubjectSlot() {
+  return { images: [], description: "", shortName: "", kind: "person",
+           retention: "fully_preserved", retentionNote: "" };
+}
+
+// Old timelines wrote `characters` and had neither kind nor retention. Reading them back
+// with today's defaults reproduces the old wording exactly, so nothing silently changes
+// meaning under an existing workflow.
+function normaliseSubjectSlots(raw) {
+  const list = Array.isArray(raw) ? raw : [];
+  const out = list.slice(0, MAX_SUBJECT_SLOTS).map((c) => ({
+    images: Array.isArray(c.images) ? c.images : [],
+    description: c.description || "",
+    shortName: c.shortName || "",
+    kind: SUBJECT_KIND_OPTIONS.some(o => o.value === c.kind) ? c.kind : "person",
+    retention: RETENTION_OPTIONS.some(o => o.value === c.retention)
+      ? c.retention : "fully_preserved",
+    retentionNote: c.retentionNote || "",
+  }));
+  while (out.length < 3) out.push(emptySubjectSlot());
+  return out;
 }
 
 
@@ -891,11 +1069,10 @@ function parseInitial(jsonStr) {
     analyzeProvider: "ollama",
     analyzeBaseUrl: "",
     analyzeModel: "",
-    characters: [
-      { images: [], description: "" },
-      { images: [], description: "" },
-      { images: [], description: "" }
-    ]
+    summary: "",
+    task_type_override: "",
+    subjectSlotCount: SUBJECT_SLOTS_DEFAULT,
+    subjects: normaliseSubjectSlots(null)
   };
   try {
     if (jsonStr) {
@@ -931,21 +1108,30 @@ function parseInitial(jsonStr) {
       if (p.analyzeProvider !== undefined) parsed.analyzeProvider = p.analyzeProvider;
       if (p.analyzeBaseUrl !== undefined) parsed.analyzeBaseUrl = p.analyzeBaseUrl;
       if (p.analyzeModel !== undefined) parsed.analyzeModel = p.analyzeModel;
-      if (Array.isArray(p.characters)) {
-        parsed.characters = p.characters.map(c => ({
-          images: Array.isArray(c.images) ? c.images : [],
-          description: c.description || "",
-          type: c.type || "character"
-        }));
-        // pad up to the default, never truncate — a workflow saved with more slots keeps
-        // every one of them
-        while (parsed.characters.length < CHAR_SLOTS_DEFAULT) {
-          parsed.characters.push({ images: [], description: "" });
-        }
+      if (p.summary !== undefined) parsed.summary = p.summary || "";
+      if (p.subjectSlotCount !== undefined) {
+        parsed.subjectSlotCount = clampSubjectSlots(p.subjectSlotCount);
+      } else if (Array.isArray(p.subjects) || Array.isArray(p.characters)) {
+        // saved before the count was stored: the slots themselves are all it left behind
+        parsed.subjectSlotCount =
+          clampSubjectSlots((p.subjects || p.characters).length);
+      }
+      if (p.task_type_override !== undefined) {
+        parsed.task_type_override = p.task_type_override || "";
+      }
+      // `subjects` is the current key; `characters` is the same panel's old one. A
+      // timeline saved before subject kinds existed reads back with today's defaults,
+      // which reproduce the wording it was written against.
+      if (Array.isArray(p.subjects) || Array.isArray(p.characters)) {
+        parsed.subjects = normaliseSubjectSlots(p.subjects || p.characters);
       }
       if (Array.isArray(p.segments)) {
         parsed.segments = p.segments.map(s => {
-          const { imgObj, videoEl, _isSeeking, thumbnails, _extractingThumbs, _sSecs, _lSecs, _tSecs, _dSecs, _uploading, _blobUrl, ...rest } = s;
+          // `isAnchor` is dropped rather than carried: the Image Anchor was an LTX
+          // concept this node never read, so an old timeline's flag is inert and would
+          // otherwise ride along in the JSON forever. Such a segment becomes an ordinary
+          // image with an empty prompt, which is what it already compiled to.
+          const { imgObj, videoEl, _isSeeking, thumbnails, _extractingThumbs, _sSecs, _lSecs, _tSecs, _dSecs, _uploading, _blobUrl, isAnchor, ...rest } = s;
           return rest;
         });
       }
@@ -963,6 +1149,18 @@ function parseInitial(jsonStr) {
       }
     }
   } catch (e) { }
+
+  // A slot with something in it must never be hidden by the count saved beside it: the
+  // planner reads the slots, so its images would still be sent with no box on screen to
+  // show them. Only ever raises, and only here — while editing, the stepper is the one
+  // writer. It fires for a hand-edited or third-party timeline, not for one this saves.
+  let lastUsed = 0;
+  (parsed.subjects || []).forEach((s, i) => {
+    if ((s.images && s.images.length) || (s.description || "").trim()) lastUsed = i + 1;
+  });
+  if (lastUsed > parsed.subjectSlotCount) {
+    parsed.subjectSlotCount = clampSubjectSlots(lastUsed);
+  }
 
   let currentStart = 0;
   for (let seg of parsed.segments) {
@@ -1034,16 +1232,6 @@ class TimelineEditor {
     this._dragTargetIdRight = null;
     this._previewSegments = null;
     this._lastWidth = 0;
-
-    // Perf: layout-sync change detection (avoids a forced reflow every frame)
-    this._syncTargetWidth = null;
-    this._syncCanvasHeight = null;
-    this._syncZoomLevel = null;
-    this._syncApplied = false;
-    // Perf: coalesced drag renders + memoized text truncation
-    this._renderQueued = false;
-    this._scheduleRenderId = null;
-    this._fitTextCache = new Map();
     this._hoveredGapIdx = -1;
     this._isHovering = false;
 
@@ -1510,16 +1698,9 @@ class TimelineEditor {
 
   destroy() {
     cancelAnimationFrame(this._renderLoop);
-    if (this._scheduleRenderId != null) {
-      cancelAnimationFrame(this._scheduleRenderId);
-      this._scheduleRenderId = null;
-    }
-    this._renderQueued = false;
     this.pauseAudio();
     window.removeEventListener("keydown", this.handleKeyDown, true);
     window.removeEventListener("paste", this.handlePaste, true);
-    if (this._onWinMove) window.removeEventListener("mousemove", this._onWinMove);
-    if (this._onWinUp) window.removeEventListener("mouseup", this._onWinUp);
   }
 
   getStartFrames() {
@@ -1532,6 +1713,35 @@ class TimelineEditor {
 
   getFrameRate() {
     return parseInt((this.frameRateWidget && this.frameRateWidget.value > 0) ? this.frameRateWidget.value : 24, 10);
+  }
+
+  // Frame positions of the internal generation seams — where each chained window meets the
+  // next — mirroring the backend's even-distribution split_windows() EXACTLY (same W clamp to
+  // the 15s ceiling, same "fewer windows before dropping below the 4s floor", same even split
+  // with the remainder spread over the first windows). Empty when the render fits in a single
+  // window (no seams). Drives both the timeline markers and edge-snapping.
+  getWindowBoundaries() {
+    const fps = this.getFrameRate();
+    const winW = (this.node && this.node.widgets)
+      ? this.node.widgets.find(w => w.name === "window_seconds") : null;
+    const windowSeconds = (winW && winW.value >= 4) ? winW.value : 5.0;
+    const D = this.getDurationFrames();
+    const minF = Math.max(1, Math.round(4.0 * fps));      // TRAINED_MIN_FRAMES (96) / 24 * fps
+    const maxF = Math.max(minF, Math.round(15.0 * fps));  // TRAINED_MAX_FRAMES (360) / 24 * fps
+    let W = Math.min(Math.max(1, Math.round(windowSeconds * fps)), maxF);
+    if (D <= W) return [];
+    let count = Math.ceil(D / W);
+    while (count > 1 && D < minF * count) count--;        // fewer/longer before dropping below the floor
+    count = Math.max(count, Math.ceil(D / maxF));          // more before exceeding the ceiling
+    const base = Math.floor(D / count), rem = D % count;
+    const start = this.getStartFrames();
+    const seams = [];
+    let cursor = 0;
+    for (let i = 0; i < count - 1; i++) {                  // count-1 interior boundaries
+      cursor += base + (i < rem ? 1 : 0);
+      seams.push(start + cursor);
+    }
+    return seams;
   }
 
   // Grow the timeline duration to fit `requiredFrames` if it is currently shorter.
@@ -1598,12 +1808,13 @@ class TimelineEditor {
     const visualDurationSecs = this.getVisualDurationFrames() / this.getFrameRate();
     const baseMaxZoom = Math.max(1, visualDurationSecs / 4);
 
+    // Limit max zoom to prevent canvas width from exceeding browser limits (causing crash).
     // The canvas BACKING store is cssWidth * getRenderScale(), and getRenderScale() is
     // devicePixelRatio * the ComfyUI graph zoom (ds.scale) — NOT 1. A single canvas
     // dimension is hard-capped by the browser (32767 on Firefox/LibreWolf); exceed it and
-    // the canvas silently blanks, which reads as "zoom stopped working" — most visibly
-    // after zooming the graph itself in, or on any HiDPI/fractional-scaled display. So the
-    // ceiling has to be against the backing width (cssWidth * scale), not the raw CSS width.
+    // the canvas silently blanks, which reads as "zoom stopped working" — most visibly after
+    // zooming the graph itself in, or on any HiDPI/fractional-scaled display. So the ceiling
+    // has to be against the backing width (cssWidth * scale), not the raw CSS width.
     const viewportWidth = this.viewport ? this.viewport.clientWidth : 1000;
     const MAX_CANVAS_PX = 32767; // browser hard limit for one canvas dimension
     const renderScale = Math.max(1, this.getRenderScale ? this.getRenderScale() : 1);
@@ -1892,9 +2103,9 @@ class TimelineEditor {
     const totalFrames = this.getVisualDurationFrames();
     const thresholdFrames = (15 / logicalWidth) * totalFrames;
 
-    // Generation seams win with priority and a wider grab, and snap to the EXACT boundary
-    // frame — so a segment edge locks onto a window boundary and can never straddle into the
-    // next generation (no sub-frame prompt bleed). Checked before every other snap target.
+    // Generation seams win with priority and a wider grab (fork addition), and snap to the
+    // EXACT boundary frame — so a segment edge locks onto a window boundary and can never
+    // straddle into the next generation. Checked before every other snap target.
     let bestSeam = null, bestSeamDiff = thresholdFrames * 1.8;
     for (const b of this.getWindowBoundaries()) {
       const d = Math.abs(mouseFrameX - b);
@@ -1945,33 +2156,6 @@ class TimelineEditor {
       }
     }
     return bestFrame;
-  }
-
-  // Frame positions of the internal generation seams — where each chained window meets the
-  // next — mirroring the backend's even-distribution split_windows() exactly. Empty when the
-  // render fits in a single window (no seams). Drives both the timeline markers and snapping.
-  getWindowBoundaries() {
-    const fps = this.getFrameRate();
-    const winW = (this.node && this.node.widgets)
-      ? this.node.widgets.find(w => w.name === "window_seconds") : null;
-    const windowSeconds = (winW && winW.value >= 4) ? winW.value : 5.0;
-    const D = this.getDurationFrames();
-    const minF = Math.max(1, Math.round(4.0 * fps));   // H3 trained floor (4s)
-    const maxF = Math.max(minF, Math.round(15.0 * fps)); // H3 per-shot ceiling (15s)
-    let W = Math.min(Math.max(1, Math.round(windowSeconds * fps)), maxF);
-    if (D <= W) return [];
-    let count = Math.ceil(D / W);
-    while (count > 1 && D < minF * count) count--;      // fewer/longer before dropping below the floor
-    count = Math.max(count, Math.ceil(D / maxF));        // more before exceeding the ceiling
-    const base = Math.floor(D / count), rem = D % count;
-    const start = this.getStartFrames();
-    const seams = [];
-    let cursor = 0;
-    for (let i = 0; i < count - 1; i++) {                // count-1 interior boundaries
-      cursor += base + (i < rem ? 1 : 0);
-      seams.push(start + cursor);
-    }
-    return seams;
   }
 
   getTrackFromY(y) {
@@ -2581,6 +2765,12 @@ class TimelineEditor {
     refOptionSelect.addEventListener("change", (e) => {
       this.timeline.reference_mode = e.target.value;
       this.commitChanges();
+      // the describes/retained strip only exists in ref2va, so it has to appear and
+      // disappear with the switch rather than waiting for the next selection change —
+      // and the subject panel swaps `retained` for `called` on the same switch
+      this.updateUIFromSelection();
+      this.updateCharacterSlotsUI();
+      this._syncSummaryField();
     });
     this.refOptionSelect = refOptionSelect;
 
@@ -3084,7 +3274,8 @@ class TimelineEditor {
     const globalPromptWrapper = document.createElement("div");
     globalPromptWrapper.className = "mmxd-prompt-wrapper";
     globalPromptWrapper.style.width = "100%";
-    globalPromptWrapper.style.height = "100%";
+    globalPromptWrapper.style.flex = "1 1 auto";
+    globalPromptWrapper.style.minHeight = "0";
 
     this.globalPromptLabel = document.createElement("div");
     this.globalPromptLabel.className = "mmxd-prompt-label";
@@ -3094,7 +3285,7 @@ class TimelineEditor {
     this.globalPromptInput = document.createElement("textarea");
     this.globalPromptInput.className = "mmxd-prompt-area";
     this.globalPromptInput.placeholder =
-      "Enter global prompt here...  (Audio: / Music: lines are lifted into the Audio section below)";
+      "Enter global prompt here...  (Audio: / Music: lines are lifted into the two boxes below)";
     this.globalPromptInput.spellcheck = true;
     globalPromptWrapper.appendChild(this.globalPromptInput);
 
@@ -3173,17 +3364,17 @@ class TimelineEditor {
     this.musicInput = makeSoundField(
       "non_diegetic_music", "non_diegetic_music",
       "Score only the audience hears. Name instrumentation, tempo and dynamics, or write N/A.");
-
-    // The two audio prompts are their own section under the global prompt, not a strip
-    // crammed inside it. Appended to the editor wrapper below (see this.soundSection).
-    const soundSection = document.createElement("div");
-    soundSection.className = "mmxd-sound-section";
-    const soundSectionLabel = document.createElement("div");
-    soundSectionLabel.className = "mmxd-sound-section-label";
-    soundSectionLabel.textContent = "Audio — global soundscape & music";
-    soundSection.appendChild(soundSectionLabel);
-    soundSection.appendChild(soundRow);
-    this.soundSection = soundSection;
+    // The reference guide's own section, and the one place the [task type] prefix can
+    // hang. Same field pattern as the two above for the same reason: one value, read by
+    // both the node and the live preview, with no second copy to fall out of step.
+    this.summaryInput = makeSoundField(
+      "summary", "summary",
+      "One paragraph on the target video and what each reference is for. The [task type] prefix is added for you.");
+    // ...and only the reference guide has it. The base guide's structure is closed —
+    // the alignment instruction, then three required core fields — so with refs off the
+    // box would offer a section the prompt cannot carry. The text is kept either way.
+    this.summaryField = this.summaryInput.parentElement;
+    this._syncSummaryField();
 
     this.globalPromptInput.addEventListener("input", (e) => {
       const val = e.target.value;
@@ -3255,6 +3446,7 @@ class TimelineEditor {
     });
 
     globalPropContainer.appendChild(globalPromptWrapper);
+    globalPropContainer.appendChild(soundRow);
     globalPropContainer.appendChild(globalPropResizer);
 
     const propResizer = document.createElement("div");
@@ -3280,7 +3472,7 @@ class TimelineEditor {
           stopDrag();
           return;
         }
-        const newH = Math.max(90, startH + (ev.clientY - startY));
+        const newH = Math.max(this._propMinH(), startH + (ev.clientY - startY));
         this.propHeight = newH;
         this.node.properties.propHeight = newH;
         propContainer.style.height = `${newH}px`;
@@ -3309,7 +3501,10 @@ class TimelineEditor {
     this.promptWrapper = document.createElement("div");
     this.promptWrapper.className = "mmxd-prompt-wrapper";
     this.promptWrapper.style.width = "100%";
-    this.promptWrapper.style.height = "100%";
+    // flex rather than height:100% so the reference-note strip below can take its own
+    // room when it is shown, and give it straight back when it is hidden
+    this.promptWrapper.style.flex = "1 1 auto";
+    this.promptWrapper.style.minHeight = "0";
     this.promptWrapper.style.display = "none";
 
     this.segmentPromptLabel = document.createElement("div");
@@ -3339,8 +3534,6 @@ class TimelineEditor {
         return;
       }
       if (this.selectionType === "image" && this.timeline.segments[this.selectedIndex]) {
-        // Anchors never own a prompt — ignore any input against them.
-        if (this.timeline.segments[this.selectedIndex].isAnchor) return;
         this.timeline.segments[this.selectedIndex].prompt = this.promptInput.value;
         this.commitChanges();
       } else if (this.selectionType === "motion") {
@@ -3366,39 +3559,150 @@ class TimelineEditor {
     this.audioInfoArea = document.createElement("div");
     this.audioInfoArea.className = "mmxd-audio-info";
 
-    // --- Per-shot dialogue lines (shown under the segment prompt) ---
-    this.dialogueArea = document.createElement("div");
-    this.dialogueArea.className = "mmxd-dialogue-area";
-    this.dialogueArea.style.display = "none";
-    const dlgHeaderRow = document.createElement("div");
-    dlgHeaderRow.className = "mmxd-dialogue-header-row";
-    const dlgHeader = document.createElement("div");
-    dlgHeader.className = "mmxd-dialogue-header";
-    dlgHeader.textContent = "Dialogue";
-    const dlgAddBtn = document.createElement("button");
-    dlgAddBtn.className = "mmxd-dialogue-add";
-    dlgAddBtn.textContent = "+ Line";
-    dlgAddBtn.title = "Add a spoken line to this shot";
-    dlgAddBtn.addEventListener("click", (e) => { e.stopPropagation(); this._addDialogueLine(); });
-    dlgHeaderRow.appendChild(dlgHeader);
-    dlgHeaderRow.appendChild(dlgAddBtn);
-    this.dialogueArea.appendChild(dlgHeaderRow);
-    this.dialogueRows = document.createElement("div");
-    this.dialogueRows.className = "mmxd-dialogue-rows";
-    this.dialogueArea.appendChild(this.dialogueRows);
-    // shared language suggestions (typeable, so any language still works)
-    if (!document.getElementById("mmxd-lang-list")) {
-      const dl = document.createElement("datalist");
-      dl.id = "mmxd-lang-list";
-      dl.innerHTML = ["English", "Japanese", "Mandarin", "Cantonese", "Korean", "Spanish",
-                      "French", "German", "Portuguese", "Italian", "Russian", "Arabic", "Hindi"]
-        .map(l => `<option value="${l}"></option>`).join("");
-      document.body.appendChild(dl);
-    }
+    // --- Reference note strip -------------------------------------------------------
+    // Sits in propContainer beside the prompt box rather than inside it, because the
+    // audio branch of updateUIFromSelection hides promptWrapper outright — and an audio
+    // clip is exactly one of the references that needs a retention note.
+    this.refNoteRow = document.createElement("div");
+    this.refNoteRow.className = "mmxd-ref-note-row";
+    this.refNoteRow.style.display = "none";
+
+    const makeRefNoteField = (label, placeholder) => {
+      const field = document.createElement("div");
+      field.className = "mmxd-sound-field";
+
+      const cap = document.createElement("div");
+      cap.className = "mmxd-sound-label";
+      cap.textContent = label;
+      field.appendChild(cap);
+
+      const area = document.createElement("textarea");
+      area.className = "mmxd-sound-area";
+      area.placeholder = placeholder;
+      area.spellcheck = true;
+      area.addEventListener("focus", () => {
+        field.classList.add("focus-active");
+        this.wrapper.classList.add("has-focus");
+      });
+      area.addEventListener("blur", () => {
+        field.classList.remove("focus-active");
+        this.wrapper.classList.remove("has-focus");
+      });
+      field.appendChild(area);
+      this.refNoteRow.appendChild(field);
+      return { field, area };
+    };
+
+    const descField = makeRefNoteField(
+      "describes", "what this image defines, e.g. a long red wool coat");
+    const noteField = makeRefNoteField(
+      "retained", "what survives into the video — leave empty for the default");
+    this.refDescField = descField.field;
+    this.refDescInput = descField.area;
+    this.refNoteInput = noteField.area;
+
+    // Write to the timeline array, never to the segment object the selection handed us:
+    // while a drag is in flight that is a preview clone and the edit would be discarded.
+    const writeRefText = (key, value) => {
+      const list = this.getSegmentArray(this.selectionType);
+      const target = list && list[this.selectedIndex];
+      if (!target) return;
+      target[key] = value;
+      this.commitChanges(true);
+      if (this.node?._mmxRefreshPrompt) this.node._mmxRefreshPrompt();
+    };
+    this.refDescInput.addEventListener("input",
+      () => writeRefText("refDesc", this.refDescInput.value));
+    this.refNoteInput.addEventListener("input",
+      () => writeRefText("refNote", this.refNoteInput.value));
+
+    // --- Reference video limits ------------------------------------------------------
+    // The two numbers that decide how much of a clip is encoded, and the resolution it is
+    // encoded at. They edit the segment's own trim and length rather than shadowing them,
+    // so the track keeps showing exactly what will be sent.
+    this.refLimitsRow = document.createElement("div");
+    this.refLimitsRow.className = "mmxd-ref-limits-row";
+    this.refLimitsRow.style.display = "none";
+
+    const limitField = (caption, title, onCommit) => {
+      const label = document.createElement("label");
+      label.textContent = caption;
+      label.title = title;
+      const input = document.createElement("input");
+      input.type = "number";
+      input.min = "0";
+      input.step = "1";
+      input.title = title;
+      const commit = () => {
+        const list = this.getSegmentArray(this.selectionType);
+        const target = list && list[this.selectedIndex];
+        if (!target) return;
+        onCommit(target, Math.max(0, Math.round(parseFloat(input.value) || 0)));
+        this.commitChanges(true);
+        this.render();
+        this.updateUIFromSelection();
+        if (this.node?._mmxRefreshPrompt) this.node._mmxRefreshPrompt();
+      };
+      input.addEventListener("change", commit);
+      input.addEventListener("blur", commit);
+      input.addEventListener("keydown", (e) => {
+        e.stopPropagation();                       // the canvas eats arrows and Delete
+        if (e.key === "Enter") input.blur();
+      });
+      label.appendChild(input);
+      this.refLimitsRow.appendChild(label);
+      return input;
+    };
+
+    this.refStartInput = limitField("start", "First frame taken from the source clip.",
+      (seg, value) => {
+        const source = seg.videoDurationFrames || 0;
+        seg.trimStart = source ? Math.min(value, Math.max(0, source - 1)) : value;
+        // never let the trim run past the end of the source
+        if (source) seg.length = Math.max(1, Math.min(seg.length, source - seg.trimStart));
+      });
+
+    this.refFramesInput = limitField("frames",
+      "How many frames are encoded. Fewer frames is less memory, and at 24 fps this is "
+      + "the clip's length in the video.",
+      (seg, value) => {
+        const source = seg.videoDurationFrames || 0;
+        let next = Math.max(1, value);
+        if (source) next = Math.min(next, Math.max(1, source - (seg.trimStart || 0)));
+        // stop short of the next clip on the track rather than overlapping it
+        const later = (this.timeline.motionSegments || [])
+          .filter(s => s.id !== seg.id && s.start > seg.start)
+          .sort((a, b) => a.start - b.start)[0];
+        if (later) next = Math.min(next, Math.max(1, later.start - seg.start));
+        seg.length = next;
+      });
+
+    this.refSizeSelect = createMenuSelect(
+      REF_VIDEO_SIZES.map(v => ({ value: String(v), label: `${v}px` })), { width: "76px" });
+    this.refSizeSelect.title =
+      "Short edge the clip is decoded at. Memory goes with the square of this, so it is "
+      + "the biggest lever on an out-of-memory render — 384 is about a quarter of 768.";
+    this.refSizeSelect.addEventListener("change", () => {
+      const list = this.getSegmentArray(this.selectionType);
+      const target = list && list[this.selectedIndex];
+      if (!target) return;
+      target.refSize = parseInt(this.refSizeSelect.value, 10);
+      this.commitChanges(true);
+    });
+    const sizeLabel = document.createElement("label");
+    sizeLabel.textContent = "size";
+    sizeLabel.appendChild(this.refSizeSelect);
+    this.refLimitsRow.appendChild(sizeLabel);
+
+    this.refLimitsNote = document.createElement("span");
+    this.refLimitsNote.className = "mmxd-ref-limits-note";
+    this.refLimitsRow.appendChild(this.refLimitsNote);
 
     propContainer.appendChild(this.promptWrapper);
     propContainer.appendChild(this.motionInfoArea);
     propContainer.appendChild(this.audioInfoArea);
+    propContainer.appendChild(this.refLimitsRow);
+    propContainer.appendChild(this.refNoteRow);
     propContainer.appendChild(propResizer);
 
     this.wrapper.addEventListener("dragover", (e) => {
@@ -3521,10 +3825,8 @@ class TimelineEditor {
       }
     });
 
-    this._onWinMove = (e) => this.onMouseMove(e);
-    this._onWinUp = (e) => this.onMouseUp(e);
-    window.addEventListener("mousemove", this._onWinMove);
-    window.addEventListener("mouseup", this._onWinUp);
+    window.addEventListener("mousemove", (e) => this.onMouseMove(e));
+    window.addEventListener("mouseup", (e) => this.onMouseUp(e));
 
     // --- Player Controls ---
     const playerControls = document.createElement("div");
@@ -3570,7 +3872,7 @@ class TimelineEditor {
     // --- Zoom Controls ---
     const zoomControls = document.createElement("div");
     zoomControls.className = "mmxd-zoom-controls";
-    this.zoomControls = zoomControls;  // mounted under the timeline, not in the player row
+    this.zoomControls = zoomControls;  // fork: mounted under the timeline, not in the player row
 
     const zoomOutBtn = document.createElement("button");
     zoomOutBtn.className = "mmxd-icon-btn";
@@ -3651,7 +3953,7 @@ class TimelineEditor {
     playerControls.appendChild(this.playBtn);
     playerControls.appendChild(this.loopBtn);
     playerControls.appendChild(this.seekBar);
-    // zoomControls is NOT added here — it's mounted directly beneath the timeline below.
+    // fork: zoom controls are appended under the timeline instead (see wrapper mount below)
 
 
 
@@ -4168,7 +4470,7 @@ class TimelineEditor {
 
     this.wrapper.appendChild(toolbar);
     this.wrapper.appendChild(this.layoutContainer);
-    // Zoom controls sit directly beneath the timeline they act on — not down in the
+    // fork: zoom controls sit directly beneath the timeline they act on — not down in the
     // player/guide-strength row, where they read as belonging to the audio track.
     if (this.zoomControls) this.wrapper.appendChild(this.zoomControls);
 
@@ -4179,14 +4481,12 @@ class TimelineEditor {
     controlsGroup.appendChild(playerControls);
     this.wrapper.appendChild(controlsGroup);
     this.wrapper.appendChild(propContainer);
-    if (this.dialogueArea) this.wrapper.appendChild(this.dialogueArea);
     this.wrapper.appendChild(this.globalPropContainer);
-    if (this.soundSection) this.wrapper.appendChild(this.soundSection);
 
-    // --- Character reference slots (3 @char panels) at the bottom of the editor ---
+    // --- Subject reference slots (@refN panels) at the bottom of the editor ---
     this.createCharacterSlots(this.wrapper);
 
-    // --- @char autocomplete on both prompt fields ---
+    // --- @refN autocomplete on both prompt fields ---
     if (this.globalPromptInput) this.setupAutocomplete(this.globalPromptInput);
     if (this.promptInput) this.setupAutocomplete(this.promptInput);
 
@@ -4194,6 +4494,8 @@ class TimelineEditor {
     if (this.refOptionSelect) {
       this.refOptionSelect.value = this.timeline.reference_mode || "OFF";
     }
+    // and everything else the switch governs, for a workflow restored on the fl2va path
+    this._syncSummaryField();
 
     this.container.appendChild(this.wrapper);
   }
@@ -4264,28 +4566,21 @@ class TimelineEditor {
   }
 
   checkResize() {
-    // syncLayoutToNode handles width/height changes (node resize) and is a cheap
-    // no-op when nothing changed. Graph-zoom (render scale) changes are handled here.
     this.syncLayoutToNode(false);
+    const viewportWidth = this.viewport.clientWidth;
     const currentScale = this.getRenderScale();
 
-    // Only force a layout read (clientWidth) when the cheap signals actually
-    // changed. Viewport width tracks the node width, which syncLayoutToNode
-    // already reacts to, so a width-only change is covered there.
-    if (this._lastZoom !== this.zoomLevel || this._lastScale !== currentScale) {
-      const viewportWidth = this.viewport.clientWidth;
-      if (viewportWidth > 0) {
-        this._lastWidth = viewportWidth;
-        this._lastZoom = this.zoomLevel;
-        this._lastScale = currentScale;
+    if (viewportWidth > 0 && (this._lastWidth !== viewportWidth || this._lastZoom !== this.zoomLevel || this._lastScale !== currentScale)) {
+      this._lastWidth = viewportWidth;
+      this._lastZoom = this.zoomLevel;
+      this._lastScale = currentScale;
 
-        const newCanvasWidth = Math.max(viewportWidth, viewportWidth * this.zoomLevel);
-        this.canvas.style.width = newCanvasWidth + "px";
-        this.resizeCanvas(newCanvasWidth);
+      const newCanvasWidth = Math.max(viewportWidth, viewportWidth * this.zoomLevel);
+      this.canvas.style.width = newCanvasWidth + "px";
+      this.resizeCanvas(newCanvasWidth);
 
-        if (this.node) this.node.setDirtyCanvas?.(true, true);
-        else if (window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
-      }
+      if (this.node) this.node.setDirtyCanvas?.(true, true);
+      else if (window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
     }
     this._renderLoop = requestAnimationFrame(() => this.checkResize());
   }
@@ -4293,16 +4588,6 @@ class TimelineEditor {
   syncLayoutToNode(forceRender = true) {
     const nodeWidth = this.node?.size?.[0] || 1375;
     const targetWidth = Math.max(10, nodeWidth - 30);
-
-    // Perf: skip all DOM writes and the forced layout read when nothing that
-    // affects layout has changed since the last successful sync. This turns the
-    // per-frame rAF call into a cheap no-op and avoids a forced sync reflow.
-    if (this._syncApplied &&
-      this._syncTargetWidth === targetWidth &&
-      this._syncCanvasHeight === this.canvasHeight &&
-      this._syncZoomLevel === this.zoomLevel) {
-      return;
-    }
 
     if (this.container) {
       this.container.style.width = `${targetWidth}px`;
@@ -4326,8 +4611,7 @@ class TimelineEditor {
       this.layoutContainer.style.flexShrink = "0";
     }
 
-    const rawViewportWidth = this.viewport ? this.viewport.clientWidth : 0;
-    const viewportWidth = rawViewportWidth || targetWidth;
+    const viewportWidth = this.viewport?.clientWidth || targetWidth;
     const canvasWidth = Math.max(viewportWidth, viewportWidth * this.zoomLevel);
     const currentWidth = parseFloat(this.canvas?.style?.width) || 0;
     if (viewportWidth > 0 && Math.abs(currentWidth - canvasWidth) > 1) {
@@ -4336,15 +4620,6 @@ class TimelineEditor {
       this._lastWidth = viewportWidth;
       this._lastZoom = this.zoomLevel;
       if (forceRender) this.render();
-    }
-
-    // Remember the applied inputs so the next frame is a no-op. Only mark applied
-    // once the viewport has a real measured width, otherwise retry next frame.
-    if (rawViewportWidth > 0) {
-      this._syncTargetWidth = targetWidth;
-      this._syncCanvasHeight = this.canvasHeight;
-      this._syncZoomLevel = this.zoomLevel;
-      this._syncApplied = true;
     }
   }
 
@@ -4358,6 +4633,18 @@ class TimelineEditor {
     } catch (e) { }
     // Scale up if zoomed in, but don't drop below 1x DPR if zoomed out
     return dpr * Math.max(1, graphScale);
+  }
+
+  // Briefly ring the segment-prompt editor so a click on the timeline visibly points at
+  // the field to type in. Restarting the animation requires a reflow between removes/adds.
+  _flashPromptField() {
+    const el = this.promptWrapper;
+    if (!el) return;
+    el.classList.remove("mmxd-flash");
+    void el.offsetWidth;
+    el.classList.add("mmxd-flash");
+    clearTimeout(this._flashTimer);
+    this._flashTimer = setTimeout(() => el.classList.remove("mmxd-flash"), 750);
   }
 
   resizeCanvas(widthPx) {
@@ -4381,58 +4668,6 @@ class TimelineEditor {
     this.render();
   }
 
-  // Perf: coalesce many render() calls from a single pointer-move burst into one
-  // render per animation frame.
-  _scheduleRender() {
-    if (this._renderQueued) return;
-    this._renderQueued = true;
-    this._scheduleRenderId = requestAnimationFrame(() => {
-      this._renderQueued = false;
-      this._scheduleRenderId = null;
-      this.render();
-    });
-  }
-
-  // Perf: fit `text` into `maxW` px, appending `ellipsis` when it must be
-  // truncated. Binary-searches the longest fitting prefix and memoizes results
-  // (keyed by text + width + font + ellipsis) to avoid per-character measureText
-  // scans every render. Behaviour matches the previous char-by-char loops.
-  _fitText(ctx, text, maxW, ellipsis = "…") {
-    if (ctx.measureText(text).width <= maxW) return text;
-    const key = `${text}|${maxW}|${ctx.font}|${ellipsis}`;
-    const cached = this._fitTextCache.get(key);
-    if (cached !== undefined) return cached;
-
-    // Largest prefix length k in [0, text.length] whose width (with ellipsis)
-    // fits maxW. Falls back to just the ellipsis when nothing fits.
-    let lo = 0, hi = text.length, best = 0;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (ctx.measureText(text.slice(0, mid) + ellipsis).width <= maxW) {
-        best = mid;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
-    const result = text.slice(0, best) + ellipsis;
-    if (this._fitTextCache.size > 2000) this._fitTextCache.clear();
-    this._fitTextCache.set(key, result);
-    return result;
-  }
-
-  // Perf: thumbnails are sampled at even time intervals starting at 0, so the
-  // nearest thumbnail can be found by index math instead of a linear scan.
-  _nearestThumbImg(thumbnails, targetTime) {
-    const n = thumbnails.length;
-    if (n === 0) return null;
-    if (n === 1) return thumbnails[0].img;
-    const spacing = thumbnails[1].time - thumbnails[0].time;
-    let idx = spacing > 0 ? Math.round((targetTime - thumbnails[0].time) / spacing) : 0;
-    idx = Math.max(0, Math.min(n - 1, idx));
-    return thumbnails[idx].img;
-  }
-
   // Helper to map mouse events accurately regardless of canvas scaling
   getMousePos(e) {
     const rect = this.canvas.getBoundingClientRect();
@@ -4446,8 +4681,7 @@ class TimelineEditor {
   }
 
   // --- Async Image Upload Logic (Handles multiple images simultaneously) ---
-  async handleImageUpload(files, targetFrameStart = null, explicitLength = null, opts = {}) {
-    const isAnchorUpload = !!opts.isAnchor;
+  async handleImageUpload(files, targetFrameStart = null, explicitLength = null) {
     const frameRate = this.getFrameRate();
     const durationFrames = this.getDurationFrames();
     const newLength = explicitLength !== null ? explicitLength : frameRate * 1; // Default to 1 second long
@@ -4529,11 +4763,6 @@ class TimelineEditor {
               length: constrainedLength,
               prompt: "",
               type: "image",
-              // Image Anchor: a guide-only keyframe. It is inserted into the latent
-              // exactly like a normal image guide (same guideStrength path), but it is
-              // EXCLUDED from the prompt-relay sync — it borrows the previous segment's
-              // prompt instead of owning one. See commitChanges() and the draw block.
-              isAnchor: isAnchorUpload,
               imageFile: imageFile,
               imageB64: imgUrl
             };
@@ -4984,145 +5213,200 @@ class TimelineEditor {
 
     for (let file of files) {
       if (!(file.type.startsWith("video/") || file.name.toLowerCase().match(/\.(mp4|webm|mkv|avi|mov|m4v|flv|wmv)$/))) continue;
+      const placed = await this._loadMotionFile(file, frameRate, targetFrameStart);
+      if (placed && targetFrameStart !== null) targetFrameStart = placed.nextStart;
+    }
+  }
 
-      await new Promise(async (resolve) => {
-        try {
-          // Load from local blob immediately — no waiting for server upload
-          const blobUrl = URL.createObjectURL(file);
+  // Positioning, segment creation and insertion — shared by the two ways a reference video
+  // can arrive: decoded by the browser, or described by the server when the browser will
+  // not touch it. One copy on purpose; the paths differ only in where the duration and the
+  // thumbnail came from.
+  _insertMotionSegment({ file, clipFrames, thumbB64, videoEl, blobUrl, videoFile,
+                         targetFrameStart }) {
+    const newLength = clipFrames;
+    let newStart = targetFrameStart;
 
-          const vid = document.createElement('video');
-          vid.crossOrigin = "Anonymous";
-          vid.preload = 'auto';
-          vid.muted = true;
-          vid.onerror = (e) => { console.error("Motion video load error", e); URL.revokeObjectURL(blobUrl); resolve(); };
+    if (newStart === null || newStart === undefined) {
+      newStart = 0;
+      this.timeline.motionSegments.sort((a, b) => a.start - b.start);
+      for (let i = 0; i < this.timeline.motionSegments.length; i++) {
+        const s = this.timeline.motionSegments[i];
+        if (newStart + newLength <= s.start) break;
+        newStart = Math.max(newStart, s.start + s.length);
+      }
+    } else {
+      const currentDuration = this.getVisualDurationFrames();
+      const tempId = "TEMP_" + Date.now();
+      this.timeline.motionSegments.push({ id: tempId, start: newStart, length: newLength, type: "temp" });
+      const result = this._applyCenterDragPhysics(this.timeline.motionSegments, tempId, newStart, newStart + newLength / 2, currentDuration, currentDuration, 1);
+      for (const shiftedSeg of result) {
+        const original = this.timeline.motionSegments.find(s => s.id === shiftedSeg.id);
+        if (original) original.start = shiftedSeg.resolvedStart !== undefined ? shiftedSeg.resolvedStart : shiftedSeg.start;
+      }
+      const tempSeg = this.timeline.motionSegments.find(s => s.id === tempId);
+      newStart = tempSeg.start;
+      this.timeline.motionSegments = this.timeline.motionSegments.filter(s => s.id !== tempId);
+    }
 
-          vid.onloadeddata = () => {
-            vid.onloadeddata = null; // prevent re-firing if src changes or browser buffers more data
-            const clipDurationSecs = vid.duration || 1;
-            const clipFrames = Math.max(1, Math.ceil(clipDurationSecs * frameRate));
-            let newLength = clipFrames;
-            let newStart = targetFrameStart;
+    const seg = {
+      id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+      type: "motion_video",
+      start: newStart,
+      length: newLength,
+      trimStart: 0,
+      videoDurationFrames: clipFrames,
+      videoFile: videoFile || "",   // filled in later when the upload runs in background
+      fileName: file.name,
+      videoStrength: 1.0,
+      videoAttentionStrength: 0.65,
+      resampleMode: "nearest",
+      previewThumbs: [],
+      previewThumbSourceFrames: clipFrames,
+      fileSize: file.size
+    };
+    if (videoEl) seg.videoEl = videoEl;
+    if (blobUrl) seg._blobUrl = blobUrl;
+    if (!videoFile) seg._uploading = true;
 
-            if (newStart === null) {
-              newStart = 0;
-              this.timeline.motionSegments.sort((a, b) => a.start - b.start);
-              for (let i = 0; i < this.timeline.motionSegments.length; i++) {
-                let s = this.timeline.motionSegments[i];
-                if (newStart + newLength <= s.start) break;
-                newStart = Math.max(newStart, s.start + s.length);
-              }
-            }
+    if (thumbB64) {
+      seg.imageB64 = thumbB64;
+      const imgObj = new Image();
+      imgObj.onload = () => { seg.imgObj = imgObj; this.render(); };
+      imgObj.src = thumbB64;
+    }
 
-            const currentDuration = this.getVisualDurationFrames();
-            if (targetFrameStart !== null) {
-              let tempId = "TEMP_" + Date.now();
-              this.timeline.motionSegments.push({ id: tempId, start: newStart, length: newLength, type: "temp" });
-              let result = this._applyCenterDragPhysics(this.timeline.motionSegments, tempId, newStart, newStart + newLength / 2, currentDuration, currentDuration, 1);
-              for (let shiftedSeg of result) {
-                let original = this.timeline.motionSegments.find(s => s.id === shiftedSeg.id);
-                if (original) original.start = shiftedSeg.resolvedStart !== undefined ? shiftedSeg.resolvedStart : shiftedSeg.start;
-              }
-              let tempSeg = this.timeline.motionSegments.find(s => s.id === tempId);
-              newStart = tempSeg.start;
-              this.timeline.motionSegments = this.timeline.motionSegments.filter(s => s.id !== tempId);
-              targetFrameStart = newStart + newLength;
-            }
+    this.timeline.motionSegments.push(seg);
+    this.timeline.motionSegments.sort((a, b) => a.start - b.start);
 
-            const seg = {
-              id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
-              type: "motion_video",
-              start: newStart,
-              length: newLength,
-              trimStart: 0,
-              videoDurationFrames: clipFrames,
-              videoFile: "",  // filled in once background upload completes
-              fileName: file.name,
-              videoStrength: 1.0,
-              videoAttentionStrength: 0.65,
-              resampleMode: "nearest",
-              previewThumbs: [],
-              previewThumbSourceFrames: clipFrames,
-              videoEl: vid,
-              _uploading: true,
-              _blobUrl: blobUrl,
-              fileSize: file.size
-            };
+    if (!this.retakeMode) {
+      this.growTimelineIfNeeded(seg.start + seg.length);
+    }
 
-            vid.currentTime = 0.01;
-            vid.onseeked = () => {
-              vid.onseeked = null;
-              const canvas = document.createElement('canvas');
-              canvas.width = Math.min(vid.videoWidth, 512);
-              canvas.height = Math.round((vid.videoHeight / vid.videoWidth) * canvas.width);
-              const ctx = canvas.getContext('2d');
-              ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
-              seg.imageB64 = canvas.toDataURL('image/jpeg');
+    this.selectionType = "motion";
+    this.selectedIndex = this.timeline.motionSegments.findIndex(s => s.id === seg.id);
+    this.updateUIFromSelection();
+    this.commitChanges(true);
+    this.render();
+    return { seg, nextStart: newStart + newLength };
+  }
 
-              const imgObj = new Image();
-              imgObj.onload = () => { seg.imgObj = imgObj; this.render(); };
-              imgObj.src = seg.imageB64;
-
-              // Add to timeline immediately
-              this.timeline.motionSegments.push(seg);
-              this.timeline.motionSegments.sort((a, b) => a.start - b.start);
-
-              if (!this.retakeMode) {
-                this.growTimelineIfNeeded(seg.start + seg.length);
-              }
-
-              this.selectionType = "motion";
-              this.selectedIndex = this.timeline.motionSegments.findIndex(s => s.id === seg.id);
-              this.updateUIFromSelection();
-              this.commitChanges(true);
-              resolve(); // resolve immediately — don't block on upload
-              this._ensureThumbnails(seg);
-
-              // Background upload — runs while the user can already work.
-              // We intentionally do NOT change vid.src after upload — the blob URL
-              // works perfectly for local playback. Only videoFile needs updating
-              // so Python can find the file at generation time.
-              this._uploadVideoFile(file).then(filePath => {
-                for (let s of this.timeline.motionSegments) {
-                  if (s._blobUrl === blobUrl || s.id === seg.id) {
-                    s.videoFile = filePath;
-                    s._uploading = false;
-                  }
-                }
-                if (blobUrl && filePath) {
-                  this._thumbnailCache = this._thumbnailCache || new Map();
-                  this._thumbnailPromises = this._thumbnailPromises || new Map();
-                  if (this._thumbnailCache.has(blobUrl)) {
-                    this._thumbnailCache.set(filePath, this._thumbnailCache.get(blobUrl));
-                  }
-                  if (this._thumbnailPromises.has(blobUrl)) {
-                    this._thumbnailPromises.set(filePath, this._thumbnailPromises.get(blobUrl));
-                  }
-                }
-                const isOverrideAudio = !!(this.node.properties.overrideAudio || this.timeline.overrideAudio);
-                if (isOverrideAudio) {
-                  const s = this.timeline.motionSegments.find(s => s.id === seg.id);
-                  if (s) {
-                    this._preloadMotionAudioSegment(s);
-                  }
-                }
-                this.commitChanges(true);
-                this.render();
-              }).catch(err => {
-                console.error("[MiniMaxDirector] Background motion video upload failed", err);
-                const currentSeg = this.timeline.motionSegments.find(s => s.id === seg.id);
-                if (currentSeg) currentSeg._uploading = false;
-                this.render();
-              });
-            };
-          };
-
-          vid.src = blobUrl;
-
-        } catch (err) {
-          console.error("[MiniMaxDirector] Motion video processing failed", err);
-          resolve();
+  // Upload in the background so the clip is usable the moment it lands on the track.
+  _finishMotionUpload(seg, file, blobUrl) {
+    this._uploadVideoFile(file).then(filePath => {
+      for (const s of this.timeline.motionSegments) {
+        if (s._blobUrl === blobUrl || s.id === seg.id) {
+          s.videoFile = filePath;
+          s._uploading = false;
         }
+      }
+      if (blobUrl && filePath) {
+        this._thumbnailCache = this._thumbnailCache || new Map();
+        this._thumbnailPromises = this._thumbnailPromises || new Map();
+        if (this._thumbnailCache.has(blobUrl)) {
+          this._thumbnailCache.set(filePath, this._thumbnailCache.get(blobUrl));
+        }
+        if (this._thumbnailPromises.has(blobUrl)) {
+          this._thumbnailPromises.set(filePath, this._thumbnailPromises.get(blobUrl));
+        }
+      }
+      const isOverrideAudio = !!(this.node.properties.overrideAudio || this.timeline.overrideAudio);
+      if (isOverrideAudio) {
+        const s = this.timeline.motionSegments.find(s => s.id === seg.id);
+        if (s) this._preloadMotionAudioSegment(s);
+      }
+      this.commitChanges(true);
+      this.render();
+    }).catch(err => {
+      console.error("[MiniMaxDirector] Background motion video upload failed", err);
+      const currentSeg = this.timeline.motionSegments.find(s => s.id === seg.id);
+      if (currentSeg) currentSeg._uploading = false;
+      this.render();
+    });
+  }
+
+  // Try the browser first — a local blob shows the clip instantly, with no upload to wait
+  // on. If the browser will not decode it, fall back to the server rather than giving up.
+  _loadMotionFile(file, frameRate, targetFrameStart) {
+    return new Promise((resolve) => {
+      const blobUrl = URL.createObjectURL(file);
+      const vid = document.createElement('video');
+      vid.crossOrigin = "Anonymous";
+      vid.preload = 'auto';
+      vid.muted = true;
+
+      let settled = false;
+      const done = (value) => { if (!settled) { settled = true; resolve(value); } };
+
+      vid.onerror = () => {
+        // Chrome refuses plenty of codecs the renderer reads without complaint — HEVC,
+        // ProRes and 10-bit footage all live inside perfectly ordinary .mp4 and .mov
+        // files. This used to log to the console and stop, so picking such a file did
+        // nothing at all and never said why.
+        URL.revokeObjectURL(blobUrl);
+        this._placeMotionViaServer(file, frameRate, targetFrameStart).then(done);
+      };
+
+      vid.onloadeddata = () => {
+        vid.onloadeddata = null;   // browsers re-fire this as more data buffers
+        const clipFrames = Math.max(1, Math.ceil((vid.duration || 1) * frameRate));
+
+        vid.currentTime = 0.01;
+        vid.onseeked = () => {
+          vid.onseeked = null;
+          let thumb = "";
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.min(vid.videoWidth, 512);
+            canvas.height = Math.round((vid.videoHeight / vid.videoWidth) * canvas.width);
+            canvas.getContext('2d').drawImage(vid, 0, 0, canvas.width, canvas.height);
+            thumb = canvas.toDataURL('image/jpeg');
+          } catch (e) {
+            console.warn("[MiniMaxDirector] could not grab a thumbnail frame", e);
+          }
+
+          const { seg, nextStart } = this._insertMotionSegment({
+            file, clipFrames, thumbB64: thumb, videoEl: vid, blobUrl, targetFrameStart });
+          done({ nextStart });               // never block on the upload
+          this._ensureThumbnails(seg);
+          this._finishMotionUpload(seg, file, blobUrl);
+        };
+      };
+
+      vid.src = blobUrl;
+    });
+  }
+
+  // The file has to be uploaded before it can be probed, so this path is slower than the
+  // blob one — but it accepts everything the renderer accepts, which is the point.
+  async _placeMotionViaServer(file, frameRate, targetFrameStart) {
+    try {
+      const videoFile = await this._uploadVideoFile(file);
+      if (!videoFile) throw new Error("the upload did not complete");
+
+      const resp = await api.fetchApi("/minimax_director/probe_video", {
+        method: "POST", body: JSON.stringify({ file: videoFile }),
       });
+      const d = await resp.json();
+      if (d.status !== "success") throw new Error(d.message || "the server could not read it");
+      if (!d.duration) throw new Error("the file reports no duration");
+
+      const clipFrames = Math.max(1, Math.ceil(d.duration * frameRate));
+      const { seg, nextStart } = this._insertMotionSegment({
+        file, clipFrames, thumbB64: d.thumb || "", videoFile, targetFrameStart });
+      console.info(`[MiniMaxDirector] '${file.name}' (${d.codec || "unknown codec"}) could `
+        + `not be decoded by the browser; the server read it instead.`);
+      // deliberately no _ensureThumbnails here: the filmstrip is extracted through a
+      // <video> element too, so it would fail the same way. The frame the server sent is
+      // already on the segment.
+      return { nextStart };
+    } catch (err) {
+      console.error("[MiniMaxDirector] reference video could not be read", err);
+      alert(`Could not add "${file.name}".\n\n`
+        + `${err.message || err}\n\n`
+        + `The browser cannot decode this file and the server could not read it either. `
+        + `Re-encoding to H.264 in an MP4 container usually fixes it.`);
+      return null;
     }
   }
 
@@ -5232,11 +5516,10 @@ class TimelineEditor {
           this.timeline.audioSegments.push(seg);
           this.timeline.audioSegments.sort((a, b) => a.start - b.start);
 
-          // NOTE: audio does NOT grow the render duration. The audio track is a
-          // soundtrack/reference, not the render clock — dropping a 6-minute song to score
-          // a 30s cut must not balloon duration_frames to 6 minutes (that turned a 30s
-          // render into 71 chained windows). The timeline still SHOWS the full clip:
-          // getVisualDurationFrames() spans audioSegments independently of duration_frames.
+          // A dropped audio clip must NOT grow the render duration: dropping a full song used
+          // to balloon duration_frames to the track's length (a 30s render became the whole
+          // ~6min song). The clip still displays fully on the audio track — the render window
+          // stays exactly as set. Image/video drops still grow (see those sites).
 
           this.selectionType = "audio";
           this.selectedIndex = this.timeline.audioSegments.findIndex(s => s.id === seg.id);
@@ -5537,8 +5820,8 @@ class TimelineEditor {
     this.selectionType = copiedTrack;
     this.selectedIndex = this.getSegmentArray(copiedTrack).findIndex(s => s.id === mainSeg.id);
 
-    // Audio never drives the render duration (see the audio-drop handler) — a pasted audio
-    // clip must not grow duration_frames either.
+    // Pasting an audio clip must not grow the render duration either (same reason as an audio
+    // drop — a long track would balloon duration_frames). Non-audio pastes still grow.
     if (!this.retakeMode && copiedTrack !== "audio") {
       this.growTimelineIfNeeded(mainSeg.start + mainSeg.length);
     }
@@ -5882,175 +6165,91 @@ class TimelineEditor {
     }
   }
 
-  // The selected segment IF it is a prompt-carrying shot (image/text, not an anchor) —
-  // the only kind that can hold dialogue. Null otherwise.
-  _currentDialogueSeg() {
-    if (this.retakeMode) return null;
-    if (this.selectionType !== "image") return null;
-    const seg = this.timeline.segments?.[this.selectedIndex];
-    if (!seg || seg.isAnchor) return null;
-    return seg;
+  // The properties panel has to hold the prompt box *and*, when a reference is selected,
+  // the note strip. Without this the default 90px panel would leave the prompt box 24px.
+  _propMinH() {
+    const notes = this.refNoteRow && this.refNoteRow.style.display !== "none";
+    const limits = this.refLimitsRow && this.refLimitsRow.style.display !== "none";
+    return PROP_MIN_H + (notes ? REF_NOTE_ROW_HEIGHT : 0)
+                      + (limits ? REF_LIMITS_ROW_HEIGHT : 0);
   }
 
-  _isSegSelected(segId) {
-    const seg = this._currentDialogueSeg();
-    return !!(seg && seg.id === segId);
-  }
-
-  // Briefly ring the segment-prompt editor so a click on the timeline visibly points at
-  // the field to type in. Restarting the animation requires a reflow between removes/adds.
-  _flashPromptField() {
-    const el = this.promptWrapper;
-    if (!el) return;
-    el.classList.remove("mmxd-flash");
-    void el.offsetWidth;
-    el.classList.add("mmxd-flash");
-    clearTimeout(this._flashTimer);
-    this._flashTimer = setTimeout(() => el.classList.remove("mmxd-flash"), 750);
-  }
-
-  // Ring the dialogue row at `idx` (or clear all when idx < 0). Rows only exist for the
-  // selected shot, so this only lights up when the hovered marker belongs to it.
-  _highlightDialogueRow(idx) {
-    if (!this.dialogueRows) return;
-    for (const row of this.dialogueRows.querySelectorAll(".mmxd-dialogue-row")) {
-      row.classList.toggle("mmxd-dlg-hi", idx >= 0 && row.dataset.dlgIndex === String(idx));
-    }
-  }
-
-  // Show the dialogue area for a single selected shot, hide it otherwise.
-  _syncDialogueArea() {
-    if (!this.dialogueArea) return;
-    const multi = this.selectedSegmentIds && this.isMultiSelectActive();
-    const seg = multi ? null : this._currentDialogueSeg();
-    if (seg) {
-      this.dialogueArea.style.display = "block";
-      this.renderDialogueRows();
-    } else {
-      this.dialogueArea.style.display = "none";
-      if (this.dialogueRows) this.dialogueRows.innerHTML = "";
-    }
-  }
-
-  _addDialogueLine() {
-    const seg = this._currentDialogueSeg();
-    if (!seg) return;
-    if (!Array.isArray(seg.dialogue)) seg.dialogue = [];
-    seg.dialogue.push({ time: 0, slot: "", lang: "English", text: "" });
-    this.commitChanges(true);
-    this.render();            // draw the new marker on the timeline
-    this.renderDialogueRows();
-  }
-
-  // Rebuild the dialogue rows for the selected shot. Each row: start-time (s from shot start),
-  // speaker (a character slot → <Subject N>), language (typeable, with suggestions), the line,
-  // and a remove button. Rows carry data-dlg-index for the timeline hover sync.
-  renderDialogueRows() {
-    if (!this.dialogueRows) return;
-    this.dialogueRows.innerHTML = "";
-    const seg = this._currentDialogueSeg();
-    if (!seg) return;
-    const lines = Array.isArray(seg.dialogue) ? seg.dialogue : [];
-    if (!lines.length) {
-      const empty = document.createElement("div");
-      empty.className = "mmxd-dialogue-empty";
-      empty.textContent = "No lines — “+ Line” to add speech for this shot.";
-      this.dialogueRows.appendChild(empty);
+  // The reference-video limits, shown only for a clip on the reference-video track.
+  // Frames and start edit the segment itself, so the track keeps showing what will be sent.
+  _syncRefLimitsRow(seg) {
+    if (!this.refLimitsRow) return;
+    const refsOn = String(this.timeline.reference_mode || "OFF").toUpperCase() !== "OFF";
+    if (!seg || this.selectionType !== "motion" || !refsOn || this.retakeMode) {
+      this.refLimitsRow.style.display = "none";
       return;
     }
-    const head = document.createElement("div");
-    head.className = "mmxd-dlg-colhead";
-    head.innerHTML = '<span class="mmxd-dlg-h-time">Time (s)</span>'
-      + '<span class="mmxd-dlg-h-spk">Speaker</span>'
-      + '<span class="mmxd-dlg-h-lang">Lang</span>'
-      + '<span class="mmxd-dlg-h-text">Line</span>'
-      + '<span class="mmxd-dlg-h-del"></span>';
-    this.dialogueRows.appendChild(head);
-    const chars = this.timeline.characters || [];
-    lines.forEach((line, idx) => {
-      const row = document.createElement("div");
-      row.className = "mmxd-dialogue-row";
-      row.dataset.dlgIndex = String(idx);
+    this.refLimitsRow.style.display = "flex";
 
-      // hovering a row lights its ♪ marker on the timeline (reverse of the marker→row sync)
-      row.addEventListener("mouseenter", () => {
-        this._hoverDlg = { segId: seg.id, idx };
-        row.classList.add("mmxd-dlg-hi");
-        this.render();
-      });
-      row.addEventListener("mouseleave", () => {
-        this._hoverDlg = null;
-        row.classList.remove("mmxd-dlg-hi");
-        this.render();
-      });
+    const fps = this.getFrameRate() || 24;
+    const frames = Math.max(1, Math.round(seg.length || 1));
+    this.refStartInput.value = Math.max(0, Math.round(seg.trimStart || 0));
+    this.refFramesInput.value = frames;
+    this.refSizeSelect.value = String(seg.refSize || REF_VIDEO_SIZES[0]);
 
-      const timeInput = document.createElement("input");
-      timeInput.type = "number"; timeInput.step = "0.1"; timeInput.min = "0";
-      timeInput.className = "mmxd-dlg-time";
-      timeInput.title = "Seconds from the start of this shot";
-      timeInput.value = (line.time != null ? line.time : 0);
-      timeInput.addEventListener("input", () => {
-        line.time = Math.max(0, parseFloat(timeInput.value) || 0);
-        this.commitChanges(true);
-        this.render();   // move the timeline marker
-      });
+    // What this clip actually costs, in the terms that matter: seconds against the model
+    // card's 2-15s window, and whether it is the one blowing the memory budget.
+    const secs = frames / fps;
+    const parts = [`${secs.toFixed(1)}s`];
+    if (secs < 2) parts.push("under the 2s minimum");
+    else if (secs > 15) parts.push("over the 15s maximum");
+    this.refLimitsNote.textContent = parts.join(" · ");
+    this.refLimitsNote.style.color = (secs < 2 || secs > 15) ? "#d08a3a" : "#5a5a5a";
+  }
 
-      const spk = document.createElement("select");
-      spk.className = "mmxd-dlg-speaker";
-      spk.title = "Who is speaking (a character reference → <Subject N>)";
-      // Only things that can speak — characters and animals. Objects/scenes/styles are excluded.
-      spk.innerHTML = '<option value="">— a voice —</option>' + chars.map((c, i) => {
-        const type = (c.type || "character").toLowerCase();
-        if (!["character", "person", "animal"].includes(type)) return "";
-        const d = (c.description || "").trim();
-        const lab = d ? `S${i + 1} · ${d.slice(0, 16)}` : `Subject ${i + 1}`;
-        const sel = String(line.slot || "") === String(i + 1) ? " selected" : "";
-        return `<option value="${i + 1}"${sel}>${lab}</option>`;
-      }).join("");
-      spk.addEventListener("change", () => {
-        if (spk.value) line.slot = parseInt(spk.value, 10); else delete line.slot;
-        this.commitChanges(true);
-      });
+  // Opens the panel far enough that showing the strip does not squeeze the prompt box to
+  // nothing. Only ever grows — a panel the user has already dragged taller is left alone.
+  _growPropForRefNote() {
+    const min = this._propMinH();
+    if (!this.propContainer || this.propHeight >= min) return;
+    this.propHeight = min;
+    if (this.node?.properties) this.node.properties.propHeight = min;
+    this.propContainer.style.height = `${min}px`;
+    if (this.node?.setDirtyCanvas && typeof this.node.computeSize === "function"
+        && this.node.size) {
+      this.node.setSize([this.node.size[0], this.node.computeSize()[1]]);
+      this.node.setDirtyCanvas(true, true);
+    }
+  }
 
-      const lang = document.createElement("input");
-      lang.className = "mmxd-dlg-lang";
-      lang.setAttribute("list", "mmxd-lang-list");
-      lang.placeholder = "English";
-      lang.value = line.lang || "English";
-      lang.addEventListener("input", () => { line.lang = lang.value; this.commitChanges(true); });
+  // Shows the describes/retained strip for whichever reference is selected, and fills it.
+  // Hidden entirely with refs off: with no <Subject>/<Picture>/<Video>/<Audio> labels in
+  // the prompt there is nothing for either sentence to attach to.
+  _syncRefNoteRow(seg) {
+    if (!this.refNoteRow) return;
+    const refsOn = String(this.timeline.reference_mode || "OFF").toUpperCase() !== "OFF";
+    const isRef = !!seg && (
+      this.selectionType === "motion" || this.selectionType === "audio" ||
+      (this.selectionType === "image" && (seg.type === "image" || seg.type === "video")));
 
-      const text = document.createElement("input");
-      text.className = "mmxd-dlg-text";
-      text.placeholder = "spoken line…";
-      text.value = line.text || "";
-      text.addEventListener("input", () => { line.text = text.value; this.commitChanges(true); });
+    if (!refsOn || !isRef || this.retakeMode) {
+      this.refNoteRow.style.display = "none";
+      return;
+    }
+    this.refNoteRow.style.display = "flex";
+    this._growPropForRefNote();
 
-      const del = document.createElement("button");
-      del.className = "mmxd-dlg-del";
-      del.textContent = "×";
-      del.title = "Remove this line";
-      del.addEventListener("click", (e) => {
-        e.stopPropagation();
-        seg.dialogue.splice(idx, 1);
-        this.commitChanges(true);
-        this.render();
-        this.renderDialogueRows();
-      });
-
-      for (const el of [timeInput, spk, lang, text, del]) {
-        el.addEventListener("mousedown", (e) => e.stopPropagation());
-      }
-      row.appendChild(timeInput);
-      row.appendChild(spk);
-      row.appendChild(lang);
-      row.appendChild(text);
-      row.appendChild(del);
-      this.dialogueRows.appendChild(row);
-    });
+    // `describes` writes the reference's line in subject_definitions. A frame or
+    // storyboard anchor is the exception: its declaration states where the image sits in
+    // the video, which the timeline already knows and the user should not contradict.
+    const describes = this.selectionType !== "image" || seg.refRole === "subject";
+    this.refDescField.style.display = describes ? "" : "none";
+    if (describes) this.refDescInput.value = seg.refDesc || "";
+    this.refDescInput.placeholder = {
+      audio: "e.g. the voice-timbre reference for <Subject 1>",
+      motion: "e.g. the source of the camera move and cut rhythm",
+    }[this.selectionType] || "what this image defines, e.g. a long red wool coat";
+    this.refNoteInput.value = seg.refNote || "";
+    this.refNoteInput.placeholder = this.selectionType === "audio"
+      ? "what the target keeps from this audio — leave empty for the default"
+      : "what survives into the video — leave empty for the default";
   }
 
   updateUIFromSelection() {
-    this._syncDialogueArea();
     if (this.selectedSegmentIds && this.isMultiSelectActive()) {
       if (this.globalPromptInput) {
         this.globalPromptInput.disabled = true;
@@ -6098,6 +6297,10 @@ class TimelineEditor {
       if (this.segmentBoundsDisplay) {
         this.segmentBoundsDisplay.textContent = "Multiple Segments Selected";
       }
+      // there is no single reference to annotate, and leaving these up would show the
+      // previously selected segment's values as if they belonged to this selection
+      this._syncRefLimitsRow(null);
+      this._syncRefNoteRow(null);
       return;
     }
 
@@ -6144,6 +6347,11 @@ class TimelineEditor {
       this.promptInput.placeholder = "";
       this.promptInput.style.opacity = "";
     }
+
+    // Set once here rather than in each branch below: these belong to the selected
+    // segment, not to whichever of the prompt box / motion info / audio info is on show.
+    this._syncRefLimitsRow(seg);
+    this._syncRefNoteRow(seg);
 
     if (this.retakeMode) {
       if (this.promptWrapper) this.promptWrapper.style.display = "block";
@@ -6194,45 +6402,15 @@ class TimelineEditor {
       // "<Audio 1> is the voice-timbre reference for <Subject 1> (S1)." — and without
       // somewhere to say it, a second voice reference is just another numbered clip with
       // no way to tell the model who is speaking (issue #10).
-      const chars = this.timeline.characters || [];
-      const options = ['<option value="">— not a specific subject —</option>'].concat(
-        chars.map((c, i) => {
-          const desc = (c.description || "").trim();
-          const label = desc ? `Subject ${i + 1} — ${desc.slice(0, 40)}` : `Subject ${i + 1}`;
-          const sel = String(seg.subject || "") === String(i + 1) ? " selected" : "";
-          return `<option value="${i + 1}"${sel}>${label}</option>`;
-        })).join("");
-      // Audio role: a clip is either a voice (bound to a subject), the background-music
-      // track, or ambient/SFX. Only a voice clip needs the "Voice of" subject picker.
-      const role = seg.audioRole || "voice";
-      const roleOpts = [["voice", "Voice / Dialogue"], ["music", "Background Music"],
-                        ["ambient", "Ambient / SFX"]]
-        .map(([v, l]) => `<option value="${v}"${role === v ? " selected" : ""}>${l}</option>`)
-        .join("");
+      const options = this._audioSubjectOptions(seg);
       this.audioInfoArea.innerHTML = `
-        File: <span>${seg.fileName || "Unknown"}</span><br>
+        File: <span>${escapeAttr(seg.fileName || "Unknown")}</span><br>
         Length: <span>${this.formatTime(seg.audioDurationFrames)}</span> Output Length: <span>${this.formatTime(seg.length)}</span><br>
         Trim-in: <span>${this.formatTime(Math.round(seg.trimStart))}</span> Trim-Out: <span>${this.formatTime(Math.round(seg.audioDurationFrames - (seg.trimStart + seg.length)))}</span><br>
-        <label class="mmxd-audio-subject-label">Type:
-          <select class="mmxd-audio-role">${roleOpts}</select>
-        </label>
-        <label class="mmxd-audio-subject-label mmxd-audio-voiceof" style="display:${role === "voice" ? "" : "none"}">Voice of:
+        <label class="mmxd-audio-subject-label">Voice of:
           <select class="mmxd-audio-subject">${options}</select>
         </label>
       `;
-      const roleSel = this.audioInfoArea.querySelector(".mmxd-audio-role");
-      const voiceofRow = this.audioInfoArea.querySelector(".mmxd-audio-voiceof");
-      if (roleSel) {
-        roleSel.addEventListener("change", (e) => {
-          const target = this.timeline.audioSegments?.[this.selectedIndex];
-          if (!target) return;
-          target.audioRole = e.target.value;
-          if (e.target.value !== "voice") delete target.subject;  // not a voice → no subject
-          if (voiceofRow) voiceofRow.style.display = e.target.value === "voice" ? "" : "none";
-          this.commitChanges(true);
-          if (this.node?._mmxRefreshPrompt) this.node._mmxRefreshPrompt();
-        });
-      }
       const subjSel = this.audioInfoArea.querySelector(".mmxd-audio-subject");
       if (subjSel) {
         subjSel.addEventListener("change", (e) => {
@@ -6296,16 +6474,13 @@ class TimelineEditor {
       this.vidAttnValue.style.display = "none";
 
       if (seg) {
-        const isAnchorSeg = !!seg.isAnchor;
         if (this.selectionType !== "motion") {
-          this.promptInput.value = isAnchorSeg ? "" : (seg.prompt || "");
-          this.promptInput.placeholder = isAnchorSeg
-            ? "Image Anchor — no prompt (inherits the previous segment)"
-            : "Enter prompt for selected segment...";
+          this.promptInput.value = seg.prompt || "";
+          this.promptInput.placeholder =
+            "Enter prompt for selected segment...   (a line like  @ref1 says: hello  becomes dialogue)";
         }
-        // Anchors are guide-only, so lock their prompt field but leave Guide Strength active.
-        this.promptInput.disabled = isAnchorSeg;
-        this.promptInput.style.opacity = isAnchorSeg ? "0.5" : "1.0";
+        this.promptInput.disabled = false;
+        this.promptInput.style.opacity = "1.0";
 
         const isImage = (this.selectionType === "image") && (seg.type === "image" || seg.type === "video");
         const strength = isImage ? (seg.guideStrength ?? 1.0) : 1.0;
@@ -6577,7 +6752,16 @@ class TimelineEditor {
           if (useLiveVideo && retakeVid.videoEl && retakeVid.videoEl.readyState >= 2 && !retakeVid.videoEl.seeking) {
             drawSource = retakeVid.videoEl;
           } else if (retakeVid.thumbnails && retakeVid.thumbnails.length > 0) {
-            drawSource = this._nearestThumbImg(retakeVid.thumbnails, targetTime);
+            let nearestImg = retakeVid.thumbnails[0].img;
+            let minDiff = Infinity;
+            for (const t of retakeVid.thumbnails) {
+              const diff = Math.abs(t.time - targetTime);
+              if (diff < minDiff) {
+                minDiff = diff;
+                nearestImg = t.img;
+              }
+            }
+            drawSource = nearestImg;
           } else {
             drawSource = retakeVid.videoEl || (retakeVid.imgObj && retakeVid.imgObj.complete ? retakeVid.imgObj : null);
           }
@@ -6647,7 +6831,16 @@ class TimelineEditor {
 
           let drawSource = null;
           if (retakeVid.thumbnails && retakeVid.thumbnails.length > 0) {
-            drawSource = this._nearestThumbImg(retakeVid.thumbnails, midTime);
+            let nearestImg = retakeVid.thumbnails[0].img;
+            let minDiff = Infinity;
+            for (const t of retakeVid.thumbnails) {
+              const diff = Math.abs(t.time - midTime);
+              if (diff < minDiff) {
+                minDiff = diff;
+                nearestImg = t.img;
+              }
+            }
+            drawSource = nearestImg;
           } else {
             drawSource = retakeVid.imgObj && retakeVid.imgObj.complete ? retakeVid.imgObj : null;
           }
@@ -6856,7 +7049,12 @@ class TimelineEditor {
           this.ctx.textAlign = "left";
           this.ctx.textBaseline = "middle";
           const maxFileTextW = videoWidthPx - 42 - 10;
-          fname = this._fitText(this.ctx, fname, maxFileTextW, "…");
+          if (this.ctx.measureText(fname).width > maxFileTextW) {
+            while (fname.length > 0 && this.ctx.measureText(fname + "…").width > maxFileTextW) {
+              fname = fname.slice(0, -1);
+            }
+            fname += "…";
+          }
           const textW = this.ctx.measureText(fname).width;
           this.ctx.fillStyle = "rgba(0, 0, 0, 0.50)";
           this.ctx.fillRect(43, RULER_HEIGHT + 1, textW + 8, 16);
@@ -6867,16 +7065,6 @@ class TimelineEditor {
 
       }
     } else {
-      // Perf: O(1) id lookups instead of Array.find() per segment per frame.
-      const segById = new Map(this.timeline.segments.map(s => [s.id, s]));
-      const motionSegById = new Map((this.timeline.motionSegments || []).map(s => [s.id, s]));
-
-      // Perf: off-screen culling range (canvas x coords). Segments whose drawn
-      // span lies entirely outside this window are skipped (they aren't visible).
-      const CULL_MARGIN = 8;
-      const visX0 = this.viewport ? this.viewport.scrollLeft : 0;
-      const visX1 = visX0 + (this.viewport ? this.viewport.clientWidth : width);
-
       // --- Draw Image/Text Segments ---
       for (let i = 0; i < sortedSegments.length; i++) {
         const seg = sortedSegments[i];
@@ -6884,10 +7072,9 @@ class TimelineEditor {
         const rawEndX = ((seg.start + seg.length) / totalFrames) * width;
         const startX = Math.floor(rawStartX);
         const pxWidth = Math.max(1, Math.floor(rawEndX) - startX);
-        if (startX + pxWidth < visX0 - CULL_MARGIN || startX > visX1 + CULL_MARGIN) continue;
         const isSelected = this.selectedSegmentIds.includes(seg.id);
 
-        const originalSeg = segById.get(seg.id);
+        const originalSeg = this.timeline.segments.find(s => s.id === seg.id);
         const imgObj = originalSeg ? originalSeg.imgObj : seg.imgObj;
         const videoEl = originalSeg ? originalSeg.videoEl : seg.videoEl;
 
@@ -6929,7 +7116,16 @@ class TimelineEditor {
             const targetTime = seg._scrubTargetSec !== undefined
               ? seg._scrubTargetSec
               : (isPlayheadOverSeg ? (this.currentFrame - seg.start + seg.trimStart) / this.getFrameRate() : seg.trimStart / this.getFrameRate());
-            drawSource = this._nearestThumbImg(seg.thumbnails, targetTime);
+            let nearestImg = seg.thumbnails[0].img;
+            let minDiff = Infinity;
+            for (const t of seg.thumbnails) {
+              const diff = Math.abs(t.time - targetTime);
+              if (diff < minDiff) {
+                minDiff = diff;
+                nearestImg = t.img;
+              }
+            }
+            drawSource = nearestImg;
           } else {
             drawSource = imgObj && imgObj.complete ? imgObj : null;
           }
@@ -7027,7 +7223,12 @@ class TimelineEditor {
               this.ctx.textAlign = "left";
               this.ctx.textBaseline = "middle";
               const maxFileTextW = pxWidth - 42 - 10;
-              fname = this._fitText(this.ctx, fname, maxFileTextW, "…");
+              if (this.ctx.measureText(fname).width > maxFileTextW) {
+                while (fname.length > 0 && this.ctx.measureText(fname + "…").width > maxFileTextW) {
+                  fname = fname.slice(0, -1);
+                }
+                fname += "…";
+              }
               const textW = this.ctx.measureText(fname).width;
               this.ctx.fillStyle = "rgba(0, 0, 0, 0.50)";
               this.ctx.fillRect(startX + 43, RULER_HEIGHT + 1, textW + 8, 16);
@@ -7061,7 +7262,12 @@ class TimelineEditor {
               this.ctx.textAlign = "left";
               this.ctx.textBaseline = "middle";
               const maxFileTextW = pxWidth - 42 - 10;
-              fname = this._fitText(this.ctx, fname, maxFileTextW, "…");
+              if (this.ctx.measureText(fname).width > maxFileTextW) {
+                while (fname.length > 0 && this.ctx.measureText(fname + "…").width > maxFileTextW) {
+                  fname = fname.slice(0, -1);
+                }
+                fname += "…";
+              }
               const textW = this.ctx.measureText(fname).width;
               this.ctx.fillStyle = "rgba(0, 0, 0, 0.50)";
               this.ctx.fillRect(startX + 43, RULER_HEIGHT + 1, textW + 8, 16);
@@ -7119,7 +7325,12 @@ class TimelineEditor {
             // Measure and truncate to single line
             const maxTextW = pxWidth - 10;
             let label = seg.prompt;
-            label = this._fitText(this.ctx, label, maxTextW, "…");
+            if (this.ctx.measureText(label).width > maxTextW) {
+              while (label.length > 0 && this.ctx.measureText(label + "…").width > maxTextW) {
+                label = label.slice(0, -1);
+              }
+              label += "…";
+            }
 
             this.ctx.fillText(label, startX + pxWidth / 2, overlayY + overlayH / 2);
             this.ctx.restore();
@@ -7170,9 +7381,7 @@ class TimelineEditor {
         }
 
         if (isSelected) {
-          // Image Anchors get an orange outline so they read differently from
-          // prompt-synced segments (which stay white when selected).
-          const outlineColor = seg.isAnchor ? "#ff9d2e" : "#fff";
+          const outlineColor = "#fff";
           this.ctx.strokeStyle = outlineColor;
           this.ctx.lineWidth = 2;
           this.ctx.strokeRect(startX, RULER_HEIGHT + 1, pxWidth, this.blockHeight - 2);
@@ -7192,57 +7401,17 @@ class TimelineEditor {
           this.ctx.strokeRect(startX, RULER_HEIGHT + 1, pxWidth, this.blockHeight - 2);
         }
 
-        // Anchor glyph: drawn for anchors whether idle OR selected, so the marker
-        // stays visible on selection. Bottom-right corner, tiny dot fallback if thin.
-        if (seg.isAnchor && seg.type !== "ghost") {
-          const _anchBottom = RULER_HEIGHT + this.blockHeight;
-          if (pxWidth >= 24 && this.blockHeight > 30) {
-            const R = 9;
-            const cx = startX + pxWidth - 6 - R;
-            const cy = _anchBottom - 6 - R;
-            this.ctx.save();
-            const gs = R * 0.9;
-            this.ctx.strokeStyle = "#ffcf9b";
-            this.ctx.lineWidth = 1.2;
-            this.ctx.lineCap = "round";
-            this.ctx.beginPath();
-            this.ctx.arc(cx, cy - gs * 0.62, gs * 0.24, 0, Math.PI * 2);
-            this.ctx.stroke();
-            this.ctx.beginPath();
-            this.ctx.moveTo(cx, cy - gs * 0.4);
-            this.ctx.lineTo(cx, cy + gs * 0.72);
-            this.ctx.stroke();
-            this.ctx.beginPath();
-            this.ctx.moveTo(cx - gs * 0.5, cy - gs * 0.1);
-            this.ctx.lineTo(cx + gs * 0.5, cy - gs * 0.1);
-            this.ctx.stroke();
-            this.ctx.beginPath();
-            this.ctx.arc(cx, cy + gs * 0.05, gs * 0.62, Math.PI * 0.16, Math.PI * 0.84);
-            this.ctx.stroke();
-            this.ctx.restore();
-          } else if (pxWidth >= 6) {
-            this.ctx.save();
-            this.ctx.beginPath();
-            this.ctx.arc(startX + pxWidth / 2, _anchBottom - 7, 2.5, 0, Math.PI * 2);
-            this.ctx.fillStyle = "rgba(255, 157, 46, 0.95)";
-            this.ctx.fill();
-            this.ctx.restore();
-          }
-        }
         this.ctx.globalAlpha = 1.0;
       }
 
       // --- Prompt zones: boundary lines (always) + zone ribbon (toggle) ---
-      // A "zone" is the span one prompt governs. Image Anchors don't own a
-      // prompt (they inherit the preceding one), so they never open a new zone;
-      // the previous prompt's zone runs straight through them. This mirrors the
-      // prompt-relay logic used at export time, so what you see is what renders.
+      // A "zone" is the span one prompt governs.
       if (totalFrames > 0 && this.blockHeight > 20) {
         const zoneSegs = sortedSegments
           .filter(s => s.type !== "ghost")
           .slice()
           .sort((a, b) => a.start - b.start);
-        const realZoneSegs = zoneSegs.filter(s => !s.isAnchor);
+        const realZoneSegs = zoneSegs;
 
         if (realZoneSegs.length > 0) {
           const zones = realZoneSegs.map((s, i) => ({
@@ -7298,7 +7467,12 @@ class TimelineEditor {
                 this.ctx.fillStyle = hasPrompt ? "#ffffff" : "rgba(255, 255, 255, 0.6)";
                 let label = hasPrompt ? z.prompt : "(no prompt)";
                 const maxW = pillW - 16;
-                label = this._fitText(this.ctx, label, maxW, "\u2026");
+                if (this.ctx.measureText(label).width > maxW) {
+                  while (label.length > 0 && this.ctx.measureText(label + "\u2026").width > maxW) {
+                    label = label.slice(0, -1);
+                  }
+                  label += "\u2026";
+                }
                 this.ctx.fillText(label, px + 8, zoneBarY + ZONE_BAR_H / 2 + 0.5);
                 this.ctx.restore();
               }
@@ -7329,7 +7503,6 @@ class TimelineEditor {
         const startX = Math.floor((seg.start / totalFrames) * width);
         const rawEndX = ((seg.start + seg.length) / totalFrames) * width;
         const pxWidth = Math.max(1, Math.floor(rawEndX) - startX);
-        if (startX + pxWidth < visX0 - CULL_MARGIN || startX > visX1 + CULL_MARGIN) continue;
         const isSelected = this.selectedSegmentIds.includes(seg.id);
         const trackY = RULER_HEIGHT + this.blockHeight + this.audioTrackHeight;
 
@@ -7356,7 +7529,7 @@ class TimelineEditor {
           this.ctx.fillStyle = "#000";
           this.ctx.fillRect(startX, trackY + 1, pxWidth, this.motionTrackHeight - 2);
 
-          const originalSeg = motionSegById.get(seg.id);
+          const originalSeg = this.timeline.motionSegments.find(s => s.id === seg.id);
           const imgObj = originalSeg ? originalSeg.imgObj : seg.imgObj;
           const videoEl = originalSeg ? originalSeg.videoEl : seg.videoEl;
 
@@ -7372,7 +7545,16 @@ class TimelineEditor {
               const targetTime = seg._scrubTargetSec !== undefined
                 ? seg._scrubTargetSec
                 : (isPlayheadOverSeg ? (this.currentFrame - seg.start + seg.trimStart) / this.getFrameRate() : seg.trimStart / this.getFrameRate());
-              drawSource = this._nearestThumbImg(seg.thumbnails, targetTime);
+              let nearestImg = seg.thumbnails[0].img;
+              let minDiff = Infinity;
+              for (const t of seg.thumbnails) {
+                const diff = Math.abs(t.time - targetTime);
+                if (diff < minDiff) {
+                  minDiff = diff;
+                  nearestImg = t.img;
+                }
+              }
+              drawSource = nearestImg;
             } else {
               drawSource = imgObj && imgObj.complete ? imgObj : null;
             }
@@ -7462,7 +7644,12 @@ class TimelineEditor {
               this.ctx.textAlign = "left";
               this.ctx.textBaseline = "middle";
               const maxFileTextW = pxWidth - 75 - 10;
-              fname = this._fitText(this.ctx, fname, maxFileTextW, "…");
+              if (this.ctx.measureText(fname).width > maxFileTextW) {
+                while (fname.length > 0 && this.ctx.measureText(fname + "…").width > maxFileTextW) {
+                  fname = fname.slice(0, -1);
+                }
+                fname += "…";
+              }
               const textW = this.ctx.measureText(fname).width;
               this.ctx.fillStyle = "rgba(0, 0, 0, 0.50)";
               this.ctx.fillRect(startX + 76, trackY + 1, textW + 8, 16);
@@ -7497,7 +7684,12 @@ class TimelineEditor {
             // Measure and truncate to single line
             const maxTextW = pxWidth - 10;
             let label = globalPromptStr;
-            label = this._fitText(this.ctx, label, maxTextW, "…");
+            if (this.ctx.measureText(label).width > maxTextW) {
+              while (label.length > 0 && this.ctx.measureText(label + "…").width > maxTextW) {
+                label = label.slice(0, -1);
+              }
+              label += "…";
+            }
 
             this.ctx.fillText(label, startX + pxWidth / 2, overlayY + overlayH / 2);
             this.ctx.restore();
@@ -7532,7 +7724,6 @@ class TimelineEditor {
         const rawEndX = ((seg.start + seg.length) / totalFrames) * width;
         const startX = Math.floor(rawStartX);
         const pxWidth = Math.max(1, Math.floor(rawEndX) - startX);
-        if (startX + pxWidth < visX0 - CULL_MARGIN || startX > visX1 + CULL_MARGIN) continue;
         const isSelected = this.selectedSegmentIds.includes(seg.id);
         const trackY = RULER_HEIGHT + this.blockHeight;
 
@@ -7713,9 +7904,9 @@ class TimelineEditor {
         this.ctx.fillRect(cutoffX, 0, width - cutoffX, RULER_HEIGHT);
       }
 
-      // --- Generation seam markers ---
+      // --- Generation seam markers (fork addition) ---
       // Amber dashed lines where each chained window meets the next (see getWindowBoundaries).
-      // Snapping is on the same positions, so a cut/fade dropped here hides the seam.
+      // Segment edges snap to the same positions, so a cut/fade dropped here hides the seam.
       const seams = this.getWindowBoundaries();
       if (seams.length) {
         const seamBottom = RULER_HEIGHT + this.blockHeight + this.motionTrackHeight + this.audioTrackHeight;
@@ -7740,53 +7931,6 @@ class TimelineEditor {
           this.ctx.fill();
         }
         this.ctx.restore();
-      }
-    }
-
-    // --- Dialogue markers: a ♪ badge at the BOTTOM of the timeline per spoken line, with a
-    //     finely-dotted line rising up through the audio + reference-video tracks to show the
-    //     position of the voice across them. ---
-    this._dialogueMarkers = [];
-    {
-      const fr = this.getFrameRate();
-      const hov = this._hoverDlg;
-      const tlBottom = RULER_HEIGHT + this.blockHeight + this.audioTrackHeight + this.motionTrackHeight;
-      const lineTop = RULER_HEIGHT + this.blockHeight;   // top of the audio track = where the ref/audio timelines begin
-      for (const seg of (this.timeline.segments || [])) {
-        const lines = Array.isArray(seg.dialogue) ? seg.dialogue : [];
-        for (let li = 0; li < lines.length; li++) {
-          const t = Math.max(0, parseFloat(lines[li].time) || 0);
-          const mx = ((seg.start + t * fr) / totalFrames) * width;
-          if (mx < -8 || mx > width + 8) continue;
-          const isHi = hov && hov.segId === seg.id && hov.idx === li;
-          this.ctx.save();
-          // dotted position line rising through the audio + reference-video tracks
-          this.ctx.setLineDash([1.5, 3.5]);
-          this.ctx.strokeStyle = isHi ? "rgba(127,233,255,0.95)" : "rgba(63,182,216,0.7)";
-          this.ctx.lineWidth = isHi ? 1.5 : 1;
-          this.ctx.beginPath();
-          this.ctx.moveTo(mx, lineTop);
-          this.ctx.lineTo(mx, tlBottom - 6);
-          this.ctx.stroke();
-          this.ctx.setLineDash([]);
-          // ♪ badge at the very bottom
-          const my = tlBottom - 7;
-          const r = isHi ? 7 : 5.5;
-          this.ctx.fillStyle = isHi ? "#7fe9ff" : "#3fb6d8";
-          this.ctx.strokeStyle = "rgba(0,0,0,0.55)";
-          this.ctx.lineWidth = 1;
-          this.ctx.beginPath();
-          this.ctx.arc(mx, my, r, 0, Math.PI * 2);
-          this.ctx.fill();
-          this.ctx.stroke();
-          this.ctx.fillStyle = "#08222b";
-          this.ctx.font = "bold 8px sans-serif";
-          this.ctx.textAlign = "center";
-          this.ctx.textBaseline = "middle";
-          this.ctx.fillText("♪", mx, my + 0.5);
-          this.ctx.restore();
-          this._dialogueMarkers.push({ x: mx, y: my, r: r + 2, segId: seg.id, idx: li });
-        }
       }
     }
 
@@ -7914,8 +8058,11 @@ class TimelineEditor {
 
     let text = seg.fileName || "Audio Track";
     const maxWidth = pxWidth - 12;
-    if (maxWidth > 0) {
-      text = this._fitText(ctx, text, maxWidth, "...");
+    if (ctx.measureText(text).width > maxWidth && maxWidth > 0) {
+      while (text.length > 0 && ctx.measureText(text + "...").width > maxWidth) {
+        text = text.slice(0, -1);
+      }
+      text = text + "...";
     }
 
     ctx.fillText(text, startX + 6, yOffset + 8);
@@ -8361,28 +8508,11 @@ class TimelineEditor {
   onMouseMove(e) {
     const { x: mouseX, y: mouseY } = this.getMousePos(e);
 
-    // Dialogue marker hover → highlight the matching editor row (and vice-versa via render).
-    if (!this._isDragging && !this._isSelectingBox) {
-      let over = null;
-      for (const m of (this._dialogueMarkers || [])) {
-        const dx = mouseX - m.x, dy = mouseY - m.y;
-        if (dx * dx + dy * dy <= m.r * m.r) { over = m; break; }
-      }
-      const cur = this._hoverDlg;
-      const same = over ? (cur && cur.segId === over.segId && cur.idx === over.idx) : !cur;
-      if (!same) {
-        this._hoverDlg = over ? { segId: over.segId, idx: over.idx } : null;
-        this._highlightDialogueRow((over && this._isSegSelected(over.segId)) ? over.idx : -1);
-        this._scheduleRender();
-      }
-      if (over) this.canvas.style.cursor = "pointer";
-    }
-
     if (this._isSelectingBox && this._dragType === "box_select") {
       this.canvas.style.cursor = "crosshair";
       this._selectBoxCurrent = { x: mouseX, y: mouseY };
       this.updateSelectionFromBox();
-      this._scheduleRender();
+      this.render();
       return;
     }
 
@@ -8438,7 +8568,7 @@ class TimelineEditor {
       }
       if (this._hoveredGapIdx !== newHoveredGapIdx) {
         this._hoveredGapIdx = newHoveredGapIdx;
-        this._scheduleRender();
+        this.render();
       }
 
       const isOverDivider = Math.abs(mouseY - (RULER_HEIGHT + this.blockHeight)) <= 8;
@@ -8486,7 +8616,7 @@ class TimelineEditor {
         if (this.timeline.retakeVideo && this.timeline.retakeVideo.videoEl) {
           this.timeline.retakeVideo.videoEl.currentTime = this.currentFrame / frameRate;
         }
-        this._scheduleRender();
+        this.render();
         return;
       }
 
@@ -8530,7 +8660,7 @@ class TimelineEditor {
           this.timeline.retakeVideo.videoEl.currentTime = newStart / frameRate;
         }
 
-        this._scheduleRender();
+        this.render();
         this.updateUIFromSelection();
         return;
       }
@@ -8573,7 +8703,7 @@ class TimelineEditor {
           this.timeline.retakeVideo.videoEl.currentTime = (this.timeline.retakeStart + newLength) / frameRate;
         }
 
-        this._scheduleRender();
+        this.render();
         this.updateUIFromSelection();
         return;
       }
@@ -8618,7 +8748,7 @@ class TimelineEditor {
           this.timeline.retakeVideo.videoEl.currentTime = newStart / frameRate;
         }
 
-        this._scheduleRender();
+        this.render();
         this.updateUIFromSelection();
         return;
       }
@@ -8647,7 +8777,7 @@ class TimelineEditor {
       this.audioTrackHeight = newAudioTrackHeight;
 
       this.updateSidebarHeights();
-      this._scheduleRender();
+      this.render();
       return;
     }
 
@@ -8675,7 +8805,7 @@ class TimelineEditor {
       this.audioTrackHeight = newAudioTrackHeight;
 
       this.updateSidebarHeights();
-      this._scheduleRender();
+      this.render();
       return;
     }
 
@@ -8690,7 +8820,7 @@ class TimelineEditor {
 
       this.resizeCanvas(this.canvas.offsetWidth);
       this.updateSidebarHeights();
-      this._scheduleRender();
+      this.render();
 
       if (this.node && this.node.computeSize) {
         const sz = this.node.computeSize();
@@ -8722,7 +8852,7 @@ class TimelineEditor {
       mouseFrameX = this.getSnappedPlayhead(mouseFrameX, logicalWidth);
       this.currentFrame = clamp(mouseFrameX, 0, totalFrames);
       this._liveScrubPlayhead();
-      this._scheduleRender();
+      this.render();
       if (this.isPlaying) {
         this.playAudio(); // Scrub (restart from new position)
       }
@@ -8866,7 +8996,7 @@ class TimelineEditor {
         }
       }
 
-      this._scheduleRender();
+      this.render();
       return;
     }
 
@@ -9247,7 +9377,7 @@ class TimelineEditor {
     }
 
     this.updateUIFromSelection(); // Live update of trim values
-    this._scheduleRender();
+    this.render();
   }
 
   _applyCenterDragPhysics(initT, D_id, D_mouse_start, mouseFrameX, durationFrames, totalFrames, logicalWidth, forceStart = false) {
@@ -9677,113 +9807,296 @@ class TimelineEditor {
 
   // --- Backend Data Sync ---
   // --- Visual Character Reference Slots ---
+  // The slots hold <Subject N> definitions, which the guide says may be "people, animals,
+  // or objects; scenes, backgrounds, or environments; clothing, props, interfaces, or
+  // visual effects; styles, actions, expressions, or poses" — not only characters. The
+  // class names still say "character" because they are shared with a lot of CSS and with
+  // the LTX editor this was forked from; the data key is `subjects`.
+  subjectSlots() {
+    if (!Array.isArray(this.timeline.subjects)) {
+      this.timeline.subjects = normaliseSubjectSlots(
+        this.timeline.subjects || this.timeline.characters);
+    }
+    return this.timeline.subjects;
+  }
+
+  // Dragged from the strip under the panel and remembered per node, exactly like
+  // propHeight and globalPropHeight. Clamped on read so a workflow saved when the slot
+  // was a fixed 148px does not come back too short for the two text boxes.
+  subjectSlotHeight() {
+    const stored = this.node?.properties?.subjectSlotHeight;
+    return Math.max(SUBJECT_SLOT_MIN_H, stored || SUBJECT_SLOT_DEFAULT_H);
+  }
+
+  // Shown only on the ref2va path, where `summary` is a section of the prompt.
+  _syncSummaryField() {
+    if (!this.summaryField) return;
+    const refsOn = String(this.timeline.reference_mode || "OFF").toUpperCase() !== "OFF";
+    this.summaryField.style.display = refsOn ? "" : "none";
+  }
+
+  // Which slot is which `<Subject N>` is the planner's answer, taken from the last compile
+  // rather than worked out again here: only slots that hand over a reference image are
+  // numbered, so slot 2 is <Subject 1> when slot 1 is empty, and a menu that counted slots
+  // named a subject the prompt did not have.
+  //
+  // A slot with no number has no label for a clip to be tied to — its description goes into
+  // the prose instead — so it is offered as unavailable, with the reason, rather than
+  // taking the click and doing nothing with it.
+  _audioSubjectOptions(seg) {
+    const subjectOfSlot = this.node?._mmxSubjectOfSlot;
+    const refsOn = String(this.timeline.reference_mode || "OFF").toUpperCase() !== "OFF";
+    return ['<option value="">— not a specific subject —</option>'].concat(
+      this.subjectSlots().map((c, i) => {
+        const desc = escapeAttr((c.description || "").trim().slice(0, 40));
+        const tail = desc ? ` — ${desc}` : "";
+        const sel = String(seg.subject || "") === String(i + 1) ? " selected" : "";
+        const subject = subjectOfSlot?.[String(i + 1)];
+        if (subject) {
+          return `<option value="${i + 1}"${sel}>Subject ${subject}${tail}</option>`;
+        }
+        // No compile has answered yet: say nothing rather than guess a number
+        if (!subjectOfSlot) {
+          return `<option value="${i + 1}"${sel}>Slot ${i + 1}${tail}</option>`;
+        }
+        const why = !refsOn ? "Refs OFF sends no references"
+          : (c.images && c.images.length) ? "not among the references sent"
+          : "needs a reference image";
+        return `<option value="" disabled${sel}>Slot ${i + 1}${tail} — ${why}</option>`;
+      })).join("");
+  }
+
+  // The menu is built when a clip is selected, but what it says depends on the panel above
+  // it: drop an image into a slot and that slot becomes bindable, delete one and it stops.
+  // Only the options are replaced, so the `change` listener on the <select> survives — and
+  // not while it has focus, which would shut an open menu under the pointer.
+  refreshAudioSubjectMenu() {
+    if (this.selectionType !== "audio") return;
+    const sel = this.audioInfoArea?.querySelector(".mmxd-audio-subject");
+    if (!sel || document.activeElement === sel) return;
+    const seg = this.timeline.audioSegments?.[this.selectedIndex];
+    if (!seg) return;
+    sel.innerHTML = this._audioSubjectOptions(seg);
+  }
+
+  // The stepper owns this number and nothing else writes it. It used to grow on its own as
+  // slots filled, which meant the value beside the buttons moved without anyone pressing
+  // them — and `−` needed a two-stage rule to work around its own panel putting the slot
+  // straight back. One owner, one meaning.
+  visibleSlotCount() {
+    return clampSubjectSlots(this.timeline.subjectSlotCount);
+  }
+
+  _buildSubjectSlotEl(i) {
+    const slot = document.createElement("div");
+    slot.className = "mmxd-character-slot";
+    slot.dataset.index = i;
+
+    slot.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      slot.classList.add("drag-over");
+    });
+    slot.addEventListener("dragleave", (e) => {
+      e.stopPropagation();
+      slot.classList.remove("drag-over");
+    });
+    slot.addEventListener("drop", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      slot.classList.remove("drag-over");
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        Array.from(e.dataTransfer.files).forEach(f => this.handleCharacterImageUpload(f, i));
+      }
+    });
+    slot.addEventListener("click", (e) => {
+      // clicking anywhere else in the slot opens a file picker, so every interactive
+      // child has to be named here — including the field wrappers, whose border and
+      // caption are part of the box the user is aiming at
+      if (e.target.closest(".mmxd-character-delete") ||
+          e.target.closest(".mmxd-character-validate-btn") ||
+          e.target.closest(".mmxd-character-field") ||
+          e.target.closest(".mmxd-character-desc") ||
+          e.target.closest(".mmxd-msel")) return;
+
+      const fi = document.createElement("input");
+      fi.type = "file";
+      fi.accept = "image/*";
+      fi.multiple = true;
+      fi.addEventListener("change", (ev) => {
+        if (ev.target.files) {
+          Array.from(ev.target.files).forEach(f => this.handleCharacterImageUpload(f, i));
+        }
+      });
+      fi.click();
+    });
+    return slot;
+  }
+
   createCharacterSlots(parent) {
+    const wrap = document.createElement("div");
+    wrap.style.position = "relative";
+    wrap.style.width = "100%";
+    wrap.style.flexShrink = "0";
+
     const container = document.createElement("div");
     container.className = "mmxd-characters-container";
 
-    if (!this.timeline.characters) {
-      this.timeline.characters = Array.from(
-        { length: CHAR_SLOTS_DEFAULT }, () => ({ images: [], description: "" }));
-    }
-    // however many were saved, within the range the model card allows for
-    this.charSlotCount = Math.max(
-      CHAR_SLOTS_MIN, Math.min(CHAR_SLOTS_MAX, this.timeline.characters.length || CHAR_SLOTS_DEFAULT));
-    while (this.timeline.characters.length < this.charSlotCount) {
-      this.timeline.characters.push({ images: [], description: "" });
-    }
+    this.subjectSlots();
 
     this.characterSlots = [];
     this._charPanelParent = parent;
     this._charPanelContainerEl = container;
 
-    for (let i = 0; i < this.charSlotCount; i++) {
-      const slot = document.createElement("div");
-      slot.className = "mmxd-character-slot";
-      slot.dataset.index = i;
+    wrap.appendChild(this._buildSubjectStepper());
+    wrap.appendChild(container);
+    wrap.appendChild(this._buildSubjectResizer());
+    parent.appendChild(wrap);
+    this.charPanelContainer = container;
+    this.charPanelHeight = subjectPanelHeight(3, this.subjectSlotHeight());
+    this.updateCharacterSlotsUI();
+  }
 
-      slot.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        slot.classList.add("drag-over");
-      });
-      slot.addEventListener("dragleave", (e) => {
-        e.stopPropagation();
-        slot.classList.remove("drag-over");
-      });
-      slot.addEventListener("drop", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        slot.classList.remove("drag-over");
-        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-          Array.from(e.dataTransfer.files).forEach(f => this.handleCharacterImageUpload(f, i));
-        }
-      });
-      slot.addEventListener("click", (e) => {
-        if (e.target.closest(".mmxd-character-delete") ||
-            e.target.closest(".mmxd-character-validate-btn") ||
-            e.target.closest(".mmxd-character-desc")) return;
-
-        const fi = document.createElement("input");
-        fi.type = "file";
-        fi.accept = "image/*";
-        fi.multiple = true;
-        fi.addEventListener("change", (ev) => {
-          if (ev.target.files) {
-            Array.from(ev.target.files).forEach(f => this.handleCharacterImageUpload(f, i));
-          }
-        });
-        fi.click();
-      });
-
-      container.appendChild(slot);
-      this.characterSlots.push(slot);
-    }
-
-    // --- add / remove a slot ---------------------------------------------------------
-    // Three was a guess baked into the code in three places, not a limit of the model:
-    // the card allows nine reference images in total, and each slot holds two. Issue #8.
+  // Its own row above the slots, not a flex item among them: the container wraps three
+  // slots to a line and subjectPanelHeight counts rows, so a stepper sitting in that flow
+  // would push a slot onto a line the reserved height does not know about.
+  _buildSubjectStepper() {
     const stepper = document.createElement("div");
     stepper.className = "mmxd-character-stepper";
 
-    const mkBtn = (label, title, fn) => {
+    const mkBtn = (label, title, onClick) => {
       const b = document.createElement("button");
       b.className = "mmxd-character-step-btn";
       b.textContent = label;
       b.title = title;
-      b.addEventListener("click", (e) => { e.stopPropagation(); fn(); });
+      b.addEventListener("click", (e) => { e.stopPropagation(); onClick(); });
       return b;
     };
-    const count = document.createElement("span");
-    count.className = "mmxd-character-step-count";
-
-    const rebuild = () => {
-      const parentEl = this._charPanelParent;
-      this._charPanelContainerEl?.remove();
-      this.createCharacterSlots(parentEl);
+    const redraw = () => {
+      this.updateCharacterSlotsUI();
       this.commitChanges(true);
     };
+
+    const count = document.createElement("span");
+    count.className = "mmxd-character-step-count";
     this._charStepperRefresh = () => {
-      count.textContent = `${this.charSlotCount} subject${this.charSlotCount === 1 ? "" : "s"}`;
+      const n = this.visibleSlotCount();
+      count.textContent = `${n} subject${n === 1 ? "" : "s"}`;
     };
 
-    stepper.appendChild(mkBtn("−", "One subject fewer — the last slot and its images go", () => {
-      if (this.charSlotCount <= CHAR_SLOTS_MIN) return;
-      this.timeline.characters.splice(this.charSlotCount - 1, 1);
-      rebuild();
+    stepper.appendChild(mkBtn("−", "One subject fewer — the last slot and its images go",
+                              () => {
+      const n = this.visibleSlotCount();
+      if (n <= 1) return;
+      // the slot goes with the count, or its images would sit in the timeline JSON with
+      // nothing on screen to show them and no way to reach them again
+      this.subjectSlots().splice(n - 1, 1);
+      this.timeline.subjectSlotCount = n - 1;
+      redraw();
     }));
     stepper.appendChild(count);
     stepper.appendChild(mkBtn("+", "One subject more", () => {
-      if (this.charSlotCount >= CHAR_SLOTS_MAX) return;
-      this.timeline.characters.splice(this.charSlotCount, 0, { images: [], description: "" });
-      rebuild();
+      const n = this.visibleSlotCount();
+      if (n >= MAX_SUBJECT_SLOTS) return;
+      this.timeline.subjectSlotCount = n + 1;
+      redraw();
     }));
-    container.appendChild(stepper);
-    this._charStepperRefresh();
+    return stepper;
+  }
 
-    parent.appendChild(container);
-    this.charPanelContainer = container;
-    this.charPanelHeight = 356;
-    this.updateCharacterSlotsUI();
+  // Same grab strip as the prompt and global-prompt panels, so the reference panel resizes
+  // the way every other part of the editor already does. Only the slot height is stored;
+  // the panel height follows from it and the row count.
+  _buildSubjectResizer() {
+    const bar = document.createElement("div");
+    bar.style.position = "absolute";
+    bar.style.bottom = "0px";
+    bar.style.left = "0px";
+    bar.style.width = "100%";
+    bar.style.height = `${SUBJECT_RESIZER_H}px`;
+    bar.style.cursor = "ns-resize";
+    bar.style.display = "flex";
+    bar.style.justifyContent = "center";
+    bar.style.alignItems = "flex-end";
+    bar.style.paddingBottom = "4px";
+    bar.title = "Drag to resize the reference images";
+    bar.innerHTML = `<div style="width: 40px; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px;"></div>`;
+
+    bar.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startY = e.clientY;
+      const startH = this.subjectSlotHeight();
+
+      const doDrag = (ev) => {
+        if (ev.buttons === 0) { stopDrag(); return; }
+        // one row of slots follows the pointer 1:1; with two rows the panel grows twice
+        // as fast as the drag, which is the same deal the other resizers make
+        const newH = Math.max(SUBJECT_SLOT_MIN_H, startH + (ev.clientY - startY));
+        if (this.node?.properties) this.node.properties.subjectSlotHeight = newH;
+        this._applySubjectSlotHeight();
+      };
+      const stopDrag = () => {
+        window.removeEventListener("mousemove", doDrag, true);
+        window.removeEventListener("mouseup", stopDrag, true);
+        document.body.style.cursor = "default";
+        this.commitChanges(true);
+      };
+
+      document.body.style.cursor = "ns-resize";
+      window.addEventListener("mousemove", doDrag, true);
+      window.addEventListener("mouseup", stopDrag, true);
+    });
+    return bar;
+  }
+
+  // Pushes the dragged height onto every slot element and re-reserves the node's room.
+  _applySubjectSlotHeight() {
+    const h = this.subjectSlotHeight();
+    (this.characterSlots || []).forEach((el) => { el.style.height = `${h}px`; });
+    this.charPanelHeight = subjectPanelHeight(this.characterSlots?.length || 3, h);
+    if (this.node?.setDirtyCanvas && typeof this.node.computeSize === "function"
+        && this.node.size) {
+      this.node.setSize([this.node.size[0], this.node.computeSize()[1]]);
+      this.node.setDirtyCanvas(true, true);
+    }
+  }
+
+  // Adds or removes slot elements so the DOM matches visibleSlotCount(). Called from
+  // updateCharacterSlotsUI, which is the only entry point that redraws the panel.
+  _syncSubjectSlotEls() {
+    const container = this.charPanelContainer;
+    if (!container) return;
+    const want = this.visibleSlotCount();
+    const slots = this.subjectSlots();
+    while (slots.length < want) slots.push(emptySubjectSlot());
+    const slotH = this.subjectSlotHeight();
+    while (this.characterSlots.length < want) {
+      const el = this._buildSubjectSlotEl(this.characterSlots.length);
+      container.appendChild(el);
+      this.characterSlots.push(el);
+    }
+    while (this.characterSlots.length > want) {
+      this.characterSlots.pop().remove();
+    }
+    this.characterSlots.forEach((el) => { el.style.height = `${slotH}px`; });
+    this._charStepperRefresh?.();
+
+    // Slots wrap three to a row, so the panel's reserved height has to follow the row
+    // count or the node crops the last row the moment a fourth subject is added.
+    const height = subjectPanelHeight(want, slotH);
+    const grew = height !== this.charPanelHeight;
+    this.charPanelHeight = height;
+    // Only once the panel has been through a full build: during construction the widget's
+    // computeSize is not installed yet, so resizing here would size the node against a
+    // panel height it does not know about — and would fight the size a saved workflow
+    // restored. After that, this fires whenever a slot is gained or lost.
+    if (grew && this._subjectPanelReady && this.node?.setDirtyCanvas
+        && typeof this.node.computeSize === "function" && this.node.size) {
+      this.node.setSize([this.node.size[0], this.node.computeSize()[1]]);
+      this.node.setDirtyCanvas(true, true);
+    }
+    this._subjectPanelReady = true;
   }
 
   handleCharacterImageUpload(file, idx) {
@@ -9829,13 +10142,11 @@ class TimelineEditor {
           stored = { b64: canvas.toDataURL("image/jpeg", 0.95), name: file.name };
         }
 
-        if (!this.timeline.characters[idx].images) {
-          this.timeline.characters[idx].images = [];
-        }
-        if (this.timeline.characters[idx].images.length >= 2) {
-          this.timeline.characters[idx].images.shift();
-        }
-        this.timeline.characters[idx].images.push(stored);
+        const subjects = this.subjectSlots();
+        while (subjects.length <= idx) subjects.push(emptySubjectSlot());
+        if (!subjects[idx].images) subjects[idx].images = [];
+        if (subjects[idx].images.length >= 2) subjects[idx].images.shift();
+        subjects[idx].images.push(stored);
         this.updateCharacterSlotsUI();
         this.commitChanges();
       };
@@ -9877,20 +10188,31 @@ class TimelineEditor {
 
   updateCharacterSlotsUI() {
     if (!this.characterSlots) return;
-    if (!this.timeline.characters) {
-      this.timeline.characters = Array.from(
-        { length: CHAR_SLOTS_DEFAULT }, () => ({ images: [], description: "" }));
-    }
-    this._charStepperRefresh?.();
+    const subjects = this.subjectSlots();
+    this._syncSubjectSlotEls();
 
     for (let i = 0; i < this.characterSlots.length; i++) {
       const slot = this.characterSlots[i];
-      const data = this.timeline.characters[i] || { images: [], description: "" };
+      const data = subjects[i] || emptySubjectSlot();
       slot.innerHTML = "";
 
-      if (data.images && data.images.length > 0) {
+      // A subject is a description first and an image second. The image is what earns it
+      // a <Subject N> label on the ref2va path; on fl2va the image is discarded by the
+      // render and the description is the whole subject. So the text boxes are always
+      // here, and only the controls that can actually reach the prompt come and go.
+      const refsOn = String(this.timeline.reference_mode || "OFF").toUpperCase() !== "OFF";
+      const hasImages = !!(data.images && data.images.length);
+
+      if (hasImages) {
         const previewsRow = document.createElement("div");
         previewsRow.className = "mmxd-character-previews-row";
+        if (!refsOn) {
+          // kept, because switching the toolbar back must not cost the upload — but said
+          // out loud, because fl2va sends no reference images at all
+          previewsRow.style.opacity = "0.45";
+          previewsRow.title = "Not sent on the fl2va path. Switch to 'Refs ON (ref2va)' "
+                            + "to use this image; the description below is used either way.";
+        }
 
         data.images.forEach((imgData, imgIdx) => {
           const imgWrapper = document.createElement("div");
@@ -9907,8 +10229,8 @@ class TimelineEditor {
           delBtn.title = "Delete Image";
           delBtn.addEventListener("click", (e) => {
             e.stopPropagation();
-            if (this.timeline.characters[i] && this.timeline.characters[i].images) {
-              this.timeline.characters[i].images.splice(imgIdx, 1);
+            if (subjects[i] && subjects[i].images) {
+              subjects[i].images.splice(imgIdx, 1);
               this.updateCharacterSlotsUI();
               this.commitChanges();
             }
@@ -9933,52 +10255,101 @@ class TimelineEditor {
         }
 
         slot.appendChild(previewsRow);
-
-        // Reference TYPE — picks the H3 subject sentence frame (character/animal/object
-        // appear in-frame; scene sets the environment; style guides the aesthetic). The
-        // backend uses this + the description below to write the subject_definitions line.
-        const typeSel = document.createElement("select");
-        typeSel.className = "mmxd-character-type";
-        for (const [val, lbl] of [["character", "Character"], ["animal", "Animal"],
-                                   ["object", "Object"], ["scene", "Scene / Background"],
-                                   ["style", "Style"]]) {
-          const opt = document.createElement("option");
-          opt.value = val;
-          opt.textContent = lbl;
-          typeSel.appendChild(opt);
-        }
-        typeSel.value = data.type || "character";
-        typeSel.title = "How H3 defines this reference. Character/Animal/Object appear in the "
-                      + "shot; Scene sets the environment; Style guides the overall aesthetic.";
-        typeSel.addEventListener("change", () => {
-          this.timeline.characters[i].type = typeSel.value;
-          this.commitChanges();   // commitChanges is wrapped to refresh the compiled-prompt panel
-        });
-        typeSel.addEventListener("mousedown", (e) => e.stopPropagation());
-        typeSel.addEventListener("click", (e) => e.stopPropagation());
-        slot.appendChild(typeSel);
-
-        const descInput = document.createElement("textarea");
-        descInput.className = "mmxd-character-desc";
-        descInput.value = data.description || "";
-        descInput.placeholder = "manual description...";
-        descInput.addEventListener("input", () => {
-          this.timeline.characters[i].description = descInput.value;
-          this.commitChanges();   // commitChanges is wrapped to refresh the compiled-prompt panel
-        });
-        descInput.addEventListener("click", (e) => { e.stopPropagation(); });
-        slot.appendChild(descInput);
       } else {
+        // Still the drop target for the whole slot, but no longer the whole slot: it
+        // flexes so the text boxes below it keep their fixed height.
+        const zone = document.createElement("div");
+        zone.className = "mmxd-character-dropzone";
+
         const label = document.createElement("div");
         label.className = "mmxd-character-label";
-        label.textContent = `@char${i + 1}`;
+        label.textContent = `@ref${i + 1}`;
 
         const placeholder = document.createElement("div");
         placeholder.className = "mmxd-character-placeholder";
         placeholder.innerHTML = `${ICONS.upload}<br>Drop Sheet`;
 
-        slot.appendChild(label);
-        slot.appendChild(placeholder);
+        zone.appendChild(label);
+        zone.appendChild(placeholder);
+        slot.appendChild(zone);
+      }
+
+      {
+        // Captioned boxes, because two bare textareas in one box say nothing about which
+        // is which. Which ones appear is a question of what can reach the prompt:
+        // `retained` and the markers only exist once the slot has a picture to declare on
+        // the ref2va path, and `called` only matters where the subject has no <Subject N>
+        // label and lives in the prose instead.
+        const makeSlotField = (label, key, placeholder, first) => {
+          const field = document.createElement("div");
+          field.className = "mmxd-character-field" + (first ? " mmxd-field-first" : "");
+
+          const cap = document.createElement("div");
+          cap.className = "mmxd-character-field-label";
+          cap.textContent = label;
+          field.appendChild(cap);
+
+          const area = document.createElement("textarea");
+          area.className = "mmxd-character-desc";
+          area.value = data[key] || "";
+          area.placeholder = placeholder;
+          area.spellcheck = true;
+          area.addEventListener("input", () => {
+            subjects[i][key] = area.value;
+            this.commitChanges();
+            if (this.node?._mmxRefreshPrompt) this.node._mmxRefreshPrompt();
+          });
+          area.addEventListener("focus", () => field.classList.add("focus-active"));
+          area.addEventListener("blur", () => field.classList.remove("focus-active"));
+          // the slot's own click handler opens a file picker unless the click lands on a
+          // child it knows about
+          area.addEventListener("click", (e) => { e.stopPropagation(); });
+          field.appendChild(area);
+          slot.appendChild(field);
+          return area;
+        };
+
+        makeSlotField("describes", "description", "a woman in a red coat…", true);
+
+        if (refsOn && hasImages) {
+          makeSlotField("retained", "retentionNote",
+                        "identity, face and clothing — leave empty for the default");
+        } else {
+          // No <Subject N> to name this by, so the guide's own habit applies: written out
+          // in full where it first appears, then a short handle, or the same paragraph
+          // of description walks in again every shot as somebody new.
+          makeSlotField("called", "shortName",
+                        "the baker — after the first mention");
+        }
+
+        // What this subject IS, and how closely to follow it. The kind only supplies a
+        // noun for the definition line when no description is typed, so a description
+        // always wins; the retention marker is written into retention_analysis verbatim.
+        // Both are ref2va-only, and both need a picture behind them to be declared on.
+        if (refsOn && hasImages) {
+          const row = document.createElement("div");
+          row.className = "mmxd-ref-controls";
+
+          const kindSel = createMenuSelect(SUBJECT_KIND_OPTIONS, { width: "100%" });
+          kindSel.value = data.kind || "person";
+          kindSel.title = "What this subject is. A typed description replaces it.";
+          kindSel.addEventListener("change", () => {
+            subjects[i].kind = kindSel.value;
+            this.commitChanges();
+          });
+
+          const retSel = createMenuSelect(RETENTION_OPTIONS, { width: "100%" });
+          retSel.value = data.retention || "fully_preserved";
+          retSel.title = RETENTION_TIP;
+          retSel.addEventListener("change", () => {
+            subjects[i].retention = retSel.value;
+            this.commitChanges();
+          });
+
+          row.appendChild(kindSel);
+          row.appendChild(retSel);
+          slot.appendChild(row);
+        }
       }
     }
   }
@@ -10012,7 +10383,7 @@ class TimelineEditor {
     }
 
     const b64_images = (await Promise.all(
-      (this.timeline.characters[idx].images || []).map(img => this._refImageToB64(img))
+      (this.subjectSlots()[idx].images || []).map(img => this._refImageToB64(img))
     )).filter(Boolean);
 
     try {
@@ -10022,14 +10393,24 @@ class TimelineEditor {
           clip_name: clip_name,
           image_b64: b64_images,
           char_index: idx,
+          // so the model is asked about a place or a garment when that is what the slot
+          // holds, instead of being asked for hair and clothing regardless
+          kind: this.subjectSlots()[idx]?.kind || "person",
           provider: this.timeline.analyzeProvider || "ollama",
           base_url: this.timeline.analyzeBaseUrl || "",
           model: this.timeline.analyzeModel || "",
+          // read at send time, not stored with the timeline (issue #15)
+          api_key: getAnalyzeApiKey(),
         })
       });
       const result = await resp.json();
       if (result.status === "success") {
-        this.timeline.characters[idx].description = result.description;
+        this.subjectSlots()[idx].description = result.description;
+        // A model that ignored the two-line format returns everything as the description
+        // and nothing here, which must not wipe a note the user wrote by hand.
+        if (result.retention_note) {
+          this.subjectSlots()[idx].retentionNote = result.retention_note;
+        }
         btn.textContent = "Success!";
         setTimeout(() => { this.updateCharacterSlotsUI(); this.commitChanges(); }, 1500);
       } else {
@@ -10045,7 +10426,7 @@ class TimelineEditor {
     }
   }
 
-  // --- @char auto-complete popup (attaches to a given textarea) ---
+  // --- @refN auto-complete popup (attaches to a given textarea) ---
   setupAutocomplete(input) {
     if (!input || input._prAutocompleteAttached) return;
     input._prAutocompleteAttached = true;
@@ -10057,11 +10438,33 @@ class TimelineEditor {
     if (!this._autocompleteMenus) this._autocompleteMenus = [];
     this._autocompleteMenus.push(menu);
 
-    const suggestions = [
-      { tag: "@char1", label: "Character 1" },
-      { tag: "@char2", label: "Character 2" },
-      { tag: "@char3", label: "Character 3" }
-    ];
+    // One entry per slot that has something in it, labelled with its description so a
+    // panel of nine is still navigable. @char1..@char3 stay valid in typed prompts — the
+    // planner accepts both spellings — but only @refN is offered, since a slot is no
+    // longer necessarily a character.
+    const buildSuggestions = () => {
+      const slots = this.subjectSlots();
+      const out = [];
+      for (let i = 0; i < slots.length && i < MAX_SUBJECT_SLOTS; i++) {
+        const s = slots[i] || {};
+        // a description with no image is a whole subject on the fl2va path, where the
+        // image would be discarded anyway — so an empty slot is one with neither
+        if (!(s.images && s.images.length) && !(s.description || "").trim()) continue;
+        const desc = (s.description || "").trim();
+        out.push({
+          tag: `@ref${i + 1}`,
+          label: desc ? (desc.length > 40 ? desc.slice(0, 40) + "…" : desc)
+                      : (s.kind || "person"),
+        });
+      }
+      // nothing dropped yet: still offer the three that always exist, so the tag is
+      // discoverable before the panel is filled
+      if (!out.length) {
+        for (let i = 0; i < 3; i++) out.push({ tag: `@ref${i + 1}`, label: `slot ${i + 1}` });
+      }
+      return out;
+    };
+    let suggestions = buildSuggestions();
 
     let activeIndex = 0;
     let showMenu = false;
@@ -10080,6 +10483,9 @@ class TimelineEditor {
       const cursor = input.selectionStart;
       const query = text.slice(queryStart + 1, cursor).toLowerCase();
 
+      // rebuilt each time the menu is drawn: slots are added and described while the
+      // editor is open, and a stale list would offer tags that no longer resolve
+      suggestions = buildSuggestions();
       const filtered = suggestions.filter(s => s.tag.toLowerCase().includes("@" + query) || s.tag.toLowerCase().includes(query));
       if (filtered.length === 0) { hideMenu(); return; }
 
@@ -10229,25 +10635,6 @@ class TimelineEditor {
         const effectiveStart = Math.max(seg.start, startFrames);
         const clippedEnd = Math.min(seg.start + seg.length, endFrames);
 
-        // Image Anchors are guide-only: they still get inserted as a keyframe by the
-        // Python guide node (which reads them from timeline_data by type "image"), but
-        // they must NOT create their own prompt-relay segment. Absorb their timespan
-        // (and any gap before them) into the preceding prompt so it "covers" the anchor.
-        // If an anchor is the very first thing on the timeline, its span is carried
-        // forward as pendingGap into the next real prompt segment.
-        if (seg.isAnchor) {
-          const absorb = clippedEnd - currentCursor;
-          if (absorb > 0) {
-            if (contiguousLengths.length > 0) {
-              contiguousLengths[contiguousLengths.length - 1] += absorb;
-            } else {
-              pendingGap += absorb;
-            }
-          }
-          currentCursor = Math.max(currentCursor, seg.start + seg.length);
-          continue;
-        }
-
         if (effectiveStart > currentCursor) {
           const gapLength = Math.min(effectiveStart, endFrames) - currentCursor;
           if (contiguousLengths.length > 0) {
@@ -10306,10 +10693,20 @@ class TimelineEditor {
       analyzeProvider: this.timeline.analyzeProvider || "ollama",
       analyzeBaseUrl: this.timeline.analyzeBaseUrl || "",
       analyzeModel: this.timeline.analyzeModel || "",
-      characters: (this.timeline.characters || []).map(c => ({
+      summary: this.timeline.summary || "",
+      task_type_override: this.timeline.task_type_override || "",
+      // 0 means "however many the panel grew to on its own" — only the stepper writes it
+      subjectSlotCount: this.visibleSlotCount(),
+      // Only the slots that are on screen. The planner reads this array, not the count, so
+      // a slot left behind by `−` would keep sending its images with no box anywhere to
+      // show them or take them out again.
+      subjects: this.subjectSlots().slice(0, this.visibleSlotCount()).map(c => ({
         images: (c.images || []).map(img => img.b64 ? { b64: img.b64, name: img.name } : { name: img.name }),
         description: c.description || "",
-        type: c.type || "character"
+        shortName: c.shortName || "",
+        kind: c.kind || "person",
+        retention: c.retention || "fully_preserved",
+        retentionNote: c.retentionNote || ""
       })),
       segments: sortedSegments.map(s => {
         const { imgObj, videoEl, _isSeeking, thumbnails, _extractingThumbs, _sSecs, _lSecs, _tSecs, _dSecs, _uploading, _blobUrl, ...rest } = s;
@@ -11048,30 +11445,6 @@ class TimelineEditor {
     }
 
     // ==========================================
-    // 4b. Define Convert to / from Image Anchor (image segments only)
-    // ==========================================
-    let anchorToggleBtn = null;
-    if (trackType === "image" && seg.type === "image") {
-      anchorToggleBtn = document.createElement("button");
-      anchorToggleBtn.className = "mmxd-gap-menu-btn";
-      const anchorIcon = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ff9d2e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="3"></circle><line x1="12" y1="22" x2="12" y2="8"></line><path d="M5 12H2a10 10 0 0 0 20 0h-3"></path></svg>`;
-      anchorToggleBtn.innerHTML = seg.isAnchor
-        ? `${anchorIcon} Convert to Image Segment`
-        : `${anchorIcon} Convert to Image Anchor`;
-      anchorToggleBtn.onclick = () => {
-        seg.isAnchor = !seg.isAnchor;
-        this.commitChanges();
-        // If this segment is the one shown in the side panel, refresh it so the
-        // prompt box enables/disables and the strength row updates immediately.
-        if (this.selectedSegmentIds && this.selectedSegmentIds.includes(seg.id)) {
-          this.updateUIFromSelection();
-        }
-        this.render();
-        this.dismissContextMenu();
-      };
-    }
-
-    // ==========================================
     // 5. Define Unlink Media & Mark Selection options
     // ==========================================
     const isVidLink = trackType === "video" && seg.id.endsWith("_v");
@@ -11111,6 +11484,58 @@ class TimelineEditor {
     };
 
     // ==========================================
+    // 5b. Reference role and retention (ref2va only — the fl2va path has no labels to
+    // attach any of this to, so showing it there would offer a setting with no effect)
+    // ==========================================
+    const refBtns = [];
+    if (String(this.timeline.reference_mode || "OFF").toUpperCase() !== "OFF") {
+      let onRefChange = () => {};
+      const cycler = (caption, options, key, fallback, tip) => {
+        const btn = document.createElement("button");
+        btn.className = "mmxd-gap-menu-btn";
+        const draw = () => {
+          const cur = options.find(o => o.value === seg[key]) || options[0];
+          btn.innerHTML = `${caption}: <b style="color:#4fff8f">${cur.label}</b>`;
+        };
+        btn.title = tip;
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          const at = Math.max(0, options.findIndex(o => o.value === (seg[key] || fallback)));
+          seg[key] = options[(at + 1) % options.length].value;
+          draw();
+          onRefChange();
+          this.commitChanges();
+          this.render();
+          if (this.node?._mmxRefreshPrompt) this.node._mmxRefreshPrompt();
+        };
+        draw();
+        return btn;
+      };
+      if (trackType === "image" && (seg.type === "image" || seg.type === "video")) {
+        refBtns.push(cycler("Used as", REF_ROLE_OPTIONS, "refRole", "auto", REF_ROLE_TIP));
+        // Only meaningful once the image defines something rather than anchoring a frame:
+        // it picks the noun the <Subject N> line uses. Built either way and shown on
+        // demand, so cycling the role reveals it without reopening the menu. A slot in
+        // the panel above is the place for a subject that needs a written description.
+        const kindBtn = cycler("Defines a", SUBJECT_KIND_OPTIONS, "refKind", "person",
+                               "What this image defines, for its <Subject N> line.");
+        onRefChange = () => {
+          kindBtn.style.display = seg.refRole === "subject" ? "" : "none";
+        };
+        onRefChange();
+        refBtns.push(kindBtn);
+        refBtns.push(cycler("Follow it", RETENTION_OPTIONS, "retention",
+                            "fully_preserved", RETENTION_TIP));
+      } else if (trackType === "motion") {
+        refBtns.push(cycler("Follow it", RETENTION_OPTIONS, "retention",
+                            "fully_preserved", RETENTION_TIP));
+      } else if (trackType === "audio") {
+        refBtns.push(cycler("Follow it", RETENTION_AUDIO_OPTIONS, "retention",
+                            "reference", RETENTION_AUDIO_TIP));
+      }
+    }
+
+    // ==========================================
     // 6. Define Delete Option
     // ==========================================
     const delBtn = document.createElement("button");
@@ -11124,12 +11549,6 @@ class TimelineEditor {
       this.deleteSelectedSegment();
       this.dismissContextMenu();
     };
-
-    // Very top: Convert to / from Image Anchor (image segments only)
-    if (anchorToggleBtn) {
-      menu.appendChild(anchorToggleBtn);
-      menu.appendChild(makeDivider());
-    }
 
     // Very top: Split at Playhead (if active/available)
     if (splitBtn) {
@@ -11163,6 +11582,12 @@ class TimelineEditor {
     // Group 4: Convert to End Frame (Only if toggleEndFrameBtn is defined)
     if (toggleEndFrameBtn) {
       menu.appendChild(toggleEndFrameBtn);
+      menu.appendChild(makeDivider());
+    }
+
+    // Group 5a: what this reference is for, and how closely to follow it
+    if (refBtns.length) {
+      refBtns.forEach(b => menu.appendChild(b));
       menu.appendChild(makeDivider());
     }
 
@@ -11244,23 +11669,6 @@ class TimelineEditor {
         fi.click();
       };
       menu.appendChild(imgBtn);
-
-      const anchorBtn = document.createElement("button");
-      anchorBtn.className = "mmxd-gap-menu-btn";
-      anchorBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ff9d2e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="3"></circle><line x1="12" y1="22" x2="12" y2="8"></line><path d="M5 12H2a10 10 0 0 0 20 0h-3"></path></svg> Image Anchor`;
-      anchorBtn.onclick = () => {
-        this.dismissContextMenu();
-        const fi = document.createElement("input");
-        fi.type = "file"; fi.accept = "image/*";
-        fi.addEventListener("change", (ev) => {
-          if (ev.target.files?.[0]) {
-            const gapLength = gap.frameEnd - gap.frameStart;
-            this.handleImageUpload([ev.target.files[0]], gap.frameStart, gapLength, { isAnchor: true });
-          }
-        });
-        fi.click();
-      };
-      menu.appendChild(anchorBtn);
 
       const pasteImageBtn = document.createElement("button");
       pasteImageBtn.className = "mmxd-gap-menu-btn";
@@ -11412,25 +11820,8 @@ class TimelineEditor {
         fi.click();
       });
 
-      const anchorBtn = document.createElement("button");
-      anchorBtn.className = "mmxd-gap-menu-btn";
-      anchorBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ff9d2e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="3"></circle><line x1="12" y1="22" x2="12" y2="8"></line><path d="M5 12H2a10 10 0 0 0 20 0h-3"></path></svg> Image Anchor`;
-      anchorBtn.addEventListener("click", () => {
-        this.dismissGapMenu();
-        const fi = document.createElement("input");
-        fi.type = "file"; fi.accept = "image/*";
-        fi.addEventListener("change", (ev) => {
-          if (ev.target.files?.[0]) {
-            const gapLength = gap.frameEnd - gap.frameStart;
-            this.handleImageUpload([ev.target.files[0]], gap.frameStart, gapLength, { isAnchor: true });
-          }
-        });
-        fi.click();
-      });
-
       menu.appendChild(textBtn);
       menu.appendChild(imgBtn);
-      menu.appendChild(anchorBtn);
       menu.appendChild(vidBtn);
       menu.appendChild(pasteImageBtn);
     } else if (currentTrack === "motion") {
@@ -11805,9 +12196,16 @@ class TimelineEditor {
         analyzeProvider: this.timeline.analyzeProvider || "ollama",
         analyzeBaseUrl: this.timeline.analyzeBaseUrl || "",
         analyzeModel: this.timeline.analyzeModel || "",
-        characters: (this.timeline.characters || []).map(c => ({
+        summary: this.timeline.summary || "",
+        task_type_override: this.timeline.task_type_override || "",
+        subjectSlotCount: this.visibleSlotCount(),
+        subjects: this.subjectSlots().slice(0, this.visibleSlotCount()).map(c => ({
           images: (c.images || []).map(img => img.b64 ? { b64: img.b64, name: img.name } : { name: img.name }),
-          description: c.description || ""
+          description: c.description || "",
+          shortName: c.shortName || "",
+          kind: c.kind || "person",
+          retention: c.retention || "fully_preserved",
+          retentionNote: c.retentionNote || ""
         })),
         segments: (this.timeline.segments || []).map(s => {
           const { imgObj, videoEl, _isSeeking, thumbnails, _extractingThumbs, _sSecs, _lSecs, _tSecs, _dSecs, _uploading, _blobUrl, ...rest } = s;
@@ -12173,6 +12571,27 @@ class TimelineEditor {
 
     menu.appendChild(this._makeSettingRow("Prompt Format", fmtCtrl));
 
+    // The [task type] prefix on `summary` is derived from what the references are
+    // actually used for. This is the escape hatch for the two the timeline cannot know —
+    // `video editing` and `video continuation`, which need a source video this node has
+    // no path to edit or continue.
+    const taskInput = document.createElement("input");
+    taskInput.type = "text";
+    taskInput.className = "mmxd-settings-input";
+    taskInput.placeholder = "auto — e.g. video continuation + keyframe completion";
+    taskInput.value = this.timeline.task_type_override || "";
+    taskInput.title =
+      "Overrides the square-bracketed task type on the summary line.\n" +
+      "Leave empty to derive it from the references in use.\n" +
+      "Guide values: keyframe completion, reference generation, video editing,\n" +
+      "video continuation, audio reuse, audio reference — joined with ' + '.";
+    taskInput.addEventListener("input", () => {
+      this.timeline.task_type_override = taskInput.value;
+      this.commitChanges(true);
+      if (this.node._mmxRefreshPrompt) this.node._mmxRefreshPrompt();
+    });
+    menu.appendChild(this._makeSettingRow("Task Type", taskInput));
+
     const divider2 = document.createElement("div");
     divider2.className = "mmxd-settings-divider";
     menu.appendChild(divider2);
@@ -12374,8 +12793,20 @@ class TimelineEditor {
     modelInput.style.width = "150px";
     modelInput.style.textAlign = "left";
 
+    // A cloud endpoint needs a bearer token, and this row is the only part of the panel
+    // that is NOT written to the timeline — see ANALYZE_KEY_SETTING. type=password so it
+    // is not readable over a shoulder or in the screenshots people attach to issues.
+    const keyInput = document.createElement("input");
+    keyInput.type = "password";
+    keyInput.className = "mmxd-settings-input";
+    keyInput.style.width = "150px";
+    keyInput.style.textAlign = "left";
+    keyInput.placeholder = "sk-… (stays on this machine)";
+    keyInput.value = getAnalyzeApiKey();
+
     const urlRow = this._makeSettingRow("Base URL", urlInput);
     const modelRow = this._makeSettingRow("Model", modelInput);
+    const keyRow = this._makeSettingRow("API key", keyInput);
 
     const refreshProviderRows = () => {
       const prov = this.timeline.analyzeProvider || "ollama";
@@ -12384,9 +12815,13 @@ class TimelineEditor {
       modelInput.placeholder = defs.model || "your-loaded-model-name";
       urlInput.value = this.timeline.analyzeBaseUrl || "";
       modelInput.value = this.timeline.analyzeModel || "";
+      keyInput.value = getAnalyzeApiKey();
       const isOff = (prov === "off");
       urlRow.style.display = isOff ? "none" : "";
       modelRow.style.display = isOff ? "none" : "";
+      // Local servers want no key, so the row would only be one more thing to wonder
+      // about; a reverse proxy in front of one is what 'custom' is for.
+      keyRow.style.display = (prov === "custom") ? "" : "none";
     };
 
     provSelect.addEventListener("change", (e) => {
@@ -12405,17 +12840,20 @@ class TimelineEditor {
       this.timeline.analyzeModel = modelInput.value.trim();
       this.commitChanges(true);
     });
+    // No commitChanges — nothing about the key belongs in the timeline.
+    keyInput.addEventListener("change", () => { setAnalyzeApiKey(keyInput.value.trim()); });
 
     menu.appendChild(this._makeSettingRow("Provider", provSelect));
     menu.appendChild(urlRow);
     menu.appendChild(modelRow);
+    menu.appendChild(keyRow);
 
     const provNote = document.createElement("div");
     provNote.style.fontSize = "9px";
     provNote.style.color = "#777";
     provNote.style.padding = "2px 4px 0";
     provNote.style.lineHeight = "1.3";
-    provNote.textContent = "Off = type descriptions by hand. LM Studio / Custom: hard VRAM eviction depends on your server version; set a short JIT/auto-unload TTL there if it doesn't release.";
+    provNote.textContent = "Off = type descriptions by hand. LM Studio / Custom: hard VRAM eviction depends on your server version; set a short JIT/auto-unload TTL there if it doesn't release. An API key is saved in ComfyUI's settings, not in the workflow — or leave it empty and set MINIMAX_DIRECTOR_VLM_API_KEY in the environment.";
     menu.appendChild(provNote);
 
     refreshProviderRows();
@@ -12924,6 +13362,22 @@ const APPENDED_WIDGET_DEFAULTS = [
 
 app.registerExtension({
   name: "MiniMaxH3DirectorCS",
+  // Declared here so the key also has a home in ComfyUI's own Settings dialog, and so it
+  // is stored server-side per user rather than in the workflow (issue #15).
+  settings: [
+    {
+      id: ANALYZE_KEY_SETTING,
+      category: ["MiniMax H3 Director", "Analyze", "API key"],
+      name: "Analyze API key",
+      tooltip: "Bearer token for a cloud OpenAI-compatible endpoint used by the Analyze "
+             + "button. Stored in your ComfyUI user settings, never in a workflow. Leave "
+             + "empty to use the MINIMAX_DIRECTOR_VLM_API_KEY or OPENAI_API_KEY "
+             + "environment variable instead.",
+      type: "text",
+      attrs: { type: "password" },
+      defaultValue: "",
+    },
+  ],
   async setup() {
     // On Run, ask the chosen analyze backend to release its model from VRAM so it doesn't
     // compete with MiniMax H3 generation. Only fires when an MiniMax H3 Director is in the graph and its
@@ -12951,7 +13405,8 @@ app.registerExtension({
             try {
               await api.fetchApi("/minimax_director/unload_ollama", {
                 method: "POST",
-                body: JSON.stringify({ provider, base_url: baseUrl, model }),
+                body: JSON.stringify({ provider, base_url: baseUrl, model,
+                                       api_key: getAnalyzeApiKey() }),
               });
             } catch (e) {}
           }
@@ -13034,14 +13489,6 @@ app.registerExtension({
         const compWidget = this.widgets?.find(w => w.name === "img_compression");
         if (compWidget && (compWidget.value === undefined || compWidget.value === null || compWidget.value === 0)) {
           compWidget.value = 18;
-        }
-
-        // Same guard for window_seconds — ComfyUI has been handing it its MIN (4) instead of
-        // the 5.0 default, and a stale workflow can carry a sub-4s value that slices the
-        // render into dozens of seamy 1s windows. Anything below 4s is never valid for H3.
-        const winWidget = this.widgets?.find(w => w.name === "window_seconds");
-        if (winWidget && (winWidget.value === undefined || winWidget.value === null || winWidget.value < 4)) {
-          winWidget.value = 5.0;
         }
 
         const self = this;
@@ -13195,19 +13642,63 @@ app.registerExtension({
 
           // ---------- LEFT: Resolution ----------
           const left = mkCol("Resolution");
-          // MiniMax H3's native canvas is a 768 px short edge capped at 768x1344.
-          // Larger canvases work but cost time and leave the trained envelope.
+          // MiniMax H3's native canvas is a 768 px short edge capped at 768x1344, and every
+          // edge here is a multiple of 32: H3's own step, and what divisible_by defaults to,
+          // so a preset is never quietly floored to something else on the way in.
+          // Native holds the 768 short edge, and holds the long edge at 1344 for the two
+          // widest ratios, letting the short edge give way instead. That 1344 is THIS
+          // TABLE's ceiling, not the model's: adapt_canvas in comfy_extras/nodes_minimax_h3
+          // is a 768 short edge plus an AREA cap of 768*1344, so at 21:9 the model's own
+          // policy returns 1536x672 and this preset's 1344x576 spends a quarter less canvas
+          // than it is allowed. Deliberate — a preset is the safe answer, and the
+          // Aspect / MP row below is how you spend the whole budget at a wide ratio.
+          // Fast is the same list at a 480 short edge.
+          //
+          // One entry sits past native, and says so. 1920x1088 is NOT what the model card
+          // means by 2K, and calling it that was misleading (issue #14): the card's 2K comes
+          // from H3-Regenerate-2K, a separate in-context regeneration module that MiniMax
+          // has not open-sourced: "this module is not yet open-sourced. We will release
+          // it once it is ready." What the preset does is render the base model well past
+          // its own canvas, at real cost in time and memory, so it is labelled as what it is
+          // rather than after a module that is not here.
           const RES = [
             { label: "Custom", w: 0, h: 0 },
-            { label: "16:9 native \u2014 1344\u00d7768", w: 1344, h: 768 },
-            { label: "9:16 native \u2014 768\u00d71344", w: 768, h: 1344 },
-            { label: "1:1 native \u2014 992\u00d7992", w: 992, h: 992 },
+            { head: "Native \u2014 768 short edge" },
+            { label: "21:9 \u2014 1344\u00d7576", w: 1344, h: 576 },
+            { label: "2:1 \u2014 1344\u00d7672", w: 1344, h: 672 },
+            { label: "16:9 \u2014 1344\u00d7768", w: 1344, h: 768 },
+            { label: "3:2 \u2014 1152\u00d7768", w: 1152, h: 768 },
+            { label: "4:3 \u2014 1024\u00d7768", w: 1024, h: 768 },
+            { label: "5:4 \u2014 960\u00d7768", w: 960, h: 768 },
+            { label: "1:1 \u2014 992\u00d7992", w: 992, h: 992 },
+            { label: "4:5 \u2014 768\u00d7960", w: 768, h: 960 },
+            { label: "3:4 \u2014 768\u00d71024", w: 768, h: 1024 },
+            { label: "2:3 \u2014 768\u00d71152", w: 768, h: 1152 },
+            { label: "9:16 \u2014 768\u00d71344", w: 768, h: 1344 },
+            { label: "1:2 \u2014 672\u00d71344", w: 672, h: 1344 },
+            { label: "9:21 \u2014 576\u00d71344", w: 576, h: 1344 },
+            { head: "Fast \u2014 480 short edge" },
+            { label: "21:9 fast \u2014 1120\u00d7480", w: 1120, h: 480 },
+            { label: "2:1 fast \u2014 960\u00d7480", w: 960, h: 480 },
             { label: "16:9 fast \u2014 864\u00d7480", w: 864, h: 480 },
+            { label: "3:2 fast \u2014 736\u00d7480", w: 736, h: 480 },
+            { label: "4:3 fast \u2014 640\u00d7480", w: 640, h: 480 },
+            { label: "5:4 fast \u2014 608\u00d7480", w: 608, h: 480 },
+            { label: "1:1 fast \u2014 640\u00d7640", w: 640, h: 640 },
+            { label: "4:5 fast \u2014 480\u00d7608", w: 480, h: 608 },
+            { label: "3:4 fast \u2014 480\u00d7640", w: 480, h: 640 },
+            { label: "2:3 fast \u2014 480\u00d7736", w: 480, h: 736 },
             { label: "9:16 fast \u2014 480\u00d7864", w: 480, h: 864 },
-            { label: "16:9 2K \u2014 1920\u00d71088", w: 1920, h: 1088 },
+            { label: "1:2 fast \u2014 480\u00d7960", w: 480, h: 960 },
+            { label: "9:21 fast \u2014 480\u00d71120", w: 480, h: 1120 },
+            { head: "Past native \u2014 outside the trained canvas" },
+            { label: "16:9 past native \u2014 1920\u00d71088", w: 1920, h: 1088 },
           ];
           const presetRow = mkRow("Preset");
-          const presetSel = createMenuSelect(RES.map((p, i) => ({ value: String(i), label: p.label })), { width: "126px" });
+          const presetSel = createMenuSelect(
+            RES.map((p, i) => (p.head ? { header: true, label: p.head }
+                                      : { value: String(i), label: p.label })),
+            { width: "126px" });
           presetRow.appendChild(presetSel); left.appendChild(presetRow);
 
           const widthRow = mkRow("Width");
@@ -13222,20 +13713,119 @@ app.registerExtension({
           widthIn.value = wW ? wW.value : 768;
           heightIn.value = hW ? hW.value : 512;
 
+          // The other way round: name a shape and a pixel budget instead of a canvas. The
+          // ratio picks the shape, the megapixel figure picks how much canvas to spend on
+          // it, and the two boxes above are filled with the best pair of /32 edges that
+          // holds the ratio. 1.03 MP is H3's native 1344x768 area, so leaving the budget
+          // where a preset put it and only changing the ratio re-shapes a canvas without
+          // making it cost more. The MP box shows what the snapped edges actually came to,
+          // not what was asked for.
+          const ASPECTS = [
+            { label: "21:9", r: 21 / 9 },
+            { label: "2:1", r: 2 },
+            { label: "16:9", r: 16 / 9 },
+            { label: "3:2", r: 1.5 },
+            { label: "4:3", r: 4 / 3 },
+            { label: "5:4", r: 1.25 },
+            { label: "1:1", r: 1 },
+            { label: "4:5", r: 0.8 },
+            { label: "3:4", r: 0.75 },
+            { label: "2:3", r: 2 / 3 },
+            { label: "9:16", r: 9 / 16 },
+            { label: "1:2", r: 0.5 },
+            { label: "9:21", r: 9 / 21 },
+          ];
+          // Both edges have to be multiples of 32, which usually means no pair holds the
+          // ratio exactly, so pick the best of the four pairs around the ideal one rather
+          // than snapping each edge on its own: snapping independently drifts up to 6% off
+          // ratio, and snapping one and deriving the other drifts differently per
+          // orientation — portrait 9:16 at 1.03 MP gives 768x1376 that way, where landscape
+          // gives H3's own 1344x768.
+          // Ratio error is what the user actually asked about, so it outweighs missing the
+          // budget, and overshooting the budget is penalised twice as hard as undershooting
+          // it: memory is the thing a budget is protecting.
+          const fitAspect = (px, r) => {
+            const edges = (v) => {
+              const f = Math.max(32, Math.floor(v / 32) * 32), c = Math.max(32, Math.ceil(v / 32) * 32);
+              return f === c ? [f] : [f, c];
+            };
+            let best = [768, 768], bestScore = Infinity;
+            for (const w of edges(Math.sqrt(px * r))) {
+              for (const h of edges(Math.sqrt(px / r))) {
+                const score = Math.abs(w / h - r) / r
+                            + (w * h > px ? 0.5 : 0.25) * Math.abs(w * h - px) / px;
+                if (score < bestScore) { bestScore = score; best = [w, h]; }
+              }
+            }
+            return best;
+          };
+          const aspectRow = mkRow("Aspect / MP");
+          const aspectWrap = document.createElement("div");
+          Object.assign(aspectWrap.style, { display: "flex", gap: "4px", alignItems: "center" });
+          // The budget box is the full 86px of the Width and Height boxes, not the frame-rate
+          // row's 48px, so it lines up with them and has room for "0.98" *and* the number
+          // input's spin buttons — which sit on top of right-aligned text rather than beside
+          // it, and clipped the last digit at 48px. The column has the width to spare; the
+          // row runs wider than the others and stays right-aligned with them.
+          const aspSel = createMenuSelect(ASPECTS.map((a, i) => ({ value: String(i), label: a.label })),
+                                          { width: "74px", placeholder: "—" });
+          aspSel.title = "Aspect ratio. Picking one keeps the current pixel budget and "
+                       + "re-shapes the canvas to /32 edges.";
+          const mpIn = document.createElement("input");
+          mpIn.type = "number"; mpIn.step = "0.05"; mpIn.min = "0.01"; mpIn.max = "8"; sIn(mpIn, "86px");
+          mpIn.title = "Pixel budget in megapixels. H3's native canvas is 1.03 MP "
+                     + "(1344x768); past that you are outside its trained envelope.";
+          aspectWrap.appendChild(aspSel); aspectWrap.appendChild(mpIn);
+          aspectRow.appendChild(aspectWrap); left.insertBefore(aspectRow, widthRow);
+
           const syncPreset = () => {
             const cw = parseInt(widthIn.value) || 0, ch = parseInt(heightIn.value) || 0;
             const idx = RES.findIndex(p => p.w === cw && p.h === ch);
             presetSel.value = String(idx > 0 ? idx : 0);
           };
+          const syncAspect = () => {
+            const cw = parseInt(widthIn.value) || 0, ch = parseInt(heightIn.value) || 0;
+            if (cw <= 0 || ch <= 0) { mpIn.value = ""; aspSel.value = ""; return; }
+            mpIn.value = (cw * ch / 1e6).toFixed(2);
+            // 4% is wide enough that the /32 fit always reads back as the ratio it was
+            // picked from — 1344x768 is 1.6% off true 16:9, and the worst fit in the whole
+            // ratio x budget sweep, a 0.25 MP 4:3, is 3.8% — while the nearest ratio wins
+            // regardless, so the closest pair in the list (5:4 and 4:3, 6.7% apart) never
+            // ends up ambiguous.
+            const r = cw / ch;
+            let best = -1, bestErr = 0.04;
+            ASPECTS.forEach((a, i) => {
+              const e = Math.abs(r - a.r) / a.r;
+              if (e < bestErr) { bestErr = e; best = i; }
+            });
+            aspSel.value = best >= 0 ? String(best) : "";
+          };
+          const applyCanvas = (w, h) => {
+            widthIn.value = w; heightIn.value = h;
+            setW("custom_width", w); setW("custom_height", h);
+            syncPreset(); syncAspect();
+          };
+          const applyAspectMp = () => {
+            // Either box on its own is enough. With no ratio picked — the boxes hold a shape
+            // this list does not name, or a preset was never chosen — a budget rescales the
+            // shape that is already there rather than doing nothing; with nothing there at
+            // all, both fall back to H3's native canvas.
+            const a = ASPECTS[parseInt(aspSel.value)];
+            const cw = parseInt(widthIn.value) || 0, ch = parseInt(heightIn.value) || 0;
+            const r = a ? a.r : ((cw > 0 && ch > 0) ? cw / ch : 1344 / 768);
+            let mp = parseFloat(mpIn.value);
+            if (isNaN(mp) || mp <= 0) mp = 1344 * 768 / 1e6;
+            const [w, h] = fitAspect(mp * 1e6, r);
+            applyCanvas(w, h);
+          };
           presetSel.addEventListener("change", () => {
             const p = RES[parseInt(presetSel.value)];
-            if (p && p.w > 0) {
-              widthIn.value = p.w; heightIn.value = p.h;
-              setW("custom_width", p.w); setW("custom_height", p.h);
-            }
+            if (p && p.w > 0) applyCanvas(p.w, p.h);
           });
-          widthIn.addEventListener("change", () => { let v = Math.round(parseFloat(widthIn.value)); if (isNaN(v) || v < 0) v = 0; widthIn.value = v; setW("custom_width", v); syncPreset(); });
-          heightIn.addEventListener("change", () => { let v = Math.round(parseFloat(heightIn.value)); if (isNaN(v) || v < 0) v = 0; heightIn.value = v; setW("custom_height", v); syncPreset(); });
+          aspSel.addEventListener("change", applyAspectMp);
+          mpIn.addEventListener("change", applyAspectMp);
+          widthIn.addEventListener("change", () => { let v = Math.round(parseFloat(widthIn.value)); if (isNaN(v) || v < 0) v = 0; widthIn.value = v; setW("custom_width", v); syncPreset(); syncAspect(); });
+          heightIn.addEventListener("change", () => { let v = Math.round(parseFloat(heightIn.value)); if (isNaN(v) || v < 0) v = 0; heightIn.value = v; setW("custom_height", v); syncPreset(); syncAspect(); });
 
           const FPS = [24, 25, 30, 48, 60];
           const fpsRow = mkRow("Frame rate");
@@ -13249,7 +13839,7 @@ app.registerExtension({
           fpsWrap.appendChild(fpsSel); fpsWrap.appendChild(fpsIn);
           fpsRow.appendChild(fpsWrap); left.appendChild(fpsRow);
 
-          syncPreset(); syncFps();
+          syncPreset(); syncAspect(); syncFps();
 
           // ---- shared seconds<->frames timing infrastructure ----
           const TIME_NAMES = ["start_second", "end_second", "duration_seconds", "start_frame", "end_frame", "duration_frames"];
@@ -13353,10 +13943,14 @@ app.registerExtension({
             if (fr) fpsIn.value = fr.value;
             if (rm && rm.value != null) rmSel.value = rm.value;
             if (rs && rs.value != null) refSel.value = rs.value;
-            syncPreset(); syncFps();
+            syncPreset(); syncAspect(); syncFps();
             if (typeof unitSel !== "undefined" && unitSel) unitSel.value = timeMode();
             timeRefreshers.forEach(fn => fn());
             ensureTimingHidden();
+            // also on load: configure() restores whatever slots the saved JSON carried,
+            // including the invisible ones a pre-0.2.1 workflow was saved with
+            ["custom_width", "custom_height", "frame_rate", "resize_method", "ref_image_size"]
+              .forEach(n => dropUnlinkedWidgetInput(node, n));
           };
           node._mmxSettingsRefresh = refreshFromWidgets;
           refreshFromWidgets();
@@ -13365,7 +13959,8 @@ app.registerExtension({
           setTimeout(refreshFromWidgets, 60);
           setTimeout(refreshFromWidgets, 250);
 
-          ["custom_width", "custom_height", "frame_rate", "resize_method", "ref_image_size"].forEach(n => { hideWidget(getW(n)); });
+          ["custom_width", "custom_height", "frame_rate", "resize_method", "ref_image_size"]
+            .forEach(n => { hideWidget(getW(n)); dropUnlinkedWidgetInput(node, n); });
           ensureTimingHidden();
         };
         const settingsContainer = document.createElement("div");
@@ -13375,7 +13970,10 @@ app.registerExtension({
           getValue: () => "",
           setValue: () => { },
         });
-        settingsWidget.computeSize = function () { return [0, 184]; };
+        // Tall enough for the longer of the two columns: Resolution carries six rows since
+        // the aspect/megapixel row joined it, and a DOM widget that is short by a row
+        // clips it rather than scrolling.
+        settingsWidget.computeSize = function () { return [0, 210]; };
         const _mmxOrigOnConfigure = this.onConfigure;
         this.onConfigure = function () {
           if (_mmxOrigOnConfigure) _mmxOrigOnConfigure.apply(this, arguments);
@@ -13394,9 +13992,11 @@ app.registerExtension({
           const canvasH = self._timelineEditor ? self._timelineEditor.canvasHeight : CANVAS_HEIGHT;
           const propH = self._timelineEditor ? (self._timelineEditor.propHeight || 90) : 90;
           const globalPropH = self._timelineEditor ? (self._timelineEditor.globalPropHeight || 60) : 60;
-          // Reserve room for the @char reference panel at the bottom so the node doesn't
+          // Reserve room for the @refN reference panel at the bottom so the node doesn't
           // collapse and crop it whenever ComfyUI recomputes the node height.
-          const charPanelH = self._timelineEditor ? (self._timelineEditor.charPanelHeight || 150) : 150;
+          const charPanelH = self._timelineEditor
+            ? (self._timelineEditor.charPanelHeight || subjectPanelHeight(3, self.properties?.subjectSlotHeight))
+            : subjectPanelHeight(3, self.properties?.subjectSlotHeight);
           const nodeWidth = self.size?.[0] || width || 1375;
           return [Math.max(10, nodeWidth - 30), canvasH + propH + globalPropH + charPanelH + 160];
         };
@@ -13613,6 +14213,11 @@ app.registerExtension({
               // the panel previews those. Wire more than you describe and the node will
               // number more than the panel shows; describe them and the two agree.
               extra_ref_image_count: refNoteCount,
+              // Which is why the wire's own state goes too: with nothing described there
+              // is no count to preview at all, and the endpoint turns that into a caveat
+              // rather than showing <Picture 2> where the render will send <Picture 5>.
+              ref_images_connected:
+                self.inputs?.find(i => i.name === "ref_images")?.link != null,
             };
             const resp = await api.fetchApi("/minimax_director/compile_prompt", {
               method: "POST", body: JSON.stringify(body),
@@ -13620,6 +14225,12 @@ app.registerExtension({
             const d = await resp.json();
             if (d.status !== "success") throw new Error(d.message || "compile failed");
             pText.textContent = d.prompt || "";
+            // slot -> <Subject N>, straight from the planner, for the properties panel's
+            // "Voice of" menu to label itself by. Cached because that menu is built on
+            // selection, not on this refresh — and re-read here, because adding or deleting
+            // a reference image changes what it should say while it is already on screen.
+            self._mmxSubjectOfSlot = d.subject_of_slot || {};
+            self._timelineEditor?.refreshAudioSubjectMenu?.();
             // Keep the textarea in step with what is stored, but never while it has the
             // caret — clobbering someone's sentence mid-word is unforgivable.
             if (d.overridden && document.activeElement !== pEdit
@@ -13627,8 +14238,17 @@ app.registerExtension({
               pEdit.value = d.prompt || "";
             }
             self._mmxApplyPromptMode?.();
+            // The word count is information, not a verdict: the guide suggests 350-500 for
+            // generation tasks, which is a lot for a 5-15s clip, so it sits in the badge
+            // where it can be glanced at rather than in the warnings where it would fire
+            // on almost every timeline.
             pBadge.textContent = `${d.mode} · ${d.format || ""} · ${d.shots} shot${d.shots === 1 ? "" : "s"} · `
-              + `${d.length}f / ${d.seconds}s · refs ${d.refs.images}i/${d.refs.videos}v/${d.refs.audios}a`;
+              + `${d.length}f / ${d.seconds}s · refs ${d.refs.images}i/${d.refs.videos}v/${d.refs.audios}a`
+              + (d.words ? ` · ${d.words} words` : "");
+            pBadge.title = d.words
+              ? `detailed_description is about ${d.words} words. The guide suggests 350-500 `
+                + `for generation tasks; editing descriptions scale with the source instead.`
+              : "";
             pWarn.textContent = (d.warnings || []).join("  •  ");
             pWarn.style.display = (!pCollapsed && pWarn.textContent) ? "block" : "none";
           } catch (e) {

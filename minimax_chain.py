@@ -254,14 +254,9 @@ class MiniMaxH3DirectorChain(io.ComfyNode):
                 plan.fmt_seconds((offset + span) / fps), p["prompt"]))
 
             if p["ref_mode_on"]:
-                ref_imgs = []
-                for slot in p["ref_image_slots"]:
-                    if slot["source"] == "char":
-                        img = slot["image"]
-                        ref_imgs.append(media.load_image_source(img.get("b64", ""),
-                                                                img.get("name", "")))
-                    elif slot["source"] == "timeline":
-                        ref_imgs.append(slot["event"]["tensor"][:1])
+                # the Director's loader, not a second copy of it — this node has no
+                # ref_images socket of its own, so those slots are never planned here
+                ref_imgs = director.load_ref_image_tensors(p["ref_image_slots"], fit)
                 if first_frame is not None and len(ref_imgs) < plan.MAX_REF_IMAGES:
                     ref_imgs.append(first_frame)
                 out = mm.MiniMaxH3ReferenceToVideo.execute(

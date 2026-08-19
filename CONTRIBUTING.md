@@ -40,7 +40,7 @@ Where things are:
 | `minimax_enhance.py` | Enhance Prompt (the vision-model node) |
 | `minimax_media.py` | media I/O and every HTTP route |
 | `js/minimax_director.js` | the timeline editor, forked from LTX Director |
-| `test_plan.py` | 93 offline checks over the planner |
+| `test_plan.py` | offline checks over the planner — it prints its own count |
 
 Python changes need a ComfyUI restart. JavaScript changes need a browser reload with the
 cache disabled.

@@ -1,28 +1,501 @@
 # Changelog
 
-## 0.2.0 — Extended fork
+## 0.4.0 (MV fork)
 
-Fork of [seesee75-commits/ComfyUI-MiniMaxH3-Director](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director).
-Full detail in [CUSTOM_ADDITIONS.md](CUSTOM_ADDITIONS.md). Headlines:
+Seamless long-form and render-time levers, on top of 0.3.0.
 
-- **Long-form in one node** — wire `sampler` + `sigmas` and the Director renders past H3's
-  ~15s ceiling on a single timeline as evenly-split anchored windows; new `images` / `audio`
-  outputs, `noise_seed` / `window_seconds` widgets. LoRAs + turbo stay intact.
-- **Two-phase decode** — anchor-frame decode in the loop, full decode after the DiT is freed
-  once, so long renders stay on the GPU instead of spilling to CPU and OOM-freezing.
-- **Seam handling** — 12ms audio de-click, per-window audio-reference slicing, length-matched
-  `combined_audio`, timeline seam markers with snap, and a half-frame overlap guard so a
-  segment can't bleed its prompt into the next window.
-- **Typed references** — Character / Animal / Object / Scene / Style, feeding a guide-shaped
-  `subject_definitions` (with `Preserve …` locks) and a structured `retention_analysis`
-  (`fully_preserved` / `partially_preserved` / `attribute_transfer` + a never-merge line).
-- **`summary:` block** — auto scaffold (duration + audio handling) plus your global brief.
-- **Per-shot dialogue** — time · speaker · language · line, compiled to `<Subject N> (SN)
-  says, <d>[Language] …</d>`, with timeline ♪ markers and hover-sync.
-- **Audio roles** — Voice / Background Music / Ambient.
-- **Restructured gen-log** on the `prompt` output — shared context once, shots by window.
-- **UI & robustness** — zoom no longer blanks, zoom controls moved under the timeline, audio
-  no longer balloons the render duration, click-to-flash on shots, front-end perf pass.
+- **Seamless mode** — new `long_form_mode` (`chained` | `seamless`). `seamless` holds the whole
+  clip as one latent and co-denoises overlapping windows (temporal MultiDiffusion), averaging
+  the video overlaps for a stitch-free result; audio is assigned per-window (audio latents
+  can't be averaged — they decode to noise). New `overlap_seconds` / `window_seconds` widgets.
+  Video is seam-free; the audio join can still skip a beat and is being refined.
+- **Audio seam modes** — `seam_audio` (`aligned` | `crossfade` | `hard cut`). `aligned` is a
+  full-overlap equal-gain crossfade and is now the default.
+- **Dialogue across windows** — each window compiles its own time-slice, so spoken lines inject
+  wherever they fall; a line inside an overlap is voiced by both windows, so the words agree
+  across the seam.
+- **Latent output for external upscale** — the `latent` output carries the sampled AV latent
+  before decode, for a render-low → H3 latent-upscale → decode path.
+- **Docs** — `docs/SEAMLESS_LONGFORM_SPEC.md`; README documents both modes, the Performance
+  levers (turbo LoRA at ~8 steps / Euler+Beta, low-res render + latent upscale) and measured
+  timings (Arch-based Linux, RTX 3090, up to 60 s).
+
+## 0.3.0 (MV fork — on upstream 0.2.2)
+
+Reconciliation release. This fork was rebased onto **upstream 0.2.2**, adopting its
+prompt-compilation layer wholesale — typed references, per-shot dialogue, audio roles, the
+guide-aligned compiled prompt, the summary box, resolution presets and the Save-Last-Frame
+node are all upstream's now. The fork's own **long-form rendering path** was re-applied on
+top of that base. See [CUSTOM_ADDITIONS.md](CUSTOM_ADDITIONS.md).
+
+- **Long-form chaining** — optional `sampler` + `sigmas` inputs render the whole timeline as
+  evenly-split anchored windows past H3's ~15s ceiling, in one node. New `images` + `audio`
+  outputs; new `noise_seed` / `window_seconds` / `tiled_vae_decode` widgets.
+- **Two-phase decode** — anchor-frame decode in the loop, full decode once the DiT is freed,
+  so long chains decode on the GPU instead of OOM-freezing the machine.
+- **Audio-seam handling** — ~12 ms equal-power de-click at each seam, per-window audio-ref
+  slicing, duplicate seam frame dropped, length-matched `combined_audio`.
+- **Long-form gen-log** — chaining mode's `prompt` output writes shared context once, then
+  each window's exact compiled prompt.
+- **Frontend fixes** — zoom no longer blanks on long / HiDPI / graph-zoomed timelines;
+  dropping or pasting a long audio clip no longer balloons the render duration; clicking a
+  shot flashes its prompt field.
+- Node id **`MiniMaxH3DirectorCS`** unchanged — existing (and mp4-embedded) workflows keep
+  loading.
+
+Not yet re-applied (being validated live against upstream's rewritten editor): timeline seam
+markers + snapping, zoom-control relocation, the render-loop perf pass.
+
+## 0.2.2
+
+Two contributions from [@Brioch](https://github.com/Brioch) — [#16] and [#17], closing
+[#20] and [#19] — and a new node.
+
+- **New node: MiniMax H3 Save Last Frame.** It goes straight after `VAEDecode`, writes the
+  last frame of the batch as a PNG the way Save Image would — same counter, same
+  `%date:…%` tokens, same embedded workflow metadata — and passes the batch on. Every H3
+  render ends on a frame worth keeping, since it is the one you feed back in as the next
+  shot's opening keyframe, and fishing it out otherwise meant a second graph with
+  `ImageFromBatch` wired to a `SaveImage`, rebuilt every time the length changed.
+
+  Two things it deliberately does not do. It never touches the pixels: the IMAGE output is
+  the same tensor object that came in, so it cannot change what anything downstream decodes
+  or muxes. And it does not need to be bypassed — `save` is a widget, because a node that
+  has to be disabled between runs is a node that will be left enabled by accident.
+
+- **The resolution panel covers every aspect ratio the model card lists, in both
+  orientations.** Six presets reached 16:9, 9:16 and 1:1; 21:9, 4:3 and 3:4 are in MiniMax's
+  own output envelope and had to be worked out by hand — from an area cap, in multiples of
+  32 — and typed into Width and Height. There are 26, at two sizes:
+
+  | Ratio | Native | Fast |
+  |---|---|---|
+  | 21:9 | 1344×576 | 1120×480 |
+  | 2:1 | 1344×672 | 960×480 |
+  | 16:9 | 1344×768 | 864×480 |
+  | 3:2 | 1152×768 | 736×480 |
+  | 4:3 | 1024×768 | 640×480 |
+  | 5:4 | 960×768 | 608×480 |
+  | 1:1 | 992×992 | 640×640 |
+  | 4:5 | 768×960 | 480×608 |
+  | 3:4 | 768×1024 | 480×640 |
+  | 2:3 | 768×1152 | 480×736 |
+  | 9:16 | 768×1344 | 480×864 |
+  | 1:2 | 672×1344 | 480×960 |
+  | 9:21 | 576×1344 | 480×1120 |
+
+  **Native** keeps H3's 768 px short edge, and holds the long edge at 1344 for the two
+  widest ratios, letting the short edge give way instead. That 1344 is the table's own
+  ceiling rather than a rule of the model's — H3's policy is a 768 short edge plus an
+  **area** cap of 768×1344, so at 21:9 `adapt_canvas` itself returns 1536×672 and the
+  preset's 1344×576 spends a quarter less canvas than it is allowed. That is the intended
+  trade: a preset should be the safe answer, and **Aspect / MP** is there for the whole
+  budget at a wide ratio.
+
+  **Fast** is the same list at a 480 px short edge, 1:1 aside, which stays area-matched to
+  its tier rather than dropping to 480×480. Every edge is a multiple of 32 — H3's own step,
+  and what `divisible_by` defaults to — so a preset is never quietly floored to something
+  else on the way in.
+
+  0.2.1's `1920×1088` is still there, under a **Past native** heading of its own, since it
+  is the one canvas here that leaves the trained envelope and the heading is what says so.
+  Everything above it is inside the envelope, so the list no longer mixes the two.
+
+- **Or name a shape and a pixel budget instead of a canvas.** A new **Aspect / MP** row
+  takes an aspect ratio and a figure in megapixels and fills Width and Height with the best
+  pair of /32 edges that holds the ratio. Holding the ratio outweighs hitting the budget
+  exactly, and overshooting the budget is penalised twice as hard as undershooting it, since
+  memory is what a budget is protecting: 16:9 at 1.03 MP lands on H3's own 1344×768 rather
+  than the 1376×768 that is closer to true 16:9 and 2.6% more canvas. Either box works on
+  its own — a budget with no ratio picked rescales the shape already in the boxes — and
+  typing Width and Height by hand still works, with both menus following along and reading
+  `—` for a shape the ratio list does not name.
+
+- **A timeline image no longer collapses the canvas to one pixel.** `resize_image`'s
+  cover-crop sized the scaled image with `int(W * ratio)`, and a ratio that is exact in
+  arithmetic comes back a hair under its integer in floating point — `704 * (480 / 704)` is
+  `479.99999999999994`. The cover then landed one pixel short of the canvas, the centre slice
+  started at −1, and a 1px-wide image came out: a 704×1408 timeline image fitted to 480×640
+  hit the Director's canvas guard as *"the canvas came out 1x640"*, naming a width nothing had
+  asked for. Roughly one source width in nine does this at a 480 px canvas, and the crop is
+  the default fit, so it was reachable from any preset. Rounding rather than truncating — and
+  requiring a cover to be at least the size of what it covers — makes it unreachable.
+
+  The same truncation was quietly costing a whole 32-block in the aspect-preserving methods,
+  where nothing crashed and so nobody looked: **maintain aspect ratio** fitted a 1920×1080
+  image into a 1024×1024 box at 992×544 rather than the 1024×576 the code's own docstring
+  promises.
+
+- **A voice reference's declaration ends on the speaker's global ID**, which is what the
+  guide means by "reuse that speaker's global ID in the definition":
+
+  ```
+  subject_definitions:  <Audio 1> is the voice-timbre reference for <Subject 2> (S2).
+  ```
+
+  The ID is the speaking order rather than the subject number, so it cannot be known when
+  that sentence is written — it is filled in once the numbering pass has walked the finished
+  body. A subject who never speaks has no ID to reuse and the sentence ends on the label,
+  which already says whose voice the clip is. A hand-written declaration gets the same
+  treatment when it names the subject, and is left alone when it writes an ID of its own.
+
+- **A spoken line stays where it was written.** Dialogue is lifted out of a shot prompt to be
+  rendered and was then appended to the end of the shot, which only looked right when the
+  line already came last. A line with prose after it moved:
+
+  ```
+  @ref1: before mid segment          [Shot 1] mid segment. a woman (S1) says,
+  mid segment                    →     <d>[English] before mid segment</d> a woman (S1)
+  @ref1: after mid segment             says, <d>[English] after mid segment</d>
+  ```
+
+  It is now put back where it sat, which is how the guide writes a shot — its own Shot 1 goes
+  action, the line that action motivates, then more action. The same pass decides both
+  orderings the guide cares about, so they can no longer disagree: which mention of a subject
+  is its *first* — and so is named in full rather than by its **called** name — and the order
+  of vocal events that hands out `(Sx)`. A frame anchor still rides with the prose rather than
+  trailing the shot, since a spoken line is not something a shot "begins from". `</d>` no
+  longer picks up a full stop it never needed.
+
+- **The live preview reports a line that reads as dialogue and stayed prose.** The colon is
+  what makes a tagged line dialogue, and `@ref1 says "hello sir"` — the natural thing to
+  type — has none, so it reached the model as narration: no speaker ID, no `<d>[Language]
+  …</d>`, and nothing for an `<Audio N>` voice reference to reuse. The line is not
+  reinterpreted, because prose quotes things nobody says out loud, but it is no longer
+  silent:
+
+  ```
+  [Shot 2] `@ref1 says "hello sir"` reads as dialogue but has no colon, so it stayed
+  narration — no speaker ID, no <d>[Language] …</d>. Dialogue is `@ref1 <how it is said>:
+  the words`.
+  ```
+
+  `@char1 says: hello` is reported the same way: the alias resolves to a subject label
+  everywhere, but only `@refN` speaks.
+
+- **Two required fields are reported when they are empty.** `detailed_description` joins
+  `overall_soundscape`, which was already checked — and unlike the soundscape it has no
+  `N/A`, so an empty one leaves the section out of the prompt entirely rather than visibly
+  blank. A voice reference bound to a subject who never speaks is reported too, naming the
+  tag that would give them a line: the declaration has no `(Sx)` to reuse in that case, which
+  is correct and reads like a bug.
+
+[#16]: https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director/pull/16
+[#17]: https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director/pull/17
+[#19]: https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director/issues/19
+[#20]: https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director/issues/20
+
+## 0.2.1
+
+Four reports, and one of them was right about something this pack had been saying wrongly
+since 0.1.0.
+
+- **`width` and `height` can be wired in** ([#14]). The settings panel owns
+  `custom_width` / `custom_height` and hides them, and a hidden widget's input slot is
+  never laid out — LiteGraph left it at the node's own origin, so five invisible sockets
+  sat stacked under the title bar. There was no reachable way to drive the canvas from a
+  resolution node. There are now two connection-only inputs beside `start` / `end` /
+  `duration`, and the five orphaned slots are dropped when nothing is wired to them (a
+  link saved in an older workflow keeps its socket).
+
+  A wire carries no minimum where a widget does, so `0` — what an upstream node hands over
+  when its own value was never set — is refused by name rather than passed into the VAE,
+  the same guard `duration` grew in 0.1.2.
+
+- **A subject description reaches the ComfyUI prompt format** ([#14]). That format resolves
+  `@ref1` to the bare `<Picture 1>` and has no `subject_definitions` section, so a
+  description typed into a slot had nowhere to go and was simply dropped: the prompt said
+  "`<Picture 1>` steps out of the doorway" and never once said who that is. It now goes
+  into the flat `Reference notes:` line, subjects before pictures, so the thing is
+  introduced before the frame that shows it. The MiniMax format is unchanged — it has had
+  the section all along, and started *using* the description in 0.2.0.
+
+- **An API key for a cloud vision model** ([#15]). Nothing here ever sent an
+  `Authorization` header, so the `Custom (OpenAI-compatible)` provider could only reach a
+  server that did not ask for one. Both the Analyze button and the Enhance node send a
+  bearer token now, and a 401 says where to put the key instead of echoing the endpoint's
+  own body.
+
+  Where the key is kept mattered more than sending it. The Analyze settings live in
+  `timeline_data`, which is serialised into the workflow JSON — a key typed there would
+  travel with every workflow you share. So the gear menu's field writes to **ComfyUI's user
+  settings** instead, and the Enhance node's widget takes the **name of an environment
+  variable** rather than a key, because widget values *are* saved with the workflow.
+  Failing that: `MINIMAX_DIRECTOR_VLM_API_KEY`, then `OPENAI_API_KEY`.
+
+- **4–15 seconds is the trained range, not a limit** ([#12]). Nothing in this pack ever
+  capped the length, but the README said "H3's trained range is the limit" and the console
+  warned of "a VRAM wall" — which nobody here had measured, and which a 45-second render on
+  a 5090 contradicts. Both now say what is actually true: it renders, quality leaves the
+  envelope the model card describes, and the clock climbs faster than the video does
+  because attention cost goes with the square of the sequence while memory goes with its
+  length.
+
+- **The `2K` resolution preset is labelled `past native`** ([#14]). The model card's 2K is
+  not these weights at 1920×1088 — it is `H3-Regenerate-2K`, a separate in-context
+  regeneration pass, and MiniMax says "this module is not yet open-sourced. We will release
+  it once it is ready." The preset still exists; it no longer claims to be something it is
+  not.
+
+- **New offline test file, `test_node.py`** — 35 checks for the parts that need ComfyUI
+  imported, which `test_plan.py` deliberately cannot reach: the automation-socket guards,
+  API-key resolution, and a check that every schema input has a matching `execute()`
+  parameter. `test_plan.py` is up to 270.
+
+[#12]: https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director/issues/12
+[#14]: https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director/issues/14
+[#15]: https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director/issues/15
+
+## 0.2.0
+
+Full-reference mode, from
+[`references/ref-en.txt`](https://github.com/MiniMax-AI/MiniMax-H3/blob/main/skills/h3-prompt-writing/references/ref-en.txt).
+Until now a reference image was always a character, always followed as tightly as
+possible, and a timeline image was always a frame anchor. The guide describes far more
+than that, and two of its sections were structurally missing from the output.
+
+- **A reference no longer has to be a character.** The guide defines `<Subject N>` as
+  "people, animals, or objects; scenes, backgrounds, or environments; clothing, props,
+  interfaces, or visual effects; styles, actions, expressions, or poses". Each slot now
+  carries a **kind** that supplies the noun when no description is written, so a slot can
+  hold a location or a look instead of a face. The panel goes from three slots to nine,
+  and `@ref1` … `@ref9` address them. `@char1` … `@char3` still resolve.
+
+- **A subject no longer has to have an image**, which is what made subjects unreachable on
+  the **Refs OFF (fl2va)** path: the slot's text boxes only appeared once something had
+  been dropped on it, and fl2va discards the drop. The one thing that path can carry was
+  behind the one thing it throws away.
+
+  [`references/base-en.txt`](https://github.com/MiniMax-AI/MiniMax-H3/blob/main/skills/h3-prompt-writing/references/base-en.txt)
+  has no `subject_definitions` section at all — with no reference files there is nothing to
+  declare — so a subject there lives in the prose, "established when a speaker first
+  appears" and referred to consistently afterwards. The slot now says both halves of that:
+
+  | Box | Becomes |
+  |---|---|
+  | **describes** | the full identity, written where the subject first appears |
+  | **called** | what to call it at every mention after that |
+
+  ```
+  @ref1 places a fresh loaf on the counter.
+  @ref1 says: First batch of the morning.
+
+  → [Shot 1] a middle-aged baker with a calm, slightly raspy voice places a fresh loaf on
+    the counter. the baker (S1) says, <d>[English] First batch of the morning.</d>
+  ```
+
+  Tags now resolve left to right through the finished video — the global block, then each
+  shot in turn, its prose before its dialogue — so "first" means first on screen and not
+  first in whichever box is being scanned. A subject introduced by its own spoken line is
+  named in full there. An empty **called** repeats the description at every mention, which
+  is what every timeline written before this field did. The same treatment applies with
+  references *on* to a slot that has a description but no image: no picture, no
+  `<Subject 1>` to lean on, so the prose has to carry the identity.
+
+  Images left in a slot with references off are kept — switching the toolbar back must not
+  cost the upload — but they are dimmed, and the prompt panel now says outright that
+  fl2va sends none of them.
+
+- **The fl2va prompt now stops at the fields the base guide defines.** Its structure is
+  closed — the alignment instruction, then "Three Core Fields (Required, in this order)" —
+  and `summary` is not among them; it belongs to the reference guide. A filled summary box
+  was emitting a section H3 was never trained to read on that path, task-type prefix and
+  all. The box is now hidden with references off and keeps its text for when the toolbar
+  goes back.
+
+  The other half of "required" also applies: `non_diegetic_music` is written as `N/A` when
+  the box is empty, which is the value both guides use for having none.
+  `overall_soundscape` deliberately does **not** get filled in the same way — there `N/A`
+  means the video was asked to be silent, which is a claim only you can make — so an empty
+  one is called out in the prompt panel instead. H3 generates the audio; leaving that field
+  out hands the whole soundtrack to a guess.
+
+  The 350-500 word figure is the reference guide's, for its own `detailed_description`.
+  The base guide gives no word count, so the fl2va path no longer cites one. The word
+  figure is still reported either way.
+
+- **A reference no longer has to be followed exactly.** Every reference carries one of the
+  guide's four **retention markers**, written into `retention_analysis` verbatim because
+  the guide calls them "fixed English values in the output format":
+
+  | Marker | Meaning |
+  |---|---|
+  | `fully_preserved` | The defined role of the referenced content is fully preserved |
+  | `partially_preserved` | Still used, some defined characteristics changed |
+  | `attribute_transfer` | Its characteristics move to a different target subject |
+  | `weak_reference` | Broad similarity in style, category, composition or atmosphere only |
+
+  Audio uses its own set — `fully_copy`, `partially_copy`, `reference`, `weak_reference` —
+  because copying a signal and imitating one are different jobs. An off-spec value coming
+  from an edited timeline is clamped rather than passed through into the prompt.
+
+- **Both sentences about a reference are yours to write.** The guide's lines name actual
+  features rather than stock phrases — `fully_preserved - the Samoyed's thick white fur,
+  pointed ears, dark nose, and curved tail are retained` — and name relationships the
+  timeline cannot work out, like `<Video 1> is the source video for the target video edit`.
+  Every reference therefore has up to two boxes, one per section it feeds:
+
+  | Box | Becomes |
+  |---|---|
+  | **describes** | the reference's line in `subject_definitions` — what it *is* |
+  | **retained** | the sentence after the marker in `retention_analysis` — what *survives* |
+
+  Subject slots carry both in the panel; timeline images, reference videos and audio clips
+  carry theirs in the properties panel. Either left empty falls back to the generated
+  sentence, so the boxes override and never oblige. Frame and storyboard anchors are the
+  one exception with no **describes** box: their declaration states where the image sits in
+  the video, which the timeline already knows and should not be contradicted.
+
+- **An image only gets a `<Picture N>` entry when it really is one.** The guide: "If an
+  image is used only to define a character, scene, costume, or style, do not create a
+  standalone picture entry. Instead, cite the image source inside the corresponding
+  `<Subject N>` definition." A timeline image can now be a **frame anchor** (unchanged),
+  a **storyboard** reference, or **subject-defining** — the last getting no picture entry
+  and, because it is no longer a keyframe, no longer cropped to the output canvas either.
+
+- **`subject_definitions` declares every label; `retention_analysis` scores every label.**
+  Both sections were previously incomplete: pictures were never declared, and retention
+  was prose. The two sections now follow the guide's shapes, and a subject's
+  `(appears in [Shot 1], [Shot 3])` is read back off the shot text rather than assumed.
+
+  Both are written one entry per line, the way the guide lays them out. They are lists of
+  records rather than prose, and running a dozen of them together into a paragraph made it
+  genuinely hard to see where one label ended and the next began.
+
+  ```
+  0.1.5   subject_definitions: <Subject 1> is the character shown in <Picture 1>.
+          retention_analysis: Keep the identity, face and clothing of <Subject 1>
+                              consistent across every shot. [Shot 1] begins from <Picture 2>.
+
+  0.2.0   subject_definitions:
+          <Subject 1> is a woman in a red coat, shown in <Picture 1>.
+          <Picture 2> is the first frame of [Shot 1].
+
+          retention_analysis:
+          <Subject 1> (appears in [Shot 1]): fully_preserved - the collar shape and the
+            silver necklace are retained.
+          <Picture 2> ([Shot 1] first frame): fully_preserved - the framing and
+            composition of <Picture 2> are retained.
+  ```
+
+- **New `summary` section with a derived `[task type]` prefix** — `keyframe completion`,
+  `reference generation`, `audio reuse`, `audio reference`, combined with ` + ` in the
+  guide's own order. It is derived from what the references are *used for*, not from what
+  is connected: the guide warns that "the mere presence of video or audio does not
+  automatically create a corresponding task type", so a reference video supplying only
+  camera movement stays `reference generation`. The gear menu's **Task Type** field
+  overrides it, which is the only way to reach `video editing` and `video continuation` —
+  neither of which this node can produce on its own.
+
+- Frame anchors are also named inside their shot, as the guide's section 5.3 asks:
+  `[Shot 1] she enters. The shot begins from <Picture 2>.` The phrase goes after the
+  shot's own text, because a later shot opens `At 00:05.000, ` and a capitalised clause
+  cannot continue out of that comma.
+
+- **The reference panel resizes, and the images grow with it.** The previews were locked to
+  52px inside a fixed 148px slot — too small to judge a reference by, and with no room for
+  a second text box. The panel now has the same drag strip the prompt and global-prompt
+  panels have, its height is remembered per node, and the previews row is the only part
+  that flexes, so every pixel gained goes to the image rather than to the text.
+
+- **`overall_soundscape`, `non_diegetic_music` and the new `summary` box sit beside the
+  global prompt, not on top of it.** The strip was absolutely positioned over the textarea,
+  which was shortened by a hard-coded `calc()` to compensate — so the two fought over the
+  same space and the strip sat on the box's own border. As a flex sibling the panel divides
+  itself, with no second copy of the height to keep in step.
+
+- **Analyze no longer assumes every slot is a character.** Its prompt said "describe the
+  character's physical appearance", which produced what you would expect when the image was
+  a coffee shop. It now asks about the slot's actual kind — a place, a garment, a pose —
+  and returns the description and the retained sentence together. A model that ignores the
+  two-line format still works: everything falls back to the description, and a note written
+  by hand is never overwritten.
+
+- **Speakers and dialogue.** The guide gives speakers stable `(Sx)` IDs "according to the
+  order of actual vocal events in the target video" and wraps their lines in
+  `<d>[Language] …</d>`. Neither existed here. A line that starts with a reference tag and
+  contains a colon is now dialogue — the same "only at the start of a line" rule the
+  `Audio:` / `Music:` lines already follow:
+
+  ```
+  @ref1 exclaims with light annoyance: Hey! Watch your dog!
+  →  <Subject 1> (S1) exclaims with light annoyance, <d>[English] Hey! Watch your dog!</d>
+  ```
+
+  The clause between tag and colon is the delivery, kept verbatim — the guide's example
+  carries the performance there, and a generated "says" would throw it away. IDs are never
+  written by hand: they are assigned in vocal-event order, reused by the same speaker at
+  every later line, and kept out of `retention_analysis`, which the guide forbids.
+  `@voice(a low male narrator)` covers a speaker with no panel slot, keyed on the
+  description so repeats keep one ID. `@audio2:` names a line carried by a reused track and
+  gets no ID at all, since a cue inside a soundtrack has no independent vocal source.
+
+  A shot whose only content is a spoken line is still a numbered shot — testing the prompt
+  alone would have dropped it once the dialogue was lifted out, losing the line and
+  shifting every later shot number, including the ones picture notes point at.
+
+- **The live preview reports a speaker ID written into a retention note**, which the guide
+  forbids outright, and **shows `detailed_description`'s word count in its badge** against
+  the guide's suggested 350–500 for generation tasks. The count is a figure rather than a
+  warning: 350 words is a lot for a 5–15 second clip, so sitting under it is the ordinary
+  state here, and warning about it fired on essentially every timeline — which is how a
+  warnings area stops being read at all. Only overshooting the range is called out.
+
+- **Reference videos can be turned down when they run you out of memory.** Their frames are
+  VAE-encoded whole and the latents ride through every sampling step, so a long or large
+  clip is the usual cause of an OOM render — and the only way to shorten one was to drag
+  its edge on the track, with nothing anywhere saying what it currently was. Selecting a
+  clip now gives **start**, **frames** and **size** as numbers, with the seconds and the
+  model card's 2–15 s window shown beside them.
+
+  `start` and `frames` edit the segment's own trim and length rather than shadowing them,
+  so the track keeps showing exactly what will be sent. `size` is the short edge the clip
+  is decoded at, per clip because one reference may be carrying a look worth the pixels
+  while another is only carrying a camera move — and it is the biggest lever there is,
+  since memory goes with its square. The default is unchanged, so nothing moves until you
+  turn it down.
+
+- **A trimmed reference video is no longer silently lengthened.** The loader floored every
+  clip at 2 s, so trimming one shorter handed the VAE *more* than was asked for — while the
+  preview warned that the clip was under the model card's minimum. It warns and honours the
+  trim now, rather than warning and overriding it.
+
+- **Removed the Image Anchor.** An LTX concept that survived the port without ever being
+  connected to anything: `isAnchor` was written by the editor, round-tripped through the
+  timeline JSON, and read nowhere in Python — H3 has no per-keyframe guide strength for it
+  to drive. Its only observable effect was locking your prompt box and drawing an orange
+  glyph, so it looked like a feature while doing nothing but taking a field away. Old
+  timelines load unchanged; such a segment becomes an ordinary image with an empty prompt,
+  which is exactly what it already compiled to, and the flag is dropped on load rather than
+  riding along in the JSON forever.
+
+- **A reference video the browser cannot decode now works anyway.** The editor built the
+  clip from a local blob through a `<video>` element, so it only accepted what the browser
+  accepts — and a browser accepts far less than the renderer does. HEVC, ProRes and 10-bit
+  footage inside perfectly ordinary `.mp4` and `.mov` files are all refused by Chrome and
+  all read fine by PyAV, which is what loads reference videos at generation time anyway.
+  Picking one did nothing at all, with a single `Motion video load error` in the console
+  and no message on screen.
+
+  A `probe_video` endpoint now supplies the duration, size and a first frame when the
+  browser gives up, so the clip lands on the track and renders normally. The editor accepts
+  what the renderer accepts. If the server cannot read it either, that finally says so on
+  screen instead of failing in silence.
+
+- **The chain node and the Director now share one reference loader.** The chain had grown
+  its own copy that ignored the `ref_images` socket entirely and never fitted a keyframe to
+  the canvas, so a chained render silently dropped references the Director would have sent.
+
+- **The live preview says when it cannot count.** Images arriving on the `ref_images`
+  socket are an upstream batch that does not exist until the graph runs, so the preview
+  could not number around them and silently showed `<Picture 2>` where the render would
+  send `<Picture 5>`. It now warns instead of quietly disagreeing.
+
+- Removed a note-pruning path that parsed `<Picture N>` back out of finished sentences to
+  drop trimmed references. Declarations are now built after the caps have trimmed, so
+  there is nothing to prune — and the per-type caps made that path unreachable anyway
+  (`images + videos` is at most 12 on its own, so the audio bucket always absorbs the
+  excess).
 
 ## 0.1.6
 
@@ -60,9 +533,10 @@ Full detail in [CUSTOM_ADDITIONS.md](CUSTOM_ADDITIONS.md). Headlines:
 - **An audio reference can say whose voice it is**
   ([#10](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director/issues/10)). Pick a
   subject on the clip and the prompt uses the reference guide's own sentence, `<Audio 1> is
-  the voice-timbre reference for <Subject 1> (S1).` With more than one subject there was
+  the voice-timbre reference for <Subject 1>.` With more than one subject there was
   previously no way to say which voice belonged to whom. Unassigned clips keep the old
-  wording.
+  wording. (The guide ends that line with a speaker ID, `(S1)`; this does not write one,
+  since IDs are assigned in the order voices are heard and the subject may never speak.)
 - **`unload_after` reaches llama.cpp**, not just Ollama
   ([#9](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director/issues/9)).
   llama-server in router mode has `POST /models/unload`; a plain one does not, and the log

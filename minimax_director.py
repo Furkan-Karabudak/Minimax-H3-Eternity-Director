@@ -423,6 +423,105 @@ def _concat_audio_aligned(chunks, overlap_samples):
     return out
 
 
+def _concat_audio_smartseam(chunks, overlaps, sr, fade_ms=20.0, gap_win_ms=20.0):
+    """Join per-window waveforms, hiding each seam at the QUIETEST point in its overlap.
+
+    Seamless mode co-denoises one clip, so window N and window N+1 carry the SAME song-time in
+    their overlap: chunks[i]'s tail is the same moment as chunks[i+1]'s head. Two consequences:
+
+      1. The splice does not have to sit at the overlap's geometric centre. That centre is
+         content-blind and routinely lands on a loud vocal (measured: the geometric seam runs
+         6-37 dB louder than the quietest point in the same overlap). We scan the overlap for the
+         lowest short-time-RMS point of the two takes combined and put the seam there, where a cut
+         is inaudible — the way a dialogue editor hides a splice in the gap between words.
+      2. Because both sides are the same moment, a short equal-power cross-fade at that point
+         splices cleanly instead of stuttering.
+
+    chunks[i] : [2, Ni] decoded waveform for window i. overlaps[i] : how many samples chunks[i]
+    and chunks[i+1] share (identical song-time). Returns [2, total]; the caller locks total to the
+    video length, so consuming each overlap once cannot drift A/V.
+
+    NOTE: a cross-correlation re-phase (WSOLA-lite) before the fade would further tighten the
+    handful of seams that fall in continuous, gapless audio (no quiet point to hide in). Left out
+    of v1 deliberately — the RMS-placement win is the large, measured one; xcorr is a refinement
+    to add once this path is confirmed on a real render."""
+    chunks = [c for c in chunks if c is not None and c.shape[1] > 0]
+    if not chunks:
+        return None
+    out = chunks[0]
+    for k in range(1, len(chunks)):
+        nxt = chunks[k]
+        ov = int(min(overlaps[k - 1], out.shape[1], nxt.shape[1]))
+        if ov <= 2:
+            out = torch.cat([out, nxt], dim=1)
+            continue
+        Lo = out.shape[1]
+        a = out[:, Lo - ov:]        # accumulated tail (window k-1) over the overlap
+        b = nxt[:, :ov]             # next window's head — same song-time as `a`
+        # combined short-time energy of both takes; the seam wants to sit where BOTH are quiet
+        sq = a.mean(0) ** 2 + b.mean(0) ** 2
+        w = max(1, int(gap_win_ms * sr / 1000.0))
+        if ov > 2 * w:
+            cs = torch.cumsum(torch.nn.functional.pad(sq, (1, 0)), dim=0)
+            env = (cs[w:] - cs[:-w]) / w                      # mean-sq over a sliding window
+            s0 = int(torch.argmin(env).item()) + w // 2        # centre of the quietest window
+        else:
+            s0 = ov // 2
+        f = int(min(fade_ms * sr / 1000.0, ov // 2))
+        f = max(1, f)
+        lo = min(max(s0 - f // 2, 0), ov - f)                  # clamp the fade inside the overlap
+        ramp = torch.linspace(0.0, 1.0, f, dtype=out.dtype) * (torch.pi / 2.0)
+        fo = torch.cos(ramp); fi = torch.sin(ramp)             # equal-power (constant energy)
+        head = out[:, :Lo - ov + lo]
+        blend = out[:, Lo - ov + lo:Lo - ov + lo + f] * fo + nxt[:, lo:lo + f] * fi
+        out = torch.cat([head, blend, nxt[:, lo + f:]], dim=1)
+    return out
+
+
+def _seamless_indep_audio(audio_vae, indep, aranges, total):
+    """Assemble the seamless clip's audio from INDEPENDENT per-window samples.
+
+    The co-denoise poisons audio (audio latents can't be averaged like video, so they're
+    hard-stitched in the shared latent and each window denoises its audio while seeing its
+    neighbours' discontinuous audio — it compounds into tonal mush). Sampling each window on its
+    own does not share the audio latent, so it stays clean. This decodes each independent window's
+    audio and hands them to _concat_audio_smartseam, which hides each seam at the quietest point in
+    the overlap. `indep[i]` is window i's independently-sampled latent (same object chained decodes
+    per window). Returns [2, N] locked to the video length, or None to fall back."""
+    if not indep or any(s is None for s in indep) or len(indep) != len(aranges):
+        return None
+    chunks, spfs, gas, nas = [], [], [], []
+    for i, s in enumerate(indep):
+        ga, na = aranges[i]
+        wav, sr = _audio_to_stereo(_decode_audio(audio_vae, s))
+        if wav is None:
+            return None
+        if sr != AUDIO_SR:
+            try:
+                import torchaudio
+                wav = torchaudio.functional.resample(wav, sr, AUDIO_SR)
+            except Exception:
+                return None
+        chunks.append(wav)
+        spfs.append(wav.shape[1] / max(1, na))   # decoded samples per audio-latent frame
+        gas.append(ga); nas.append(na)
+    # overlap between consecutive windows, converted latent-frames -> samples
+    overlaps = []
+    for i in range(len(chunks) - 1):
+        ov_frames = (gas[i] + nas[i]) - gas[i + 1]
+        spf = (spfs[i] + spfs[i + 1]) / 2.0
+        overlaps.append(max(0, int(round(ov_frames * spf))))
+    out = _concat_audio_smartseam(chunks, overlaps, AUDIO_SR)
+    if out is None:
+        return None
+    want = max(1, int(round(total / MODEL_FPS * AUDIO_SR)))   # lock to video length (no A/V drift)
+    if out.shape[1] > want:
+        out = out[:, :want]
+    elif out.shape[1] < want:
+        out = torch.nn.functional.pad(out, (0, want - out.shape[1]))
+    return out
+
+
 def split_windows(duration_frames, window_frames, min_frames=1, max_frames=0):
     """Cut the render range into evenly-sized, in-range windows.
 
@@ -734,9 +833,13 @@ class MiniMaxH3Director(io.ComfyNode):
                                        "'seamless' (EXPERIMENTAL): hold the whole clip as one latent and "
                                        "co-denoise overlapping windows — genuinely seamless video+audio, ~2x "
                                        "slower, each window still conditioned on its own time-slice."),
-                io.Float.Input("overlap_seconds", default=2.0, min=0.5, max=8.0, step=0.5, optional=True,
+                io.Float.Input("overlap_seconds", default=2.0, min=0.2, max=8.0, step=0.1, optional=True,
                                tooltip="Seamless mode only: overlap between co-denoised windows. More overlap = "
-                                       "stronger consensus (smoother), more compute."),
+                                       "stronger VIDEO consensus (smoother), more compute — but ALSO more AUDIO "
+                                       "poisoning (each window denoises its audio while seeing the neighbour's "
+                                       "discontinuous audio across the shared zone), so less overlap = cleaner "
+                                       "audio. Snaps to H3's latent grid: ~0.2s = 2 latent frames (the floor), "
+                                       "~0.5s = 7, ~1.0s = 12, ~2.0s = 17. Nothing lands between 2 and 7."),
                 io.Float.Input("start", force_input=True, optional=True, default=0.0,
                                tooltip="Automation (connection-only). Window start in SECONDS."),
                 io.Float.Input("end", force_input=True, optional=True, default=0.0,
@@ -1504,11 +1607,16 @@ class MiniMaxH3Director(io.ComfyNode):
             else:
                 out = mm.MiniMaxH3ImageToVideo.execute(
                     clip=clip, vae=vae, prompt=p["prompt"], width=width, height=height, length=p["length"])
-            cond = _unpack(out)[0]
+            unpacked = _unpack(out)
+            cond = unpacked[0]
             ctx = cond[0][0]
             meta = cond[0][1] if len(cond[0]) > 1 else {}
+            # Keep each window's own conditioning + latent. The seamless co-denoise poisons the
+            # AUDIO (hard-stitched audio latents confuse each window's denoise into tonal mush), so
+            # audio is re-sampled per window INDEPENDENTLY below — the one thing that comes out
+            # clean — and only the VIDEO is taken from the co-denoise.
             win_conds.append({"context": ctx, "meta": meta, "text_len": int(ctx.shape[1]),
-                              "gv": gv, "nv": nv})
+                              "gv": gv, "nv": nv, "cond": cond, "latent": unpacked[1]})
 
         # Audio ownership: audio latents CANNOT be averaged the way video can — blending two
         # windows' audio (each following a different slice of the track) decodes to noise. So each
@@ -1619,23 +1727,76 @@ class MiniMaxH3Director(io.ComfyNode):
         sampled = _unpack(sm.SamplerCustomAdvanced.execute(
             noise=noise, guider=guider, sampler=sampler, sigmas=sigmas, latent_image=full_latent))[0]
 
-        # --- two-phase-style: free the DiT, then decode the whole clip on the GPU ------
+        # --- independent per-window audio (WHILE the DiT is still loaded) -----------------
+        # The co-denoise gives beautiful VIDEO but poisons AUDIO (audio latents can't be averaged
+        # like video, so they're hard-stitched in the shared latent and each window denoises its
+        # audio while seeing its neighbours' discontinuous audio -> tonal mush). Independent samples
+        # don't share the audio latent, so they stay clean (proven: the establishment window,
+        # sampled alone, is pristine). Sample each window on its own here and take only its audio;
+        # video still comes from the co-denoise. Also gives a clean window-0 video for the ghost fix.
+        indep = []
+        for i, wc in enumerate(win_conds):
+            try:
+                g = _unpack(sm.BasicGuider.execute(model=patched_model, conditioning=wc["cond"]))[0]
+                s = _unpack(sm.SamplerCustomAdvanced.execute(
+                    noise=sm.Noise_RandomNoise(int(noise_seed) + i), guider=g,
+                    sampler=sampler, sigmas=sigmas, latent_image=wc["latent"]))[0]
+            except Exception as e:
+                log.warning("[MiniMaxSeamless] independent sample of window %d failed (%s)", i, e)
+                s = None
+            indep.append(s)
+
+        # --- two-phase-style: free the DiT, then decode everything on the GPU ------------
         comfy.model_management.unload_all_models()
         comfy.model_management.soft_empty_cache()
         out_images = _decode_video(vae, sampled, tiled=tiled_vae_decode)
         total = int(out_images.shape[0])
+
+        # AUDIO: assemble from the independent per-window samples, seams hidden at the quiet points.
+        out_audio = None
         if audio_vae is not None:
-            audio_chunk, sr = _audio_to_stereo(_decode_audio(audio_vae, sampled))
-            if audio_chunk is not None and sr != AUDIO_SR:
-                try:
-                    import torchaudio
-                    audio_chunk = torchaudio.functional.resample(audio_chunk, sr, AUDIO_SR)
-                except Exception:
-                    pass
-            out_audio = audio_chunk if audio_chunk is not None else torch.zeros(
+            try:
+                out_audio = _seamless_indep_audio(audio_vae, indep, aranges, total)
+            except Exception as e:
+                log.warning("[MiniMaxSeamless] independent-audio assembly failed (%s)", e)
+                out_audio = None
+            if out_audio is None:  # last resort: the co-denoise audio (poisoned, but not silence)
+                audio_chunk, sr = _audio_to_stereo(_decode_audio(audio_vae, sampled))
+                if audio_chunk is not None and sr != AUDIO_SR:
+                    try:
+                        import torchaudio
+                        audio_chunk = torchaudio.functional.resample(audio_chunk, sr, AUDIO_SR)
+                    except Exception:
+                        pass
+                out_audio = audio_chunk
+        if out_audio is None:
+            out_audio = torch.zeros(
                 (2, max(1, int(round(total / MODEL_FPS * AUDIO_SR)))), dtype=torch.float32)
-        else:
-            out_audio = torch.zeros((2, max(1, int(round(total / MODEL_FPS * AUDIO_SR)))), dtype=torch.float32)
+
+        # --- clean establishment (video) -------------------------------------------------
+        # The co-denoise also ghosts window 1's reference image into its first ~2-3 s of VIDEO;
+        # window 0's independent sample establishes it cleanly. Dissolve that clean video over the
+        # seamless start across the window-1/window-2 overlap. Guarded: any failure leaves the
+        # co-denoise video in place. (Audio already comes from the independent samples above.)
+        if len(windows) > 1 and indep and indep[0] is not None:
+            try:
+                intro_images = _decode_video(vae, indep[0], tiled=tiled_vae_decode)
+                F1 = int(intro_images.shape[0])
+                ratio = total / max(1, tv)                    # pixel frames per video-latent frame
+                ov_px = int(round(max(0, win_conds[0]["nv"] - windows[1][0]) * ratio))
+                ov_px = max(0, min(ov_px, F1 - 1, out_images.shape[0] - F1))
+                if 0 < F1 <= out_images.shape[0]:
+                    seam = F1 - ov_px
+                    merged = out_images.clone()
+                    merged[:seam] = intro_images[:seam]        # clean intro replaces the ghosted start
+                    if ov_px > 0:                              # dissolve into the seamless body
+                        r = torch.linspace(0.0, 1.0, ov_px, dtype=out_images.dtype).view(-1, 1, 1, 1)
+                        merged[seam:F1] = intro_images[seam:F1] * (1.0 - r) + out_images[seam:F1] * r
+                    out_images = merged
+                    log.info("[MiniMaxSeamless] clean intro video over first %d frames (overlap %d)",
+                             F1, ov_px)
+            except Exception as e:
+                log.warning("[MiniMaxSeamless] clean-intro video composite failed (%s)", e)
 
         audio_tl_frames = max(1, int(round(total / MODEL_FPS * fps)))
         combined_audio = media.build_combined_audio(

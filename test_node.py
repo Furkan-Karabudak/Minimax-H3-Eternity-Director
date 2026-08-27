@@ -92,7 +92,7 @@ def _schema_inputs(node_cls):
 
 for node_cls in (package.MiniMaxH3Director, package.MiniMaxH3EnhancePrompt,
                  package.MiniMaxH3PreviewOverride, package.MiniMaxH3RetakeStitch,
-                 package.MiniMaxH3SaveLastFrame):
+                 package.MiniMaxH3SaveLastFrame, package.MiniMaxH3ReferenceToVideo_test):
     params = inspect.signature(node_cls.execute.__func__).parameters
     accepts_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
     missing = [] if accepts_kwargs else [

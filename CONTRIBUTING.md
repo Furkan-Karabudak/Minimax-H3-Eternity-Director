@@ -26,7 +26,7 @@ your working tree is what runs — nothing is copied or built.
 
 ```
 cd ComfyUI/custom_nodes
-git clone https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director
+git clone https://github.com/Furkan-Karabudak/Minimax-H3-Director_Eternity-Edition
 ```
 
 Where things are:
@@ -75,9 +75,8 @@ goes out.
 
 **`LICENSE`.** The GPL-3.0 text must stay verbatim.
 
-**Node IDs.** `MiniMaxH3DirectorCS`, `MiniMaxH3PreviewOverrideCS`, `MiniMaxH3RetakeStitchCS`
-and `MiniMaxH3EnhancePromptCS` keep the `CS` suffix forever. Renaming one breaks every
-saved workflow that uses it. The display names already dropped it, which is fine.
+**Node IDs.** `MiniMaxH3Director_Eternity`, `MiniMaxH3PreviewOverride_Eternity`, `MiniMaxH3RetakeStitch_Eternity`
+and `MiniMaxH3EnhancePrompt_Eternity` keep the `_Eternity` suffix.
 
 ## Four rules the code depends on
 

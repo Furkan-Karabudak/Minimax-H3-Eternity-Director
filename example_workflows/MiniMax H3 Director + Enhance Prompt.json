@@ -356,7 +356,7 @@
     },
     {
       "id": 15,
-      "type": "MiniMaxH3PreviewOverrideCS",
+      "type": "MiniMaxH3PreviewOverride_Eternity",
       "pos": [
         640,
         90
@@ -404,7 +404,7 @@
       "properties": {
         "cnr_id": "minimaxh3-director",
         "ver": "0.1.3",
-        "Node name for S&R": "MiniMaxH3PreviewOverrideCS",
+        "Node name for S&R": "MiniMaxH3PreviewOverride_Eternity",
         "aux_id": "CGlide/ComfyUI-MiniMaxH3-Director"
       },
       "widgets_values": [
@@ -728,7 +728,7 @@
     },
     {
       "id": 5,
-      "type": "MiniMaxH3DirectorCS",
+      "type": "MiniMaxH3Director_Eternity",
       "pos": [
         -800,
         90
@@ -864,7 +864,7 @@
       "properties": {
         "cnr_id": "minimaxh3-director",
         "ver": "0.1.3",
-        "Node name for S&R": "MiniMaxH3DirectorCS",
+        "Node name for S&R": "MiniMaxH3Director_Eternity",
         "global_prompt": "",
         "mainTrackEnabled": true,
         "audioTrackEnabled": true,
@@ -1104,7 +1104,7 @@
     },
     {
       "id": 386,
-      "type": "MiniMaxH3EnhancePromptCS",
+      "type": "MiniMaxH3EnhancePrompt_Eternity",
       "pos": [
         -1250,
         90
@@ -1165,7 +1165,7 @@
       "properties": {
         "cnr_id": "minimaxh3-director",
         "ver": "0.1.3",
-        "Node name for S&R": "MiniMaxH3EnhancePromptCS"
+        "Node name for S&R": "MiniMaxH3EnhancePrompt_Eternity"
       },
       "widgets_values": [
         "",

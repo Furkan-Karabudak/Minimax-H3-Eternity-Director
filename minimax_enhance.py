@@ -359,8 +359,8 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="MiniMaxH3EnhancePromptCS",
-            display_name="MiniMax H3 Enhance Prompt",
+            node_id="MiniMaxH3EnhancePrompt_Eternity",
+            display_name="MiniMax H3 Enhance Prompt - Eternity Edition",
             category="MiniMax H3",
             description=(
                 "Turns a one-line idea plus reference images into a MiniMax-H3 prompt, "
@@ -568,5 +568,5 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
         return io.NodeOutput(prompt, batched, float(duration_seconds))
 
 
-NODE_CLASS_MAPPINGS = {"MiniMaxH3EnhancePromptCS": MiniMaxH3EnhancePrompt}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3EnhancePromptCS": "MiniMax H3 Enhance Prompt"}
+NODE_CLASS_MAPPINGS = {"MiniMaxH3EnhancePrompt_Eternity": MiniMaxH3EnhancePrompt}
+NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3EnhancePrompt_Eternity": "MiniMax H3 Enhance Prompt - Eternity Edition"}

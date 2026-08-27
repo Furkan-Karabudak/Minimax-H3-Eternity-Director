@@ -36,3 +36,8 @@ MAINTAINING.md
 TODO.md
 *.local.md
 *.private.md
+
+
+.agents/
+reference/
+tests/

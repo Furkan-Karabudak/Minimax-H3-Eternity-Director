@@ -1,4 +1,4 @@
-# Custom Additions — MiniMax H3 Director (MV fork)
+# Custom Additions — Minimax-H3-Director_Eternity-Edition
 
 This fork tracks upstream **[ComfyUI MiniMax H3 Director](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director)**
 closely and adds a **long-form rendering path** on top of it. As of this release it is
@@ -144,6 +144,4 @@ done live with a profiler.
 
 ## Node identity
 
-The node id is unchanged — **`MiniMaxH3DirectorCS`** — so existing workflows (including the
-one embedded in an exported `.mp4`) keep loading. Only the package name, version and repo URLs
-differ from upstream.
+The node ids use the **`_Eternity`** suffix (e.g. **`MiniMaxH3Director_Eternity`**) to prevent collision with upstream / original installations. Package name is **`Minimax-H3-Director_Eternity-Edition`** maintained by **FurkanKarabudak**.

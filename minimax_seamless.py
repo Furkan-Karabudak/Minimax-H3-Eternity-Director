@@ -80,8 +80,8 @@ class MiniMaxH3SeamlessSampler(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="MiniMaxH3SeamlessSamplerCS",
-            display_name="MiniMax H3 Seamless Sampler (experimental)",
+            node_id="MiniMaxH3SeamlessSampler_Eternity",
+            display_name="MiniMax H3 Seamless Sampler (experimental) - Eternity Edition",
             category="MiniMax H3",
             description="Temporal MultiDiffusion co-denoising for H3 — seamless long-form video+audio. "
                         "Wire a ReferenceToVideo/ImageToVideo (cond + AV latent) for the whole clip. v0.",
@@ -217,5 +217,5 @@ class MiniMaxH3SeamlessSampler(io.ComfyNode):
         return io.NodeOutput(sampled)
 
 
-NODE_CLASS_MAPPINGS = {"MiniMaxH3SeamlessSamplerCS": MiniMaxH3SeamlessSampler}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3SeamlessSamplerCS": "MiniMax H3 Seamless Sampler (experimental)"}
+NODE_CLASS_MAPPINGS = {"MiniMaxH3SeamlessSampler_Eternity": MiniMaxH3SeamlessSampler}
+NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3SeamlessSampler_Eternity": "MiniMax H3 Seamless Sampler (experimental) - Eternity Edition"}

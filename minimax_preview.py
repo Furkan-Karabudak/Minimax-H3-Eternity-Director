@@ -367,8 +367,8 @@ class MiniMaxH3PreviewOverride(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="MiniMaxH3PreviewOverrideCS",
-            display_name="MiniMax H3 Preview Override",
+            node_id="MiniMaxH3PreviewOverride_Eternity",
+            display_name="MiniMax H3 Preview Override - Eternity Edition",
             category="MiniMax H3",
             description=(
                 "Live preview of the whole shot while it denoises, shown on this node. "

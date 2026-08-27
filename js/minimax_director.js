@@ -13361,7 +13361,7 @@ const APPENDED_WIDGET_DEFAULTS = [
 ];
 
 app.registerExtension({
-  name: "MiniMaxH3DirectorCS",
+  name: "MiniMaxH3Director_Eternity",
   // Declared here so the key also has a home in ComfyUI's own Settings dialog, and so it
   // is stored server-side per user rather than in the workflow (issue #15).
   settings: [
@@ -13388,7 +13388,7 @@ app.registerExtension({
     app.queuePrompt = async function (...args) {
       try {
         const nodes = app.graph?._nodes || [];
-        const director = nodes.find(n => n && (n.comfyClass === "MiniMaxH3DirectorCS" || n.type === "MiniMaxH3DirectorCS"));
+        const director = nodes.find(n => n && (n.comfyClass === "MiniMaxH3Director_Eternity" || n.type === "MiniMaxH3Director_Eternity"));
         if (director) {
           // Read provider settings from the node's saved timeline_data widget.
           let provider = "ollama", baseUrl = "", model = "";
@@ -13416,7 +13416,7 @@ app.registerExtension({
     };
   },
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
-    if (nodeData.name === "MiniMaxH3DirectorCS") {
+    if (nodeData.name === "MiniMaxH3Director_Eternity") {
 
       const onNodeCreated = nodeType.prototype.onNodeCreated;
       nodeType.prototype.onNodeCreated = function () {

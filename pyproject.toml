@@ -1,7 +1,10 @@
 [project]
-name = "minimaxh3-director-extended"
-description = "A fork of MiniMax H3 Director (seesee75-commits): long-form chaining past H3's ~15s ceiling in one node, two-phase GPU decode, audio-seam handling, and a saveable gen-log — on top of upstream's timeline editor, typed references, dialogue and prompt compiler."
-version = "0.3.0"
+name = "Minimax-H3-Director_Eternity-Edition"
+description = "A fork of MiniMax H3 Director: long-form chaining past H3's ~15s ceiling in one node, two-phase GPU decode, audio-seam handling, and a saveable gen-log — on top of upstream's timeline editor, typed references, dialogue and prompt compiler."
+version = "0.2.2-ee.0.0.1"
+authors = [
+    { name = "FurkanKarabudak" }
+]
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 # Nothing beyond what ComfyUI itself already installs.
@@ -13,14 +16,14 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/vomitselfie/ComfyUI-MiniMaxH3-MV-Director"
-"Bug Tracker" = "https://github.com/vomitselfie/ComfyUI-MiniMaxH3-MV-Director/issues"
+Repository = "https://github.com/Furkan-Karabudak/Minimax-H3-Director_Eternity-Edition"
+"Bug Tracker" = "https://github.com/Furkan-Karabudak/Minimax-H3-Director_Eternity-Edition/issues"
 Upstream = "https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director"
 
 [tool.comfy]
 # Must match the publisher you create at https://registry.comfy.org
-PublisherId = "vomitselfie"
-DisplayName = "MiniMax H3 Director (MV)"
+PublisherId = "FurkanKarabudak"
+DisplayName = "Minimax-H3-Director_Eternity-Edition"
 Icon = ""
 # comfy_api.latest, the packed AV latent and H3 support all landed in ComfyUI 0.30.0.
 requires-comfyui = ">=0.30.0"

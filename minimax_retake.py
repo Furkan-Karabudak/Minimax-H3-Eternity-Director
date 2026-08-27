@@ -86,8 +86,8 @@ class MiniMaxH3RetakeStitch(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="MiniMaxH3RetakeStitchCS",
-            display_name="MiniMax H3 Retake Stitch",
+            node_id="MiniMaxH3RetakeStitch_Eternity",
+            display_name="MiniMax H3 Retake Stitch - Eternity Edition",
             category="MiniMax H3",
             description=(
                 "Splices a Retake Mode result back into its base video: base head + the "
@@ -195,5 +195,5 @@ class MiniMaxH3RetakeStitch(io.ComfyNode):
                              MODEL_FPS)
 
 
-NODE_CLASS_MAPPINGS = {"MiniMaxH3RetakeStitchCS": MiniMaxH3RetakeStitch}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3RetakeStitchCS": "MiniMax H3 Retake Stitch"}
+NODE_CLASS_MAPPINGS = {"MiniMaxH3RetakeStitch_Eternity": MiniMaxH3RetakeStitch}
+NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3RetakeStitch_Eternity": "MiniMax H3 Retake Stitch - Eternity Edition"}

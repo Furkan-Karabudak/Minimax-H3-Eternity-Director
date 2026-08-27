@@ -150,7 +150,115 @@ def get_audio_peaks(audio_path):
 # HTTP endpoints used by the timeline editor
 # --------------------------------------------------------------------------------------
 
-@PromptServer.instance.routes.get("/minimax_director_check_file")
+_pending_routes = []
+
+class _RouteProxy:
+    def get(self, path):
+        def decorator(fn):
+            _pending_routes.append(("GET", path, fn))
+            _try_register_routes()
+            return fn
+        return decorator
+
+    def post(self, path):
+        def decorator(fn):
+            _pending_routes.append(("POST", path, fn))
+            _try_register_routes()
+            return fn
+        return decorator
+
+routes = _RouteProxy()
+
+def _try_register_routes():
+    server_instance = getattr(PromptServer, "instance", None)
+    if server_instance is None or not hasattr(server_instance, "routes"):
+        return
+    while _pending_routes:
+        method, path, fn = _pending_routes.pop(0)
+        try:
+            if method == "GET":
+                server_instance.routes.get(path)(fn)
+            elif method == "POST":
+                server_instance.routes.post(path)(fn)
+        except Exception:
+            pass
+
+@routes.get("/minimax/viewvideo")
+async def minimax_view_video(request):
+    """Dynamic video preview streaming endpoint for all video formats (FFV1, ProRes, HEVC, Sequences, etc.)."""
+    filename = request.query.get("filename", "")
+    subfolder = request.query.get("subfolder", "")
+    folder_type = request.query.get("type", "output")
+
+    if not filename:
+        return web.Response(status=400, text="Filename required")
+
+    if folder_type == "output":
+        base_dir = folder_paths.get_output_directory()
+    elif folder_type == "temp":
+        base_dir = folder_paths.get_temp_directory()
+    else:
+        base_dir = folder_paths.get_input_directory()
+
+    if subfolder:
+        file_path = os.path.join(base_dir, subfolder, filename)
+    else:
+        file_path = os.path.join(base_dir, filename)
+
+    if not os.path.exists(file_path):
+        return web.Response(status=404, text=f"File not found: {filename}")
+
+    # Check if FFmpeg is available
+    ffmpeg_bin = None
+    try:
+        from .minimax_save_video import get_ffmpeg_path
+        ffmpeg_bin = get_ffmpeg_path()
+    except Exception:
+        import shutil
+        ffmpeg_bin = shutil.which("ffmpeg")
+
+    if not ffmpeg_bin:
+        return web.FileResponse(path=file_path)
+
+    # Use FFmpeg to transcode to WebM / VP9 on the fly for universal browser playback
+    args = [
+        ffmpeg_bin,
+        "-v", "error",
+        "-i", file_path,
+        "-c:v", "libvpx-vp9",
+        "-deadline", "realtime",
+        "-cpu-used", "8",
+        "-c:a", "libopus",
+        "-f", "webm",
+        "-"
+    ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=subprocess.PIPE,
+            stdin=subprocess.DEVNULL
+        )
+        resp = web.StreamResponse()
+        resp.content_type = "video/webm"
+        resp.headers["Content-Disposition"] = f'inline; filename="{os.path.splitext(filename)[0]}.webm"'
+        await resp.prepare(request)
+        while len(chunk := await proc.stdout.read(2**20)) != 0:
+            await resp.write(chunk)
+        await proc.wait()
+        return resp
+    except (ConnectionResetError, ConnectionError, BrokenPipeError):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return resp
+    except Exception as e:
+        log.warning(f"[MiniMaxDirector] viewvideo transcode error: {e}")
+        return web.FileResponse(path=file_path)
+
+
+@routes.get("/minimax_director_check_file")
 async def minimax_director_check_file(request):
     """Dedupe uploads: report whether an identically named (and sized) file already exists."""
     filename = request.query.get("filename", "")
@@ -194,7 +302,7 @@ async def minimax_director_check_file(request):
     return web.json_response({"exists": False})
 
 
-@PromptServer.instance.routes.post("/minimax_director/compile_prompt")
+@routes.post("/minimax_director/compile_prompt")
 async def compile_prompt_endpoint(request):
     """Live prompt preview for the editor.
 
@@ -281,7 +389,7 @@ async def compile_prompt_endpoint(request):
         return web.json_response({"status": "error", "message": str(e)}, status=500)
 
 
-@PromptServer.instance.routes.post("/minimax_director/probe_video")
+@routes.post("/minimax_director/probe_video")
 async def probe_video_endpoint(request):
     """Duration, size and a first frame for a video the browser could not open.
 
@@ -350,7 +458,7 @@ async def probe_video_endpoint(request):
         return web.json_response({"status": "error", "message": str(e)})
 
 
-@PromptServer.instance.routes.get("/minimax_director_get_audio")
+@routes.get("/minimax_director_get_audio")
 async def minimax_director_get_audio(request):
     filename = request.query.get("filename")
     if not filename:
@@ -367,34 +475,35 @@ async def minimax_director_get_audio(request):
             peaks = get_audio_peaks(file_path)
         except Exception as e:
             log.warning("[MiniMaxDirector] Failed to get audio peaks: %s", e)
-        rel = os.path.relpath(file_path, upload_dir).replace("\\", "/")
-        return web.json_response({"audio_file": rel, "peaks": peaks})
-
-    audio_file, peaks = None, None
     try:
-        loop = asyncio.get_event_loop()
-        audio_file, peaks = await loop.run_in_executor(None, extract_audio_from_video, file_path)
+        peaks = await asyncio.to_thread(_extract_audio_peaks, input_path)
+        if peaks is None:
+            return web.json_response({"has_audio": False})
+        return web.json_response({"has_audio": True, "peaks": peaks})
     except Exception as e:
         log.warning("[MiniMaxDirector] Error extracting audio: %s", e)
-    return web.json_response({"audio_file": audio_file, "peaks": peaks})
+        return web.json_response({"error": str(e)}, status=500)
 
 
-@PromptServer.instance.routes.get("/minimax_director_open_folder")
+@routes.get("/minimax_director_open_folder")
 async def minimax_director_open_folder(request):
-    upload_dir = os.path.join(folder_paths.get_input_directory(), WORKSPACE_SUBDIR)
-    os.makedirs(upload_dir, exist_ok=True)
+    """Open the OS file manager focused on the whatdreamscost input folder."""
+    upload_dir = folder_paths.get_input_directory()
+    target_dir = os.path.join(upload_dir, WORKSPACE_SUBDIR)
+    os.makedirs(target_dir, exist_ok=True)
+
     try:
         system = platform.system()
         if system == "Windows":
-            subprocess.Popen(["explorer", os.path.normpath(upload_dir)])
+            os.startfile(target_dir)
         elif system == "Darwin":
-            subprocess.Popen(["open", upload_dir])
+            subprocess.Popen(["open", target_dir])
         else:
-            subprocess.Popen(["xdg-open", upload_dir])
-        return web.json_response({"success": True})
+            subprocess.Popen(["xdg-open", target_dir])
+        return web.json_response({"status": "ok"})
     except Exception as e:
-        log.warning("[MiniMaxDirector] Failed to open workspace folder: %s", e)
-        return web.json_response({"success": False, "error": str(e)}, status=500)
+        log.warning("[MiniMaxDirector] Error opening folder: %s", e)
+        return web.json_response({"error": str(e)}, status=500)
 
 
 def _write_chunk(file, file_path, mode):
@@ -402,7 +511,7 @@ def _write_chunk(file, file_path, mode):
         f.write(file.file.read())
 
 
-@PromptServer.instance.routes.post("/minimax_director_upload_chunk")
+@routes.post("/minimax_director_upload_chunk")
 async def minimax_director_upload_chunk(request):
     """Chunked upload — sidesteps the 413 Payload Too Large limit on big videos."""
     post = await request.post()
@@ -661,7 +770,7 @@ async def vlm_generate(images_b64, prompt, provider, base_url, model,
     return strip_thinking(text)
 
 
-@PromptServer.instance.routes.post("/minimax_director/analyze_character")
+@routes.post("/minimax_director/analyze_character")
 async def analyze_character_endpoint(request):
     try:
         from . import minimax_plan as plan
@@ -768,7 +877,7 @@ async def unload_model(provider, base_url, model, api_key=None):
         return False
 
 
-@PromptServer.instance.routes.post("/minimax_director/unload_ollama")
+@routes.post("/minimax_director/unload_ollama")
 async def unload_ollama_endpoint(request):
     """Evict the analysis VLM from VRAM right before a run so it doesn't fight H3 for memory."""
     try:

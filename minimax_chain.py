@@ -4,7 +4,7 @@ WITHDRAWN — this node is not registered in __init__.py and does not appear in 
 
 The sampling here works; it was verified against a live server, one window per toolbar
 mode, correct frame counts. What does not work is *giving it a timeline*. The editor in
-js/minimax_director.js attaches only to MiniMaxH3DirectorCS, the Director has no
+js/minimax_director.js attaches only to MiniMaxH3Director_Eternity, the Director has no
 timeline_data output to wire from, and on the Director that widget is hidden
 (HIDDEN_WIDGET_NAMES). The only route left was: right-click the Director, open
 Properties, copy a multi-kilobyte JSON blob, paste it here — and repeat after every
@@ -106,8 +106,8 @@ class MiniMaxH3DirectorChain(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="MiniMaxH3DirectorChainCS",
-            display_name="MiniMax H3 Director Chain",
+            node_id="MiniMaxH3DirectorChain_Eternity",
+            display_name="MiniMax H3 Director Chain - Eternity Edition",
             category="MiniMax H3",
             description=(
                 "Renders a timeline longer than one H3 shot by chaining in-range windows, "
@@ -323,5 +323,5 @@ class MiniMaxH3DirectorChain(io.ComfyNode):
                              MODEL_FPS, int(out_images.shape[0]), "\n\n".join(prompts))
 
 
-NODE_CLASS_MAPPINGS = {"MiniMaxH3DirectorChainCS": MiniMaxH3DirectorChain}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3DirectorChainCS": "MiniMax H3 Director Chain"}
+NODE_CLASS_MAPPINGS = {"MiniMaxH3DirectorChain_Eternity": MiniMaxH3DirectorChain}
+NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3DirectorChain_Eternity": "MiniMax H3 Director Chain - Eternity Edition"}

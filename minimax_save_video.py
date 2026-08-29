@@ -161,7 +161,7 @@ def get_video_extension(video_format: str) -> str:
     elif video_format == "animation/webp":
         return "webp"
     elif video_format in ("image_sequence/8bit-png", "image_sequence/16bit-png"):
-        return "%03d.png"
+        return "%05d.png"
     elif video_format == "video/ffv1-mkv":
         return "mkv"
     elif video_format == "video/ProRes":
@@ -368,6 +368,32 @@ def save_external_audio(temp_wav: str, target_audio_path: str, audio_format: str
 # Video Codec Argument Helpers
 # ---------------------------------------------------------------------------
 
+_AV1_ENCODER_CACHE = None
+
+def get_av1_encoder(ffmpeg_bin: Optional[str]) -> str:
+    global _AV1_ENCODER_CACHE
+    if _AV1_ENCODER_CACHE is not None:
+        return _AV1_ENCODER_CACHE
+    if not ffmpeg_bin:
+        return "libsvtav1"
+    try:
+        res = subprocess.run([ffmpeg_bin, "-encoders"], capture_output=True, text=True, timeout=5)
+        stdout = res.stdout or ""
+        if "libsvtav1" in stdout:
+            _AV1_ENCODER_CACHE = "libsvtav1"
+        elif "libaom-av1" in stdout:
+            _AV1_ENCODER_CACHE = "libaom-av1"
+        elif "librav1e" in stdout:
+            _AV1_ENCODER_CACHE = "librav1e"
+        elif "av1_nvenc" in stdout:
+            _AV1_ENCODER_CACHE = "av1_nvenc"
+        else:
+            _AV1_ENCODER_CACHE = "libsvtav1"
+    except Exception:
+        _AV1_ENCODER_CACHE = "libsvtav1"
+    return _AV1_ENCODER_CACHE
+
+
 def build_video_ffmpeg_args(video_format: str, kwargs: Dict[str, Any], has_alpha: bool = False) -> Tuple[List[str], Optional[str]]:
     """Builds video encoding FFmpeg arguments. Returns (main_args, fake_trc)."""
     if video_format == "video/h264-mp4":
@@ -423,11 +449,27 @@ def build_video_ffmpeg_args(video_format: str, kwargs: Dict[str, Any], has_alpha
     elif video_format == "video/av1-webm":
         crf = str(kwargs.get("crf", 26))
         pix_fmt = kwargs.get("pix_fmt", "yuv420p10le")
-        return [
-            "-c:v", "libsvtav1", "-crf", crf, "-pix_fmt", pix_fmt,
+        ffmpeg_bin = get_ffmpeg_path()
+        encoder = get_av1_encoder(ffmpeg_bin)
+        
+        args = ["-c:v", encoder]
+        if encoder == "libsvtav1":
+            args += ["-crf", crf, "-pix_fmt", pix_fmt]
+        elif encoder == "libaom-av1":
+            args += ["-crf", crf, "-b:v", "0", "-cpu-used", "4", "-pix_fmt", pix_fmt]
+        elif encoder == "librav1e":
+            args += ["-qp", crf, "-pix_fmt", pix_fmt]
+        elif encoder == "av1_nvenc":
+            bitrate_val = float(kwargs.get("bitrate", 10.0))
+            args += ["-b:v", f"{bitrate_val:g}M", "-pix_fmt", pix_fmt]
+        else:
+            args += ["-crf", crf, "-pix_fmt", pix_fmt]
+
+        args += [
             "-vf", "scale=out_color_matrix=bt709",
             "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"
-        ], "bt709"
+        ]
+        return args, "bt709"
 
     elif video_format == "video/webm":
         crf = str(kwargs.get("crf", 30))
@@ -780,21 +822,36 @@ class H3_Eternity_Save_Video:
         # -------------------------------------------------------------------
         # 5. UI Preview Payload
         # -------------------------------------------------------------------
-        primary_output_file = output_files[-1] if output_files else target_video_path
-        primary_output_filename = os.path.basename(primary_output_file)
+        total_saved_frames = num_frames
+        if pingpong and num_frames > 2:
+            total_saved_frames = num_frames + (num_frames - 2)
 
         if "image_sequence" in video_format:
+            primary_output_file = os.path.join(target_dir, f"{final_base}_00001.png")
             primary_output_filename = f"{final_base}_00001.png"
-
-        preview = {
-            "filename": primary_output_filename,
-            "subfolder": subfolder,
-            "type": "output",
-            "format": video_format,
-            "frame_rate": frame_rate,
-            "workflow": first_image_file if save_metadata_image else None,
-            "fullpath": primary_output_file,
-        }
+            preview = {
+                "filename": primary_output_filename,
+                "base_pattern": f"{final_base}_%05d.png",
+                "count": total_saved_frames,
+                "subfolder": subfolder,
+                "type": "output",
+                "format": video_format,
+                "frame_rate": frame_rate,
+                "workflow": first_image_file if save_metadata_image else None,
+                "fullpath": primary_output_file,
+            }
+        else:
+            primary_output_file = target_video_path
+            primary_output_filename = os.path.basename(target_video_path)
+            preview = {
+                "filename": primary_output_filename,
+                "subfolder": subfolder,
+                "type": "output",
+                "format": video_format,
+                "frame_rate": frame_rate,
+                "workflow": first_image_file if save_metadata_image else None,
+                "fullpath": primary_output_file,
+            }
 
         return {
             "ui": {

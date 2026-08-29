@@ -170,8 +170,8 @@ function updateWidgetVisibility(node, forceResetHeight = false) {
   }
 
   const activeH = nativeWidgetsHeight(node);
-  const minRequiredH = activeH + NODE_VERTICAL_CHROME + PREVIEW_MIN_HEIGHT;
-  const defaultTargetH = activeH + NODE_VERTICAL_CHROME + 160;
+  const minRequiredH = activeH + 36 + PREVIEW_MIN_HEIGHT;
+  const defaultTargetH = activeH + 36 + 220;
 
   if (forceResetHeight) {
     node.size = [DEFAULT_NODE_WIDTH, defaultTargetH];
@@ -237,10 +237,24 @@ function addVideoPreviewWidget(node) {
     borderRadius: "6px",
     border: "1px solid #333",
     display: "flex",
+    flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
     boxSizing: "border-box",
+    position: "relative",
+  });
+
+  const contentWrap = document.createElement("div");
+  Object.assign(contentWrap.style, {
+    width: "100%",
+    flex: "1",
+    minHeight: "0",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    position: "relative",
   });
 
   const videoEl = document.createElement("video");
@@ -279,9 +293,67 @@ function addVideoPreviewWidget(node) {
     userSelect: "none",
   });
 
-  container.appendChild(videoEl);
-  container.appendChild(imgEl);
-  container.appendChild(placeholder);
+  contentWrap.appendChild(videoEl);
+  contentWrap.appendChild(imgEl);
+  contentWrap.appendChild(placeholder);
+  container.appendChild(contentWrap);
+
+  // Image sequence controls bar
+  const seqControlsEl = document.createElement("div");
+  Object.assign(seqControlsEl.style, {
+    width: "100%",
+    height: "28px",
+    background: "rgba(22, 22, 26, 0.95)",
+    borderTop: "1px solid #333",
+    display: "none",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "0 8px",
+    boxSizing: "border-box",
+    gap: "8px",
+    userSelect: "none",
+  });
+
+  const btnPlayPause = document.createElement("button");
+  btnPlayPause.textContent = "▶";
+  Object.assign(btnPlayPause.style, {
+    background: "none",
+    border: "none",
+    color: "#fff",
+    cursor: "pointer",
+    fontSize: "12px",
+    padding: "2px 6px",
+    borderRadius: "4px",
+    lineHeight: "1",
+  });
+
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.min = "1";
+  slider.max = "1";
+  slider.value = "1";
+  Object.assign(slider.style, {
+    flex: "1",
+    height: "4px",
+    cursor: "pointer",
+    accentColor: "#0ea5e9",
+  });
+
+  const frameLabel = document.createElement("span");
+  frameLabel.textContent = "1 / 1";
+  Object.assign(frameLabel.style, {
+    color: "#aaa",
+    fontSize: "11px",
+    fontFamily: "monospace",
+    whiteSpace: "nowrap",
+    minWidth: "48px",
+    textAlign: "right",
+  });
+
+  seqControlsEl.appendChild(btnPlayPause);
+  seqControlsEl.appendChild(slider);
+  seqControlsEl.appendChild(frameLabel);
+  container.appendChild(seqControlsEl);
 
   const previewWidget = node.addDOMWidget("preview", "videopreview", container, {
     serialize: false,
@@ -290,22 +362,109 @@ function addVideoPreviewWidget(node) {
     setValue(v) { container.value = v; }
   });
 
+  node._previewWidget = previewWidget;
+  previewWidget.element = container;
   previewWidget.container = container;
   previewWidget.videoEl = videoEl;
   previewWidget.imgEl = imgEl;
   previewWidget.placeholder = placeholder;
+  previewWidget.seqControlsEl = seqControlsEl;
 
-  // Dynamic height calculation based on node.size[1]
   previewWidget.computeSize = function(width) {
-    const nodeH = (node.size && node.size[1]) ? Number(node.size[1]) : DEFAULT_NODE_HEIGHT;
-    const availableH = Math.max(PREVIEW_MIN_HEIGHT, nodeH - NODE_VERTICAL_CHROME - nativeWidgetsHeight(node));
-    return [width || DEFAULT_NODE_WIDTH, availableH];
+    return [width || DEFAULT_NODE_WIDTH, PREVIEW_MIN_HEIGHT];
   };
 
+  let seqTimer = null;
+  let isPlaying = false;
+  let currentSeqIdx = 0;
+  let currentSeqUrls = [];
+
+  function stopSeqPlayback() {
+    if (seqTimer) {
+      clearInterval(seqTimer);
+      seqTimer = null;
+    }
+    isPlaying = false;
+    btnPlayPause.textContent = "▶";
+  }
+
+  function startSeqPlayback(fps = 24) {
+    if (currentSeqUrls.length <= 1) return;
+    stopSeqPlayback();
+    isPlaying = true;
+    btnPlayPause.textContent = "❚❚";
+    const intervalMs = Math.max(10, Math.round(1000 / fps));
+
+    seqTimer = setInterval(() => {
+      currentSeqIdx = (currentSeqIdx + 1) % currentSeqUrls.length;
+      imgEl.src = currentSeqUrls[currentSeqIdx];
+      slider.value = String(currentSeqIdx + 1);
+      frameLabel.textContent = `${currentSeqIdx + 1} / ${currentSeqUrls.length}`;
+    }, intervalMs);
+  }
+
+  btnPlayPause.onclick = (e) => {
+    e.stopPropagation();
+    if (isPlaying) {
+      stopSeqPlayback();
+    } else {
+      const fps = Number(node._lastPreviewData?.frame_rate) || 24;
+      startSeqPlayback(fps);
+    }
+  };
+
+  slider.oninput = (e) => {
+    e.stopPropagation();
+    stopSeqPlayback();
+    const frameNum = Number(slider.value);
+    currentSeqIdx = Math.max(0, Math.min(currentSeqUrls.length - 1, frameNum - 1));
+    if (currentSeqUrls[currentSeqIdx]) {
+      imgEl.src = currentSeqUrls[currentSeqIdx];
+      frameLabel.textContent = `${currentSeqIdx + 1} / ${currentSeqUrls.length}`;
+    }
+  };
+
+  async function decodeAnimFrames(blob, mimeType) {
+    if (!window.ImageDecoder) return null;
+    try {
+      const buffer = await blob.arrayBuffer();
+      const decoder = new ImageDecoder({ data: buffer, type: mimeType });
+      await decoder.tracks.ready;
+
+      const frames = [];
+      let frameIdx = 0;
+
+      while (true) {
+        try {
+          const { image } = await decoder.decode({ frameIndex: frameIdx });
+          const canvas = document.createElement("canvas");
+          canvas.width = image.displayWidth;
+          canvas.height = image.displayHeight;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(image, 0, 0);
+          image.close();
+          frames.push(canvas.toDataURL("image/png"));
+          frameIdx++;
+        } catch (decodeErr) {
+          break;
+        }
+      }
+
+      return frames.length > 1 ? frames : null;
+    } catch (e) {
+      console.warn("ImageDecoder animation decode error:", e);
+      return null;
+    }
+  }
+
   node.updatePreview = function(previewData) {
+    stopSeqPlayback();
+    node._lastPreviewData = previewData;
+
     if (!previewData || !previewData.filename) {
       videoEl.style.display = "none";
       imgEl.style.display = "none";
+      seqControlsEl.style.display = "none";
       placeholder.style.display = "block";
       return;
     }
@@ -314,15 +473,81 @@ function addVideoPreviewWidget(node) {
 
     const filename = previewData.filename;
     const format = previewData.format || "";
+    const isImageSequence = format.startsWith("image_sequence") || (previewData.base_pattern && Number(previewData.count) > 1);
+    const isAnimation = format.startsWith("animation") || filename.match(/\.(gif|webp)$/i);
     const isSpecialTranscode = filename.match(/\.(mkv|mov)$/i) || format.includes("ffv1") || format.includes("ProRes") || format.includes("hevc");
-    const isImageOrAnim = filename.match(/\.(gif|webp|png|jpg|jpeg)$/i) && !isSpecialTranscode;
+    const isSingleImage = filename.match(/\.(png|jpg|jpeg)$/i) && !isSpecialTranscode && !isImageSequence && !isAnimation;
 
-    if (isImageOrAnim) {
+    if (isImageSequence && Number(previewData.count) > 1 && previewData.base_pattern) {
+      try { videoEl.pause(); } catch (e) {}
+      videoEl.style.display = "none";
+
+      const count = Number(previewData.count);
+      const sub = previewData.subfolder || "";
+      const pType = previewData.type || "output";
+      currentSeqUrls = [];
+      const timestamp = Date.now();
+
+      for (let i = 1; i <= count; i++) {
+        const frameNumStr = String(i).padStart(5, '0');
+        const frameName = previewData.base_pattern.replace('%05d', frameNumStr);
+        const url = api.apiURL(`/view?filename=${encodeURIComponent(frameName)}&subfolder=${encodeURIComponent(sub)}&type=${encodeURIComponent(pType)}&t=${timestamp}`);
+        currentSeqUrls.push(url);
+        const preImg = new Image();
+        preImg.src = url;
+      }
+
+      currentSeqIdx = 0;
+      imgEl.src = currentSeqUrls[0];
+      imgEl.style.display = "block";
+
+      slider.min = "1";
+      slider.max = String(count);
+      slider.value = "1";
+      frameLabel.textContent = `1 / ${count}`;
+      btnPlayPause.textContent = "▶";
+      seqControlsEl.style.display = "flex";
+
+    } else if (isAnimation) {
+      try { videoEl.pause(); } catch (e) {}
+      videoEl.style.display = "none";
       const srcUrl = api.apiURL(`/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(previewData.subfolder || "")}&type=${encodeURIComponent(previewData.type || "output")}&t=${Date.now()}`);
+      const mime = filename.endsWith(".webp") ? "image/webp" : "image/gif";
+
+      fetch(srcUrl).then(r => r.blob()).then(async (blob) => {
+        const decoded = await decodeAnimFrames(blob, mime);
+        if (decoded && decoded.length > 1) {
+          currentSeqUrls = decoded;
+          currentSeqIdx = 0;
+          imgEl.src = currentSeqUrls[0];
+          imgEl.style.display = "block";
+
+          slider.min = "1";
+          slider.max = String(decoded.length);
+          slider.value = "1";
+          frameLabel.textContent = `1 / ${decoded.length}`;
+          btnPlayPause.textContent = "▶";
+          seqControlsEl.style.display = "flex";
+        } else {
+          imgEl.src = srcUrl;
+          imgEl.style.display = "block";
+          seqControlsEl.style.display = "none";
+        }
+      }).catch(() => {
+        imgEl.src = srcUrl;
+        imgEl.style.display = "block";
+        seqControlsEl.style.display = "none";
+      });
+
+    } else if (isSingleImage) {
+      seqControlsEl.style.display = "none";
+      const srcUrl = api.apiURL(`/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(previewData.subfolder || "")}&type=${encodeURIComponent(previewData.type || "output")}&t=${Date.now()}`);
+      try { videoEl.pause(); } catch (e) {}
       videoEl.style.display = "none";
       imgEl.src = srcUrl;
       imgEl.style.display = "block";
     } else {
+      seqControlsEl.style.display = "none";
       let srcUrl;
       if (isSpecialTranscode) {
         srcUrl = api.apiURL(`/minimax/viewvideo?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(previewData.subfolder || "")}&type=${encodeURIComponent(previewData.type || "output")}&t=${Date.now()}`);
@@ -406,6 +631,40 @@ app.registerExtension({
         updateWidgetVisibility(this, false);
       }, 20);
       return r;
+    };
+
+    const onDrawForeground = nodeType.prototype.onDrawForeground;
+    nodeType.prototype.onDrawForeground = function(ctx) {
+      if (onDrawForeground) onDrawForeground.apply(this, arguments);
+
+      if (this._previewWidget && this._previewWidget.element && this._previewWidget.last_y) {
+        const remainingHeight = this.size[1] - this._previewWidget.last_y - 18;
+        const currentHeight = parseFloat(this._previewWidget.element.style.height);
+        const targetHeight = Math.max(PREVIEW_MIN_HEIGHT, remainingHeight);
+
+        if (isNaN(currentHeight) || Math.abs(currentHeight - targetHeight) > 1) {
+          this._previewWidget.element.style.height = `${targetHeight}px`;
+        }
+      }
+    };
+
+    const onResize = nodeType.prototype.onResize;
+    nodeType.prototype.onResize = function(size) {
+      if (onResize) onResize.apply(this, arguments);
+      if (this._previewWidget && this._previewWidget.element) {
+        let yOffset = this._previewWidget.last_y;
+        if (!yOffset) {
+          yOffset = 30;
+          if (this.widgets) {
+            for (let w of this.widgets) {
+              if (w === this._previewWidget) break;
+              yOffset += (w.computeSize ? w.computeSize()[1] : 20) + 4;
+            }
+          }
+        }
+        const remainingHeight = size[1] - yOffset - 18;
+        this._previewWidget.element.style.height = `${Math.max(PREVIEW_MIN_HEIGHT, remainingHeight)}px`;
+      }
     };
 
     const onExecuted = nodeType.prototype.onExecuted;

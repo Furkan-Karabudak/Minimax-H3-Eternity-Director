@@ -1,7 +1,7 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 
-const NODE_ID = "H3_Eternity_Save_Video";
+const NODE_ID = "H3Eternity_SaveVideo";
 const DEFAULT_NODE_WIDTH = 400;
 const DEFAULT_NODE_HEIGHT = 460;
 const PREVIEW_MIN_HEIGHT = 100;
@@ -574,10 +574,10 @@ function addVideoPreviewWidget(node) {
 }
 
 app.registerExtension({
-  name: "MiniMaxH3.SaveVideo",
+  name: "H3Eternity_SaveVideo",
 
   async beforeRegisterNodeDef(nodeType, nodeData) {
-    if (nodeData.name !== NODE_ID) return;
+    if (nodeData.name !== NODE_ID && nodeData.name !== "H3_Eternity_Save_Video") return;
 
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function() {

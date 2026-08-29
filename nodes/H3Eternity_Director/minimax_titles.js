@@ -9,10 +9,18 @@
 const { app } = window.comfyAPI.app;
 
 const RENAMED = {
-  MiniMaxH3Director_Eternity: "MiniMax H3 Director",
-  MiniMaxH3PreviewOverride_Eternity: "MiniMax H3 Preview Override",
-  MiniMaxH3RetakeStitch_Eternity: "MiniMax H3 Retake Stitch",
-  MiniMaxH3DirectorChain_Eternity: "MiniMax H3 Director Chain",
+  H3Eternity_Director: "H3 Eternity - Director",
+  H3Eternity_PreviewOverride: "H3 Eternity - Preview Override",
+  H3Eternity_RetakeStitch: "H3 Eternity - Retake Stitch",
+  H3Eternity_EnhancePrompt: "H3 Eternity - Enhance Prompt",
+  H3Eternity_SaveLastFrame: "H3 Eternity - Save Last Frame",
+  H3Eternity_SeamlessSampler: "H3 Eternity - Seamless Sampler [experimental]",
+  H3Eternity_Ref2VA: "H3 Eternity - Ref2VA",
+  H3Eternity_SaveVideo: "H3 Eternity - Save Video",
+  MiniMaxH3Director_Eternity: "H3 Eternity - Director",
+  MiniMaxH3PreviewOverride_Eternity: "H3 Eternity - Preview Override",
+  MiniMaxH3RetakeStitch_Eternity: "H3 Eternity - Retake Stitch",
+  MiniMaxH3DirectorChain_Eternity: "H3 Eternity - Director Chain",
 };
 
 function healTitle(node) {

@@ -5,7 +5,7 @@
 const { app } = window.comfyAPI.app;
 const { api } = window.comfyAPI.api;
 
-const NODE_TYPE = "MiniMaxH3PreviewOverride_Eternity";
+const NODE_TYPE = "H3Eternity_PreviewOverride";
 const IDLE_TEXT = "waiting for sample…";
 
 function buildPanel() {
@@ -52,10 +52,10 @@ function buildPanel() {
 }
 
 app.registerExtension({
-  name: "MiniMaxH3PreviewOverride_Eternity",
+  name: "H3Eternity_PreviewOverride",
 
   async beforeRegisterNodeDef(nodeType, nodeData) {
-    if (nodeData.name !== NODE_TYPE) return;
+    if (nodeData.name !== NODE_TYPE && nodeData.name !== "MiniMaxH3PreviewOverride_Eternity") return;
 
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {

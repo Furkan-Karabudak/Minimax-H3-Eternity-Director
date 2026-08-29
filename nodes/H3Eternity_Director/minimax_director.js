@@ -13361,13 +13361,13 @@ const APPENDED_WIDGET_DEFAULTS = [
 ];
 
 app.registerExtension({
-  name: "MiniMaxH3Director_Eternity",
+  name: "H3Eternity_Director",
   // Declared here so the key also has a home in ComfyUI's own Settings dialog, and so it
   // is stored server-side per user rather than in the workflow (issue #15).
   settings: [
     {
       id: ANALYZE_KEY_SETTING,
-      category: ["MiniMax H3 Director", "Analyze", "API key"],
+      category: ["H3 Eternity - Director", "Analyze", "API key"],
       name: "Analyze API key",
       tooltip: "Bearer token for a cloud OpenAI-compatible endpoint used by the Analyze "
              + "button. Stored in your ComfyUI user settings, never in a workflow. Leave "
@@ -13388,7 +13388,7 @@ app.registerExtension({
     app.queuePrompt = async function (...args) {
       try {
         const nodes = app.graph?._nodes || [];
-        const director = nodes.find(n => n && (n.comfyClass === "MiniMaxH3Director_Eternity" || n.type === "MiniMaxH3Director_Eternity"));
+        const director = nodes.find(n => n && (n.comfyClass === "H3Eternity_Director" || n.type === "H3Eternity_Director" || n.comfyClass === "MiniMaxH3Director_Eternity" || n.type === "MiniMaxH3Director_Eternity"));
         if (director) {
           // Read provider settings from the node's saved timeline_data widget.
           let provider = "ollama", baseUrl = "", model = "";
@@ -13416,7 +13416,7 @@ app.registerExtension({
     };
   },
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
-    if (nodeData.name === "MiniMaxH3Director_Eternity") {
+    if (nodeData.name === "H3Eternity_Director" || nodeData.name === "MiniMaxH3Director_Eternity") {
 
       const onNodeCreated = nodeType.prototype.onNodeCreated;
       nodeType.prototype.onNodeCreated = function () {

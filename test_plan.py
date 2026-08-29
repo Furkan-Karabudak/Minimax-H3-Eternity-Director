@@ -17,8 +17,10 @@ import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-spec = importlib.util.spec_from_file_location("minimax_plan",
-                                              os.path.join(HERE, "minimax_plan.py"))
+plan_path = os.path.join(HERE, "nodes", "H3Eternity_Director", "minimax_plan.py")
+if not os.path.exists(plan_path):
+    plan_path = os.path.join(HERE, "minimax_plan.py")
+spec = importlib.util.spec_from_file_location("minimax_plan", plan_path)
 plan = importlib.util.module_from_spec(spec)
 sys.modules["minimax_plan"] = plan
 spec.loader.exec_module(plan)

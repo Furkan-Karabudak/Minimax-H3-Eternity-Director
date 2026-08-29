@@ -17,7 +17,10 @@ import torch.nn.functional as F
 
 from comfy_api.latest import io
 
-from . import minimax_media as media
+try:
+    from ..H3Eternity_Director import minimax_media as media
+except Exception:
+    from nodes.H3Eternity_Director import minimax_media as media
 
 log = logging.getLogger(__name__)
 
@@ -86,8 +89,8 @@ class MiniMaxH3RetakeStitch(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="MiniMaxH3RetakeStitch_Eternity",
-            display_name="MiniMax H3 Retake Stitch - Eternity Edition",
+            node_id="H3Eternity_RetakeStitch",
+            display_name="H3 Eternity - Retake Stitch",
             category="MiniMax H3",
             description=(
                 "Splices a Retake Mode result back into its base video: base head + the "
@@ -195,5 +198,5 @@ class MiniMaxH3RetakeStitch(io.ComfyNode):
                              MODEL_FPS)
 
 
-NODE_CLASS_MAPPINGS = {"MiniMaxH3RetakeStitch_Eternity": MiniMaxH3RetakeStitch}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3RetakeStitch_Eternity": "MiniMax H3 Retake Stitch - Eternity Edition"}
+NODE_CLASS_MAPPINGS = {"H3Eternity_RetakeStitch": MiniMaxH3RetakeStitch}
+NODE_DISPLAY_NAME_MAPPINGS = {"H3Eternity_RetakeStitch": "H3 Eternity - Retake Stitch"}

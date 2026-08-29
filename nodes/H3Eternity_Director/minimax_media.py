@@ -211,11 +211,15 @@ async def minimax_view_video(request):
     # Check if FFmpeg is available
     ffmpeg_bin = None
     try:
-        from .minimax_save_video import get_ffmpeg_path
+        from ..H3Eternity_SaveVideo.minimax_save_video import get_ffmpeg_path
         ffmpeg_bin = get_ffmpeg_path()
     except Exception:
-        import shutil
-        ffmpeg_bin = shutil.which("ffmpeg")
+        try:
+            from nodes.H3Eternity_SaveVideo.minimax_save_video import get_ffmpeg_path
+            ffmpeg_bin = get_ffmpeg_path()
+        except Exception:
+            import shutil
+            ffmpeg_bin = shutil.which("ffmpeg")
 
     if not ffmpeg_bin:
         return web.FileResponse(path=file_path)

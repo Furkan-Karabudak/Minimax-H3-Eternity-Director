@@ -700,8 +700,8 @@ class MiniMaxH3Director(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="MiniMaxH3Director_Eternity",
-            display_name="MiniMax H3 Director - Eternity Edition",
+            node_id="H3Eternity_Director",
+            display_name="H3 Eternity - Director",
             category="MiniMax H3",
             description=(
                 "Visual timeline for MiniMax H3. Segments become a storyboard prompt with "
@@ -1810,5 +1810,5 @@ class MiniMaxH3Director(io.ComfyNode):
             out_images, {"waveform": out_audio.unsqueeze(0), "sample_rate": AUDIO_SR})
 
 
-NODE_CLASS_MAPPINGS = {"MiniMaxH3Director_Eternity": MiniMaxH3Director}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3Director_Eternity": "MiniMax H3 Director - Eternity Edition"}
+NODE_CLASS_MAPPINGS = {"H3Eternity_Director": MiniMaxH3Director}
+NODE_DISPLAY_NAME_MAPPINGS = {"H3Eternity_Director": "H3 Eternity - Director"}

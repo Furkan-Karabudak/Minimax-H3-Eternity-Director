@@ -170,9 +170,9 @@ class MiniMaxH3ReferenceToVideo_test(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="MiniMaxH3ReferenceToVideo_test",
+            node_id="H3Eternity_Ref2VA",
             description="<Picture i> / <Video k> / <Audio j> reference conditioning with direct Latent & Pixel inputs for MiniMax H3.",
-            display_name="MiniMax H3 Reference to Video test - Eternity Edition",
+            display_name="H3 Eternity - Ref2VA",
             category="model/conditioning/minimax",
             inputs=[
                 io.Clip.Input("clip"),
@@ -396,5 +396,5 @@ class MiniMaxH3ReferenceToVideo_test(io.ComfyNode):
         return io.NodeOutput(cond, latent)
 
 
-NODE_CLASS_MAPPINGS = {"MiniMaxH3ReferenceToVideo_test": MiniMaxH3ReferenceToVideo_test}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3ReferenceToVideo_test": "H3 Eternity [TEST] - Ref2VA Latent"}
+NODE_CLASS_MAPPINGS = {"H3Eternity_Ref2VA": MiniMaxH3ReferenceToVideo_test}
+NODE_DISPLAY_NAME_MAPPINGS = {"H3Eternity_Ref2VA": "H3 Eternity - Ref2VA"}

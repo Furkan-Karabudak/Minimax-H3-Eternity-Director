@@ -30,8 +30,8 @@ class MiniMaxH3SaveLastFrame(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="MiniMaxH3SaveLastFrame_Eternity",
-            display_name="MiniMax H3 Save Last Frame - Eternity Edition",
+            node_id="H3Eternity_SaveLastFrame",
+            display_name="H3 Eternity - Save Last Frame",
             category="MiniMax H3",
             description=(
                 "Saves the LAST frame of an image batch as a PNG, whatever the length, and "
@@ -86,5 +86,5 @@ class MiniMaxH3SaveLastFrame(io.ComfyNode):
         return io.NodeOutput(images, ui=saved)
 
 
-NODE_CLASS_MAPPINGS = {"MiniMaxH3SaveLastFrame_Eternity": MiniMaxH3SaveLastFrame}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3SaveLastFrame_Eternity": "MiniMax H3 Save Last Frame - Eternity Edition"}
+NODE_CLASS_MAPPINGS = {"H3Eternity_SaveLastFrame": MiniMaxH3SaveLastFrame}
+NODE_DISPLAY_NAME_MAPPINGS = {"H3Eternity_SaveLastFrame": "H3 Eternity - Save Last Frame"}

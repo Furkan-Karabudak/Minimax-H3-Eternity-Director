@@ -863,9 +863,9 @@ class H3_Eternity_Save_Video:
 
 
 NODE_CLASS_MAPPINGS = {
-    "H3_Eternity_Save_Video": H3_Eternity_Save_Video,
+    "H3Eternity_SaveVideo": H3_Eternity_Save_Video,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "H3_Eternity_Save_Video": "H3 Eternity - Save Video",
+    "H3Eternity_SaveVideo": "H3 Eternity - Save Video",
 }

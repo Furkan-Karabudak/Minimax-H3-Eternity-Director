@@ -27,8 +27,12 @@ import comfy.model_management
 import comfy.ldm.minimax.model as h3m
 from comfy_api.latest import io
 
-from .minimax_core import core, samplers
-from .minimax_director import _unpack
+try:
+    from ..H3Eternity_Director.minimax_core import core, samplers
+    from ..H3Eternity_Director.minimax_director import _unpack
+except Exception:
+    from nodes.H3Eternity_Director.minimax_core import core, samplers
+    from nodes.H3Eternity_Director.minimax_director import _unpack
 
 log = logging.getLogger(__name__)
 
@@ -80,8 +84,8 @@ class MiniMaxH3SeamlessSampler(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="MiniMaxH3SeamlessSampler_Eternity",
-            display_name="MiniMax H3 Seamless Sampler (experimental) - Eternity Edition",
+            node_id="H3Eternity_SeamlessSampler",
+            display_name="H3 Eternity - Seamless Sampler [experimental]",
             category="MiniMax H3",
             description="Temporal MultiDiffusion co-denoising for H3 — seamless long-form video+audio. "
                         "Wire a ReferenceToVideo/ImageToVideo (cond + AV latent) for the whole clip. v0.",
@@ -217,5 +221,5 @@ class MiniMaxH3SeamlessSampler(io.ComfyNode):
         return io.NodeOutput(sampled)
 
 
-NODE_CLASS_MAPPINGS = {"MiniMaxH3SeamlessSampler_Eternity": MiniMaxH3SeamlessSampler}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3SeamlessSampler_Eternity": "MiniMax H3 Seamless Sampler (experimental) - Eternity Edition"}
+NODE_CLASS_MAPPINGS = {"H3Eternity_SeamlessSampler": MiniMaxH3SeamlessSampler}
+NODE_DISPLAY_NAME_MAPPINGS = {"H3Eternity_SeamlessSampler": "H3 Eternity - Seamless Sampler [experimental]"}

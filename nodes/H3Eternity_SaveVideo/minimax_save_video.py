@@ -85,6 +85,8 @@ VIDEO_FORMATS = [
     "image_sequence/8bit-png",
     "image_sequence/16bit-png",
     # Videos
+    "video/ffv1-mkv",
+    "video/ProRes",
     "video/h264-mp4",
     "video/h265-mp4",
     "video/nvenc_av1-mp4",
@@ -92,8 +94,6 @@ VIDEO_FORMATS = [
     "video/nvenc_hevc-mp4",
     "video/av1-webm",
     "video/webm",
-    "video/ffv1-mkv",
-    "video/ProRes",
 ]
 
 AUDIO_FORMAT_MAP = {

@@ -42,6 +42,12 @@ from comfy_api.latest import io
 from . import minimax_media as media
 from . import minimax_plan as plan
 from .minimax_core import audio_nodes, core, samplers
+from .render_plan import (
+    RENDER_PLAN_TYPE,
+    create_render_plan,
+    deserialize_render_plan,
+    compile_iterations_from_cuts,
+)
 
 AUDIO_SR = media.AUDIO_SR
 
@@ -712,9 +718,8 @@ class MiniMaxH3Director(io.ComfyNode):
                 "surrounding frames."
             ),
             inputs=[
-                # lazy: only the checkpoint the toolbar actually calls for gets loaded.
-                # See check_lazy_status below — without it ComfyUI resolves both inputs
-                # before the node runs and reads ~42 GB of weights to use half of them.
+                io.Custom(RENDER_PLAN_TYPE).Input("render_plan", optional=True,
+                                tooltip="Active render_plan from H3 Eternity - Start or previous node."),
                 io.Model.Input("model", display_name="model (t2v/i2v)", optional=True, lazy=True,
                                tooltip="The fl2va weights (minimax_h3_fl2va_*), used when the "
                                        "toolbar is on 'Refs OFF'. Connect both models and the "
@@ -724,14 +729,35 @@ class MiniMaxH3Director(io.ComfyNode):
                                tooltip="The ref2va weights (minimax_h3_ref2va_*), used when the "
                                        "toolbar is on 'Refs ON'. Optional — with only one model "
                                        "connected that one is used either way."),
-                io.Clip.Input("clip", tooltip="Qwen3-VL-32B MiniMax text encoder (CLIPLoader type 'minimax')."),
-                io.Vae.Input("vae", tooltip="minimax_h3_video_vae — encodes keyframes and references."),
+                io.Clip.Input("clip", optional=True, tooltip="Qwen3-VL-32B MiniMax text encoder (CLIPLoader type 'minimax')."),
+                io.Vae.Input("vae", optional=True, tooltip="minimax_h3_video_vae — encodes keyframes and references."),
                 io.Vae.Input("audio_vae", optional=True,
                              tooltip="minimax_h3_audio_vae. Only needed when audio references are used (ref2va)."),
                 io.String.Input(
                     "global_prompt", multiline=True, default="", force_input=True, optional=True,
                     tooltip="Conditions the whole video: style, scene, characters. Written above the storyboard.",
                 ),
+                io.Image.Input("ref_images", optional=True,
+                               tooltip="Extra <Picture i> references (single image or batch), appended after the "
+                                       "character slots. ref2va only."),
+                io.Float.Input("start", force_input=True, optional=True, default=0.0,
+                               tooltip="Automation (connection-only). Window start in SECONDS."),
+                io.Float.Input("end", force_input=True, optional=True, default=0.0,
+                               tooltip="Automation (connection-only). Window end in SECONDS."),
+                io.Float.Input("duration", force_input=True, optional=True, default=0.0,
+                               tooltip="Automation (connection-only). Render length in SECONDS."),
+                io.Int.Input("width", force_input=True, optional=True, default=0,
+                             tooltip="Automation (connection-only). Output width in pixels, "
+                                     "overriding the settings panel's Width. Wire a resolution "
+                                     "node here; leave it unconnected to use the panel."),
+                io.Int.Input("height", force_input=True, optional=True, default=0,
+                             tooltip="Automation (connection-only). Output height. See width."),
+                io.String.Input("ref_image_notes", multiline=True, default="", optional=True,
+                                tooltip="One line per image on 'ref_images', describing what it "
+                                        "is: 'the kitchen set', 'a storyboard reference for the "
+                                        "opening'. Without a line the picture is still numbered "
+                                        "but the prompt says nothing about it. Blank lines count, "
+                                        "so line 3 always belongs to the third image."),
                 io.Float.Input("start_second", default=0.0, min=0.0, max=1000.0, step=0.01,
                                tooltip="Start of the render window, in seconds."),
                 io.Float.Input("end_second", default=5.0, min=0.0, max=1000.0, step=0.01,
@@ -739,7 +765,7 @@ class MiniMaxH3Director(io.ComfyNode):
                 io.Float.Input("duration_seconds", default=5.0, min=0.1, max=1000.0, step=0.01,
                                tooltip="Render length in seconds. Snapped up to H3's 17k+5 frame grid at 24 fps."),
                 io.Int.Input("start_frame", default=0, min=0, max=10000, step=1,
-                             tooltip="Start of the render window, in timeline frames."),
+                              tooltip="Start of the render window, in timeline frames."),
                 io.Int.Input("end_frame", default=120, min=1, max=10000, step=1,
                              tooltip="End of the render window, in timeline frames."),
                 io.Int.Input("duration_frames", default=120, min=1, max=10000, step=1,
@@ -785,80 +811,15 @@ class MiniMaxH3Director(io.ComfyNode):
                                tooltip="Video flow sigma shift (H3 default 12.0)."),
                 io.Float.Input("shift_audio", default=3.0, min=0.01, max=100.0, step=0.01, optional=True,
                                tooltip="Audio flow sigma shift (H3 default 3.0)."),
-                io.Image.Input("ref_images", optional=True,
-                               tooltip="Extra <Picture i> references (single image or batch), appended after the "
-                                       "character slots. ref2va only."),
-                io.String.Input("ref_image_notes", multiline=True, default="", optional=True,
-                                tooltip="One line per image on 'ref_images', describing what it "
-                                        "is: 'the kitchen set', 'a storyboard reference for the "
-                                        "opening'. Without a line the picture is still numbered "
-                                        "but the prompt says nothing about it. Blank lines count, "
-                                        "so line 3 always belongs to the third image."),
-                # --- long-form chaining (fork addition) ---------------------------------
-                # Wire the sampler + sigmas here and the Director samples the whole timeline
-                # internally as a chain of windows, each opening on the previous window's last
-                # frame — impossible in a static graph because window N+1's anchor is a tensor
-                # that only exists after window N is decoded. Leave both unwired for the normal
-                # single-window behaviour (returns a latent for an external SamplerCustomAdvanced).
-                io.Sampler.Input("sampler", optional=True,
-                                 tooltip="Long-form chaining: wire a sampler (with sigmas) to render "
-                                         "the whole timeline as chained windows. Unwired = normal mode."),
-                io.Sigmas.Input("sigmas", optional=True,
-                                tooltip="Long-form chaining: the sigma schedule for the internal sampler. "
-                                        "Required together with 'sampler'."),
-                io.Int.Input("noise_seed", default=0, min=0, max=0xffffffffffffffff, optional=True,
-                             tooltip="Long-form chaining: base seed. Each window uses noise_seed+index."),
-                io.Float.Input("window_seconds", default=5.0, min=4.0, max=15.0, step=0.5, optional=True,
-                               tooltip="Long-form chaining: target length of each window in seconds. The "
-                                       "render is split into evenly-sized windows around this (H3's 4-15s "
-                                       "trained range). Below 4 is floored to 5."),
-                io.Boolean.Input("tiled_vae_decode", default=False, optional=True,
-                                 tooltip="Long-form chaining: decode each window in VAE tiles. Slower but "
-                                         "bounds decode VRAM on long windows / small cards. Off is fine once "
-                                         "the DiT is freed (two-phase decode)."),
-                io.Combo.Input("seam_audio", options=["aligned", "crossfade", "hard cut"],
-                               default="aligned", optional=True,
-                               tooltip="Long-form chaining, GENERATED audio only (ignored when you mux your own "
-                                       "track via combined_audio). How to join each window's audio at a seam: "
-                                       "'aligned' phase-matches the waveform before a short cross-fade — best "
-                                       "when the audio reproduces a continuous track (an <Audio> reference), "
-                                       "which is where a plain blend stutters; 'crossfade' is a fixed ~12ms "
-                                       "equal-power blend (good for coherent-but-not-identical audio); 'hard cut' "
-                                       "is a plain splice — cleanest for purely generated audio, where each "
-                                       "window is an independent take and any blend smears two unrelated textures."),
-                io.Combo.Input("long_form_mode", options=["chained", "seamless"], default="chained",
-                               optional=True,
-                               tooltip="How to render past H3's ~15s ceiling (needs sampler+sigmas). 'chained': "
-                                       "render each window separately and stitch (fast, small audio seam). "
-                                       "'seamless' (EXPERIMENTAL): hold the whole clip as one latent and "
-                                       "co-denoise overlapping windows — genuinely seamless video+audio, ~2x "
-                                       "slower, each window still conditioned on its own time-slice."),
-                io.Float.Input("overlap_seconds", default=2.0, min=0.2, max=8.0, step=0.1, optional=True,
-                               tooltip="Seamless mode only: overlap between co-denoised windows. More overlap = "
-                                       "stronger VIDEO consensus (smoother), more compute — but ALSO more AUDIO "
-                                       "poisoning (each window denoises its audio while seeing the neighbour's "
-                                       "discontinuous audio across the shared zone), so less overlap = cleaner "
-                                       "audio. Snaps to H3's latent grid: ~0.2s = 2 latent frames (the floor), "
-                                       "~0.5s = 7, ~1.0s = 12, ~2.0s = 17. Nothing lands between 2 and 7."),
-                io.Float.Input("start", force_input=True, optional=True, default=0.0,
-                               tooltip="Automation (connection-only). Window start in SECONDS."),
-                io.Float.Input("end", force_input=True, optional=True, default=0.0,
-                               tooltip="Automation (connection-only). Window end in SECONDS."),
-                io.Float.Input("duration", force_input=True, optional=True, default=0.0,
-                               tooltip="Automation (connection-only). Render length in SECONDS."),
-                io.Int.Input("width", force_input=True, optional=True, default=0,
-                             tooltip="Automation (connection-only). Output width in pixels, "
-                                     "overriding the settings panel's Width. Wire a resolution "
-                                     "node here; leave it unconnected to use the panel."),
-                io.Int.Input("height", force_input=True, optional=True, default=0,
-                             tooltip="Automation (connection-only). Output height. See width."),
             ],
             outputs=[
+                io.Custom(RENDER_PLAN_TYPE).Output(display_name="render_plan",
+                                                   tooltip="Active render_plan carrying timeline cuts, iteration definitions, and metadata."),
                 io.Model.Output(display_name="model"),
                 io.Conditioning.Output(display_name="positive"),
-                io.Latent.Output(display_name="latent", tooltip="Joint video+audio latent. Wire to SamplerCustomAdvanced."),
+                io.Latent.Output(display_name="latent", tooltip="Joint video+audio latent. Wire to SamplerCustomAdvanced or H3 Eternity - Sampler."),
                 io.Audio.Output(display_name="combined_audio",
-                                tooltip="Timeline audio mixdown. Wire into CreateVideo to replace the generated audio."),
+                                tooltip="Timeline audio mixdown. Wire into CreateVideo / H3 Eternity - Finalize to replace the generated audio."),
                 io.Float.Output(display_name="fps", tooltip="Always 24.0 — H3's native output rate. Wire into CreateVideo."),
                 io.Int.Output(display_name="width"),
                 io.Int.Output(display_name="height"),
@@ -867,12 +828,6 @@ class MiniMaxH3Director(io.ComfyNode):
                 io.String.Output(display_name="retake_info",
                                  tooltip="JSON describing the retake window. Wire into MiniMax H3 Retake Stitch "
                                          "to splice the result back into the base video. Empty when retake is off."),
-                io.Image.Output(display_name="images",
-                                tooltip="Long-form chaining only: the decoded frames of the whole chained "
-                                        "render. Empty in normal mode (decode the latent output instead)."),
-                io.Audio.Output(display_name="audio",
-                                tooltip="Long-form chaining only: the generated (declicked) audio of the whole "
-                                        "chained render. Empty in normal mode."),
             ],
         )
 
@@ -914,11 +869,12 @@ class MiniMaxH3Director(io.ComfyNode):
                 use_custom_audio=False, inpaint_audio=True, use_custom_motion=True,
                 override_audio=False, ref_image_size="match",
                 shift_video=12.0, shift_audio=3.0, ref_images=None, ref_image_notes="",
+                render_plan=None,
                 sampler=None, sigmas=None, noise_seed=0, window_seconds=5.0,
                 tiled_vae_decode=False, seam_audio="aligned",
                 long_form_mode="chained", overlap_seconds=2.0,
                 start=None, end=None, duration=None,
-                width=None, height=None) -> io.NodeOutput:
+                width=None, height=None, **kwargs) -> io.NodeOutput:
 
         mm = core()
         tdata = plan.parse_timeline(timeline_data)
@@ -1166,9 +1122,35 @@ class MiniMaxH3Director(io.ComfyNode):
                 "width": int(width), "height": int(height),
             })
 
-        return io.NodeOutput(patched_model, conditioning, latent, audio_out,
+        # --- Synchronize or Initialize render_plan ---
+        cuts_data = tdata.get("cuts", []) if isinstance(tdata, dict) else []
+        total_timeline_frames = int(tdata.get("normalDurationFrames", duration_frames)) if isinstance(tdata, dict) else int(duration_frames)
+        if render_plan is None:
+            rplan = create_render_plan(
+                node_id="director",
+                width=int(width),
+                height=int(height),
+                fps=fps,
+                total_frames=total_timeline_frames,
+                cuts=cuts_data,
+            )
+        else:
+            rplan = deserialize_render_plan(render_plan)
+            rplan["width"] = int(width)
+            rplan["height"] = int(height)
+            rplan["fps"] = fps
+            rplan["total_frames"] = total_timeline_frames
+            rplan["cuts"] = cuts_data
+            rplan["iterations"] = compile_iterations_from_cuts(
+                total_frames=total_timeline_frames,
+                cuts=cuts_data,
+                fps=fps,
+            )
+            rplan["total_iterations"] = len(rplan["iterations"])
+
+        return io.NodeOutput(rplan, patched_model, conditioning, latent, audio_out,
                              MODEL_FPS, int(width), int(height), int(length), prompt,
-                             retake_info, None, None)
+                             retake_info)
 
     # ------------------------------------------------------ long-form chaining
 

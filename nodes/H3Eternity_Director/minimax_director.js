@@ -196,6 +196,108 @@ const STYLES = `
     border-color: #cc4444;
     color: #ffaaaa;
   }
+  .mmxd-toolbar .mmxd-btn.mmxd-btn-soft-cut {
+    border: 1px solid #3b82f6 !important;
+    color: #60a5fa !important;
+    background: rgba(59, 130, 246, 0.12) !important;
+  }
+  .mmxd-toolbar .mmxd-btn.mmxd-btn-soft-cut svg {
+    stroke: #60a5fa !important;
+    color: #60a5fa !important;
+  }
+  .mmxd-toolbar .mmxd-btn.mmxd-btn-soft-cut:hover:not(:disabled) {
+    background: rgba(59, 130, 246, 0.28) !important;
+    border-color: #93c5fd !important;
+    color: #ffffff !important;
+  }
+  .mmxd-toolbar .mmxd-btn.mmxd-btn-soft-cut:hover:not(:disabled) svg {
+    stroke: #ffffff !important;
+    color: #ffffff !important;
+  }
+  .mmxd-toolbar .mmxd-btn.mmxd-btn-hard-cut {
+    border: 1px solid #a855f7 !important;
+    color: #c084fc !important;
+    background: rgba(168, 85, 247, 0.12) !important;
+  }
+  .mmxd-toolbar .mmxd-btn.mmxd-btn-hard-cut svg {
+    stroke: #c084fc !important;
+    color: #c084fc !important;
+  }
+  .mmxd-toolbar .mmxd-btn.mmxd-btn-hard-cut:hover:not(:disabled) {
+    background: rgba(168, 85, 247, 0.28) !important;
+    border-color: #d8b4fe !important;
+    color: #ffffff !important;
+  }
+  .mmxd-toolbar .mmxd-btn.mmxd-btn-hard-cut:hover:not(:disabled) svg {
+    stroke: #ffffff !important;
+    color: #ffffff !important;
+  }
+  .mmxd-general-properties-panel {
+    width: 100% !important;
+    background: #1e1e1e !important;
+    border: 1px solid #3a3a3a !important;
+    border-radius: 8px !important;
+    padding: 8px 12px !important;
+    margin-bottom: 6px !important;
+    box-sizing: border-box !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 6px !important;
+    min-height: 62px !important;
+    height: 62px !important;
+    transition: all 0.2s ease;
+  }
+  .mmxd-general-properties-panel-header {
+    font-size: 9px !important;
+    font-weight: 700 !important;
+    color: #7a7a7a !important;
+    letter-spacing: 0.6px !important;
+    text-transform: uppercase !important;
+    margin-bottom: 2px !important;
+    user-select: none !important;
+  }
+  .mmxd-cut-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .mmxd-cut-badge.soft {
+    background: rgba(37, 99, 235, 0.2);
+    border: 1px solid #3b82f6;
+    color: #93c5fd;
+  }
+  .mmxd-cut-badge.hard {
+    background: rgba(147, 51, 234, 0.2);
+    border: 1px solid #a855f7;
+    color: #d8b4fe;
+  }
+  .mmxd-cut-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 11px;
+    color: #ccc;
+    width: 100%;
+    min-height: 24px;
+  }
+  .mmxd-cut-input {
+    background: #2b2b2b;
+    border: 1px solid #484848;
+    border-radius: 4px;
+    color: #eaeaea;
+    padding: 3px 6px;
+    font-size: 11px;
+    outline: none;
+    box-sizing: border-box;
+  }
+  .mmxd-cut-input:focus {
+    border-color: #3b82f6;
+  }
   .mmxd-canvas {
     background: #2a2a2a;
     cursor: pointer;
@@ -1026,12 +1128,70 @@ const ICONS = {
   fit: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><polyline points="8 7 3 12 8 17"></polyline><polyline points="16 7 21 12 16 17"></polyline></svg>`,
   gear: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>`,
   close: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`,
+  cut: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><line x1="20" y1="4" x2="8.12" y2="15.88"></line><line x1="14.47" y1="14.48" x2="20" y2="20"></line><line x1="8.12" y1="8.12" x2="12" y2="12"></line></svg>`,
+  infinity: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.178 8c5.096 0 5.096 8 0 8-2.68 0-4.632-2.316-6.178-4-1.546-1.684-3.5-4-6.178-4-5.096 0-5.096 8 0 8 2.68 0 4.632-2.316 6.178-4 1.546-1.684 3.5-4 6.178-4z"/></svg>`,
   start: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 3H13.5a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1" /></svg>`,
   end: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1" /></svg>`,
   mark: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 3H7.5a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1" /><path d="M15.5 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1" /></svg>`,
   help: `<svg width="14" height="14" viewBox="-5 -5 38 38" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M10.398,22.811h4.618v4.964h-4.618V22.811z M21.058,1.594C19.854,0.532,17.612,0,14.33,0c-3.711,0-6.205,0.514-7.482,1.543 c-1.277,1.027-1.916,3.027-1.916,6L4.911,8.551h4.577l-0.02-1.049c0-1.424,0.303-2.377,0.907-2.854 c0.604-0.477,1.814-0.717,3.632-0.717c1.936,0,3.184,0.228,3.74,0.676c0.559,0.451,0.837,1.457,0.837,3.017 c0,1.883-0.745,3.133-2.237,3.752l-1.797,0.766c-1.882,0.781-3.044,1.538-3.489,2.27c-0.442,0.732-0.665,2.242-0.665,4.529h4.68 v-0.646c0-1.41,0.987-2.533,2.965-3.365c2.03-0.861,3.343-1.746,3.935-2.651c0.592-0.908,0.888-2.498,0.888-4.771 C22.863,4.625,22.261,2.655,21.058,1.594z"/></svg>`,
   magnet: `<svg width="15" height="15" viewBox="-30 -55 580 580" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path stroke="currentColor" stroke-width="15" stroke-linejoin="round" stroke-linecap="round" d="M502.915,274.353l-64.2-64.2c-5.5-5.5-14.4-5.5-19.9,0l-155.1,155c-45.4,45.4-99.2,20.4-119.6,0 c-20.3-20.3-45.8-73.8,0-119.6l155.1-155c5.5-5.5,5.5-14.4,0-19.9l-64.2-64.2c-2.6-2.6-9.9-9.9-19.9,0l-155.1,155 c-101.4,116.1-55.4,232.4,0,287.9c49.4,49.4,171.9,99.3,287.8,0l155.1-155.1C512.915,284.253,505.615,276.953,502.915,274.353z M225.115,36.253l44.3,44.3l-26,26l-44.3-44.3L225.115,36.253z M328.015,429.453c-61.3,61.3-175.2,72.8-248,0 c-72.9-72.9-64.9-183.1,0-248l99.2-99.2l44.3,44.3l-99.2,99.2c-47.5,47.5-45.1,114.2,0,159.4c44.8,44.8,114.4,45,159.4,0 l99.2-99.2l44.3,44.3L328.015,429.453z M447.115,310.253l-44.3-44.3l26-26l44.3,44.3L447.115,310.253z"/></svg>`
 };
+
+// --- H3 Frame Lattice Helper (17k + 5) & Collision Prevention ---
+function getNearestH3LatticeFrame(targetFrame, maxFrames = Infinity) {
+  let k = Math.round((targetFrame - 5) / 17);
+  if (k < 1) k = 1;
+  let f = 17 * k + 5;
+  if (f >= maxFrames) {
+    k = Math.max(1, Math.floor((maxFrames - 6) / 17));
+    f = 17 * k + 5;
+  }
+  return f;
+}
+
+function getValidCutFrame(rawTargetFrame, cutId, cuts, overlapFrames, totalFrames) {
+  const oFrames = overlapFrames || 22;
+  const otherCuts = (cuts || []).filter(c => c.id !== cutId).sort((a, b) => a.frame_index - b.frame_index);
+
+  let minF = oFrames;
+  let maxF = totalFrames - 1;
+
+  for (const other of otherCuts) {
+    const otherOverlap = other.overlap_frames || 22;
+    if (other.frame_index < rawTargetFrame) {
+      minF = Math.max(minF, other.frame_index + oFrames + 1);
+    } else {
+      maxF = Math.min(maxF, other.frame_index - otherOverlap - 1);
+      break;
+    }
+  }
+
+  if (minF > maxF) {
+    return null; // Collision cannot be avoided in current interval
+  }
+
+  let k = Math.round((rawTargetFrame - 5) / 17);
+  if (k < 1) k = 1;
+  let snapped = 17 * k + 5;
+
+  if (snapped < minF) {
+    let kMin = Math.ceil((minF - 5) / 17);
+    if (kMin < 1) kMin = 1;
+    snapped = 17 * kMin + 5;
+  }
+  if (snapped > maxF) {
+    let kMax = Math.floor((maxF - 5) / 17);
+    if (kMax >= 1) {
+      snapped = 17 * kMax + 5;
+    }
+  }
+
+  if (snapped < minF || snapped > maxF) {
+    snapped = Math.max(minF, Math.min(maxF, snapped));
+  }
+
+  return snapped;
+}
 
 // --- Data Models ---
 function parseInitial(jsonStr) {
@@ -1064,7 +1224,8 @@ function parseInitial(jsonStr) {
     retakeVideo: null,
     normalStartFrame: 0,
     normalDurationFrames: 120,
-    reference_mode: "OFF",
+    reference_mode: "REF2VA",
+    cuts: [],
     prompt_format: "minimax",
     analyzeProvider: "ollama",
     analyzeBaseUrl: "",
@@ -1101,9 +1262,10 @@ function parseInitial(jsonStr) {
       if (p.normalDurationFrames !== undefined) parsed.normalDurationFrames = p.normalDurationFrames;
       if (p.prompt_format !== undefined) parsed.prompt_format = (String(p.prompt_format).toLowerCase() === "comfyui") ? "comfyui" : "minimax";
       if (p.reference_mode !== undefined) {
-        // Normalise: only OFF / REF2VA exist here. Anything else (incl. legacy LTX
-        // "Ghost Mask (End)" / "Licon MSR (Prefix)") is a reference mode -> REF2VA.
-        parsed.reference_mode = (p.reference_mode === "OFF" || !p.reference_mode) ? "OFF" : "REF2VA";
+        parsed.reference_mode = p.reference_mode === "OFF" ? "OFF" : "REF2VA";
+      }
+      if (p.cuts !== undefined && Array.isArray(p.cuts)) {
+        parsed.cuts = p.cuts;
       }
       if (p.analyzeProvider !== undefined) parsed.analyzeProvider = p.analyzeProvider;
       if (p.analyzeBaseUrl !== undefined) parsed.analyzeBaseUrl = p.analyzeBaseUrl;
@@ -1208,9 +1370,10 @@ class TimelineEditor {
     this.canvasHeight = CANVAS_HEIGHT;
 
     // Core data
-    this.timeline = { segments: [], motionSegments: [], audioSegments: [] };
-    this.selectionType = "image"; // "image", "motion", or "audio"
+    this.timeline = { segments: [], motionSegments: [], audioSegments: [], cuts: [] };
+    this.selectionType = "image"; // "image", "motion", "audio", or "cut"
     this.selectedSegmentIds = [];
+    this.selectedCutId = null;
     this._selectedIndex = -1;
     this._audioTrackWasEnabledBeforeOverride = false;
 
@@ -2567,7 +2730,7 @@ class TimelineEditor {
 
       const isCtrl = e.ctrlKey || e.metaKey;
 
-      if ((e.key === "Delete" || e.key === "Backspace") && this.selectedIndex !== -1 && this._isHovering) {
+      if ((e.key === "Delete" || e.key === "Backspace") && (this.selectedIndex !== -1 || (this.selectionType === "cut" && this.selectedCutId)) && this._isHovering) {
         this.deleteSelectedSegment();
         e.stopPropagation();
         e.stopImmediatePropagation();
@@ -2679,6 +2842,226 @@ class TimelineEditor {
     };
     window.addEventListener("paste", this.handlePaste, true);
 
+    // --- General Properties Panel (Full-width box matching top settings panel style) ---
+    const generalPropertiesPanel = document.createElement("div");
+    generalPropertiesPanel.className = "mmxd-general-properties-panel";
+    Object.assign(generalPropertiesPanel.style, {
+      width: "100%",
+      background: "#1e1e1e",
+      border: "1px solid #3a3a3a",
+      borderRadius: "8px",
+      padding: "8px 12px",
+      marginBottom: "6px",
+      boxSizing: "border-box",
+      display: "flex",
+      flexDirection: "column",
+      gap: "6px",
+      minHeight: "62px",
+      height: "62px",
+    });
+    this.generalPropertiesPanel = generalPropertiesPanel;
+
+    const panelHeader = document.createElement("div");
+    panelHeader.className = "mmxd-general-properties-panel-header";
+    panelHeader.textContent = "CUT / ITERATION PROPERTIES";
+    Object.assign(panelHeader.style, {
+      fontSize: "9px",
+      fontWeight: "700",
+      color: "#7a7a7a",
+      letterSpacing: "0.6px",
+      textTransform: "uppercase",
+      marginBottom: "2px",
+      userSelect: "none",
+    });
+    generalPropertiesPanel.appendChild(panelHeader);
+
+    // Placeholder message when no marker is selected
+    this.cutPlaceholder = document.createElement("div");
+    Object.assign(this.cutPlaceholder.style, {
+      fontSize: "11px",
+      color: "#666666",
+      fontStyle: "italic",
+      minHeight: "24px",
+      display: "flex",
+      alignItems: "center",
+      userSelect: "none",
+    });
+    this.cutPlaceholder.textContent = "No cut marker selected \u2014 select a cut marker head on timeline ruler to edit its properties.";
+    generalPropertiesPanel.appendChild(this.cutPlaceholder);
+
+    // --- Cut Marker Inspector Controls inside generalPropertiesPanel ---
+    this.cutInfoArea = document.createElement("div");
+    this.cutInfoArea.className = "mmxd-cut-row";
+    Object.assign(this.cutInfoArea.style, {
+      display: "none",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: "12px",
+      width: "100%",
+      minHeight: "24px",
+    });
+
+    const cutLeft = document.createElement("div");
+    cutLeft.style.display = "flex";
+    cutLeft.style.alignItems = "center";
+    cutLeft.style.gap = "14px";
+    cutLeft.style.flexWrap = "wrap";
+
+    this.cutBadge = document.createElement("div");
+    this.cutBadge.className = "mmxd-cut-badge soft";
+    this.cutBadge.textContent = "Soft Cut";
+    cutLeft.appendChild(this.cutBadge);
+
+    const CUT_TYPES = [
+      { value: "soft", label: "Soft Cut" },
+      { value: "hard", label: "Hard Cut" },
+    ];
+    const cutTypeSelect = createMenuSelect(CUT_TYPES, { width: "110px" });
+    cutTypeSelect.classList.add("mmxd-dropdown");
+    cutTypeSelect.addEventListener("change", (e) => {
+      const cut = (this.timeline.cuts || []).find(c => c.id === this.selectedCutId);
+      if (cut) {
+        cut.type = e.target.value;
+        this.updateCutInspectorValues(cut);
+        this.commitChanges();
+        this.render();
+      }
+    });
+    this.cutTypeSelect = cutTypeSelect;
+    cutLeft.appendChild(cutTypeSelect);
+
+    const sIn = (el, w) => Object.assign(el.style, {
+      background: "#2b2b2b", border: "1px solid #484848", borderRadius: "4px", color: "#eaeaea",
+      padding: "1px 5px", fontSize: "11px", width: (w || "75px"), boxSizing: "border-box",
+      textAlign: "right", outline: "none",
+    });
+
+    // Frame position input
+    const frameWrap = document.createElement("div");
+    frameWrap.style.display = "flex";
+    frameWrap.style.alignItems = "center";
+    frameWrap.style.gap = "6px";
+    const frameLabel = document.createElement("span");
+    frameLabel.textContent = "Cut Frame:";
+    frameLabel.style.color = "#9a9a9a";
+    frameLabel.style.fontSize = "11px";
+    frameWrap.appendChild(frameLabel);
+
+    const cutFrameInput = document.createElement("input");
+    cutFrameInput.type = "number";
+    cutFrameInput.step = "17";
+    cutFrameInput.min = "5";
+    sIn(cutFrameInput, "75px");
+    cutFrameInput.addEventListener("change", (e) => {
+      const cut = (this.timeline.cuts || []).find(c => c.id === this.selectedCutId);
+      if (cut) {
+        const totalFrames = this.getVisualDurationFrames();
+        const fps = this.getFrameRate();
+        const rawF = parseInt(e.target.value, 10) || 5;
+        const validF = getValidCutFrame(rawF, cut.id, this.timeline.cuts, cut.overlap_frames || 22, totalFrames);
+        if (validF !== null) {
+          cut.frame_index = validF;
+          cut.time_seconds = parseFloat((validF / fps).toFixed(3));
+          this.timeline.cuts.sort((a, b) => a.frame_index - b.frame_index);
+          this.updateCutInspectorValues(cut);
+          this.commitChanges();
+          this.render();
+        }
+      }
+    });
+    this.cutFrameInput = cutFrameInput;
+    frameWrap.appendChild(cutFrameInput);
+    cutLeft.appendChild(frameWrap);
+
+    // Time seconds input
+    const timeWrap = document.createElement("div");
+    timeWrap.style.display = "flex";
+    timeWrap.style.alignItems = "center";
+    timeWrap.style.gap = "6px";
+    const timeLabel = document.createElement("span");
+    timeLabel.textContent = "Time (s):";
+    timeLabel.style.color = "#9a9a9a";
+    timeLabel.style.fontSize = "11px";
+    timeWrap.appendChild(timeLabel);
+
+    const cutTimeInput = document.createElement("input");
+    cutTimeInput.type = "number";
+    cutTimeInput.step = "0.01";
+    sIn(cutTimeInput, "75px");
+    cutTimeInput.addEventListener("change", (e) => {
+      const cut = (this.timeline.cuts || []).find(c => c.id === this.selectedCutId);
+      if (cut) {
+        const totalFrames = this.getVisualDurationFrames();
+        const fps = this.getFrameRate();
+        const tVal = Math.max(0.01, parseFloat(e.target.value) || 0.0);
+        const rawF = Math.round(tVal * fps);
+        const validF = getValidCutFrame(rawF, cut.id, this.timeline.cuts, cut.overlap_frames || 22, totalFrames);
+        if (validF !== null) {
+          cut.frame_index = validF;
+          cut.time_seconds = parseFloat((validF / fps).toFixed(3));
+          this.timeline.cuts.sort((a, b) => a.frame_index - b.frame_index);
+          this.updateCutInspectorValues(cut);
+          this.commitChanges();
+          this.render();
+        }
+      }
+    });
+    this.cutTimeInput = cutTimeInput;
+    timeWrap.appendChild(cutTimeInput);
+    cutLeft.appendChild(timeWrap);
+
+    // Overlap selector dropdown
+    const overlapWrap = document.createElement("div");
+    overlapWrap.style.display = "flex";
+    overlapWrap.style.alignItems = "center";
+    overlapWrap.style.gap = "6px";
+    const overlapLabel = document.createElement("span");
+    overlapLabel.textContent = "Overlap Duration:";
+    overlapLabel.style.color = "#9a9a9a";
+    overlapLabel.style.fontSize = "11px";
+    overlapWrap.appendChild(overlapLabel);
+
+    const OVERLAP_OPTIONS = [
+      { value: "1", label: "1 Frame (0.04s)" },
+      { value: "5", label: "5 Frames (0.21s)" },
+      { value: "22", label: "22 Frames (0.92s) [Default]" },
+      { value: "39", label: "39 Frames (1.63s)" },
+    ];
+    const cutOverlapSelect = createMenuSelect(OVERLAP_OPTIONS, { width: "175px" });
+    cutOverlapSelect.classList.add("mmxd-dropdown");
+    cutOverlapSelect.addEventListener("change", (e) => {
+      const cut = (this.timeline.cuts || []).find(c => c.id === this.selectedCutId);
+      if (cut) {
+        const newOverlap = parseInt(e.target.value, 10) || 22;
+        const totalFrames = this.getVisualDurationFrames();
+        const validF = getValidCutFrame(cut.frame_index, cut.id, this.timeline.cuts, newOverlap, totalFrames);
+        if (validF === null) {
+          alert("Cannot set this overlap duration: it would collide with adjacent cut zones.");
+          cutOverlapSelect.value = String(cut.overlap_frames || 22);
+          return;
+        }
+        cut.overlap_frames = newOverlap;
+        cut.frame_index = validF;
+        this.commitChanges();
+        this.render();
+      }
+    });
+    this.cutOverlapSelect = cutOverlapSelect;
+    overlapWrap.appendChild(cutOverlapSelect);
+    cutLeft.appendChild(overlapWrap);
+
+    const deleteCutBtn = document.createElement("button");
+    deleteCutBtn.className = "mmxd-btn mmxd-btn-danger";
+    deleteCutBtn.style.padding = "2px 8px";
+    deleteCutBtn.style.fontSize = "11px";
+    deleteCutBtn.style.height = "22px";
+    deleteCutBtn.innerHTML = `${ICONS.trash} Delete Marker`;
+    deleteCutBtn.addEventListener("click", () => this.deleteSelectedSegment());
+
+    this.cutInfoArea.appendChild(cutLeft);
+    this.cutInfoArea.appendChild(deleteCutBtn);
+    generalPropertiesPanel.appendChild(this.cutInfoArea);
+
     // --- Toolbar ---
     const toolbar = document.createElement("div");
     toolbar.className = "mmxd-toolbar";
@@ -2751,9 +3134,6 @@ class TimelineEditor {
     this.deleteBtn = deleteBtn;
 
     // --- Ref Option dropdown (sits to the right of Delete) ---
-    // MiniMax H3 has two conditioning paths, each with its OWN diffusion weights:
-    //   OFF    -> t2va / fl2va  (minimax_h3_fl2va_*)  : prompt + first/last keyframe
-    //   REF2VA -> ref2va        (minimax_h3_ref2va_*) : <Picture i>/<Video k>/<Audio j> refs
     const REF_OPTIONS = [
       { value: "OFF", label: "Refs OFF (fl2va)" },
       { value: "REF2VA", label: "Refs ON (ref2va)" },
@@ -2761,18 +3141,36 @@ class TimelineEditor {
     const refOptionSelect = createMenuSelect(REF_OPTIONS, { width: "150px" });
     refOptionSelect.classList.add("mmxd-ref-option-select");
     refOptionSelect.title = "MiniMax H3 conditioning path.\nRefs OFF = t2va/fl2va model, keyframes only.\nRefs ON = ref2va model, character/video/audio references.";
-    refOptionSelect.value = this.timeline.reference_mode || "OFF";
+    refOptionSelect.value = this.timeline.reference_mode || "REF2VA";
     refOptionSelect.addEventListener("change", (e) => {
       this.timeline.reference_mode = e.target.value;
       this.commitChanges();
-      // the describes/retained strip only exists in ref2va, so it has to appear and
-      // disappear with the switch rather than waiting for the next selection change —
-      // and the subject panel swaps `retained` for `called` on the same switch
       this.updateUIFromSelection();
       this.updateCharacterSlotsUI();
       this._syncSummaryField();
     });
     this.refOptionSelect = refOptionSelect;
+
+    // --- Soft Cut (Blue) and Hard Cut (Purple) Buttons ---
+    const softCutBtn = document.createElement("button");
+    softCutBtn.className = "mmxd-btn mmxd-btn-soft-cut";
+    softCutBtn.style.border = "1px solid #3b82f6";
+    softCutBtn.style.color = "#60a5fa";
+    softCutBtn.style.background = "rgba(59, 130, 246, 0.12)";
+    softCutBtn.innerHTML = `${ICONS.infinity} Soft Cut`;
+    softCutBtn.title = "Insert Soft Cut at current playhead position\n(Seamless latent & visual continuation with previous iteration)";
+    softCutBtn.addEventListener("click", () => this.addCutMarker("soft"));
+    this.softCutBtn = softCutBtn;
+
+    const hardCutBtn = document.createElement("button");
+    hardCutBtn.className = "mmxd-btn mmxd-btn-hard-cut";
+    hardCutBtn.style.border = "1px solid #a855f7";
+    hardCutBtn.style.color = "#c084fc";
+    hardCutBtn.style.background = "rgba(168, 85, 247, 0.12)";
+    hardCutBtn.innerHTML = `${ICONS.infinity} Hard Cut`;
+    hardCutBtn.title = "Insert Hard Cut at current playhead position\n(Semantic scene change / fresh keyframe continuation)";
+    hardCutBtn.addEventListener("click", () => this.addCutMarker("hard"));
+    this.hardCutBtn = hardCutBtn;
 
     actionGroup.appendChild(this.fileInput);
     actionGroup.appendChild(this.audioFileInput);
@@ -2785,6 +3183,8 @@ class TimelineEditor {
     actionGroup.appendChild(uploadMotionBtn);
     actionGroup.appendChild(deleteBtn);
     actionGroup.appendChild(refOptionSelect);
+    actionGroup.appendChild(softCutBtn);
+    actionGroup.appendChild(hardCutBtn);
 
     // Retake-mode-only delete button (shown next to Add Video when retakeMode is on)
     const deleteRetakeBtn = document.createElement("button");
@@ -4468,6 +4868,7 @@ class TimelineEditor {
     this.viewport.style.minWidth = "0";
     this.layoutContainer.appendChild(this.viewport);
 
+    this.wrapper.appendChild(this.generalPropertiesPanel);
     this.wrapper.appendChild(toolbar);
     this.wrapper.appendChild(this.layoutContainer);
     // fork: zoom controls sit directly beneath the timeline they act on — not down in the
@@ -4492,7 +4893,7 @@ class TimelineEditor {
 
     // Keep the Ref Option dropdown in sync with whatever was loaded.
     if (this.refOptionSelect) {
-      this.refOptionSelect.value = this.timeline.reference_mode || "OFF";
+      this.refOptionSelect.value = this.timeline.reference_mode || "REF2VA";
     }
     // and everything else the switch governs, for a workflow restored on the fl2va path
     this._syncSummaryField();
@@ -5675,6 +6076,16 @@ class TimelineEditor {
   }
 
   deleteSelectedSegment() {
+    if (this.selectionType === "cut" && this.selectedCutId) {
+      this.timeline.cuts = (this.timeline.cuts || []).filter(c => c.id !== this.selectedCutId);
+      this.selectedCutId = null;
+      this.selectionType = "image";
+      this.updateUIFromSelection();
+      this.commitChanges();
+      this.render();
+      return;
+    }
+
     if (this.selectedSegmentIds && this.isMultiSelectActive()) {
       const idsToDelete = new Set(this.selectedSegmentIds);
       for (const id of this.selectedSegmentIds) {
@@ -6250,6 +6661,62 @@ class TimelineEditor {
   }
 
   updateUIFromSelection() {
+    if (this.selectionType === "cut") {
+      const cut = (this.timeline.cuts || []).find(c => c.id === this.selectedCutId);
+      if (cut) {
+        if (this.generalPropertiesPanel) this.generalPropertiesPanel.style.display = "flex";
+        if (this.cutPlaceholder) this.cutPlaceholder.style.display = "none";
+        if (this.cutInfoArea) this.cutInfoArea.style.display = "flex";
+        this.updateCutInspectorValues(cut);
+
+        if (this.promptWrapper) this.promptWrapper.style.display = "block";
+        if (this.segmentPromptLabel) {
+          this.segmentPromptLabel.style.display = "block";
+          this.segmentPromptLabel.textContent = "Segment Prompt";
+        }
+        if (this.promptInput) {
+          this.promptInput.value = "";
+          this.promptInput.placeholder = "No segment selected!";
+          this.promptInput.disabled = true;
+          this.promptInput.style.opacity = "0.4";
+        }
+
+        if (this.strengthRow) this.strengthRow.style.display = "flex";
+        if (this.strengthLabel) {
+          this.strengthLabel.style.display = "inline";
+          this.strengthLabel.textContent = "Guide Strength:";
+        }
+        if (this.strengthValue) {
+          this.strengthValue.style.display = "inline-block";
+          this.strengthValue.value = "1.00";
+          this.strengthValue.disabled = true;
+          this.strengthValue.style.opacity = "0.35";
+        }
+
+        if (this.vidStrLabel) this.vidStrLabel.style.display = "none";
+        if (this.vidStrValue) this.vidStrValue.style.display = "none";
+        if (this.vidAttnLabel) this.vidAttnLabel.style.display = "none";
+        if (this.vidAttnValue) this.vidAttnValue.style.display = "none";
+
+        if (this.motionInfoArea) this.motionInfoArea.style.display = "none";
+        if (this.audioInfoArea) this.audioInfoArea.style.display = "none";
+        if (this.refLimitsRow) this.refLimitsRow.style.display = "none";
+        if (this.refNoteRow) this.refNoteRow.style.display = "none";
+
+        if (this.segmentBoundsDisplay && !this.retakeMode) {
+          this.segmentBoundsDisplay.textContent = "Start: - | End: - | Length: -";
+        }
+
+        this._syncRefLimitsRow(null);
+        this._syncRefNoteRow(null);
+        return;
+      }
+    }
+
+    if (this.cutInfoArea) this.cutInfoArea.style.display = "none";
+    if (this.cutPlaceholder) this.cutPlaceholder.style.display = "flex";
+    if (this.generalPropertiesPanel) this.generalPropertiesPanel.style.display = "flex";
+
     if (this.selectedSegmentIds && this.isMultiSelectActive()) {
       if (this.globalPromptInput) {
         this.globalPromptInput.disabled = true;
@@ -7065,6 +7532,46 @@ class TimelineEditor {
 
       }
     } else {
+      // --- Background: Draw Diagonal Hatched Overlap Zones (Behind Segments) ---
+      const bgCuts = (!this.retakeMode) ? (this.timeline.cuts || []) : [];
+      if (bgCuts.length > 0) {
+        const trackBottom = RULER_HEIGHT + this.blockHeight + this.motionTrackHeight + this.audioTrackHeight;
+        for (const cut of bgCuts) {
+          const cutX = (cut.frame_index / totalFrames) * width;
+          const overlapFrames = cut.overlap_frames || 22;
+          const overlapStartFrame = Math.max(0, cut.frame_index - overlapFrames);
+          const overlapStartX = (overlapStartFrame / totalFrames) * width;
+          const overlapW = cutX - overlapStartX;
+          if (overlapW <= 0) continue;
+
+          const isHard = (cut.type === "hard");
+          const bgCol = isHard ? "rgba(147, 51, 234, 0.04)" : "rgba(37, 99, 235, 0.04)";
+          const stripeCol = isHard ? "rgba(192, 132, 252, 0.10)" : "rgba(96, 165, 250, 0.10)";
+
+          this.ctx.save();
+          this.ctx.beginPath();
+          this.ctx.rect(overlapStartX, RULER_HEIGHT, overlapW, trackBottom - RULER_HEIGHT);
+          this.ctx.clip();
+
+          // Background tint
+          this.ctx.fillStyle = bgCol;
+          this.ctx.fillRect(overlapStartX, RULER_HEIGHT, overlapW, trackBottom - RULER_HEIGHT);
+
+          // 45-degree diagonal stripes (opacity 0.10)
+          this.ctx.strokeStyle = stripeCol;
+          this.ctx.lineWidth = 1.5;
+          this.ctx.beginPath();
+          const step = 10;
+          const totalH = trackBottom - RULER_HEIGHT;
+          for (let x = overlapStartX - totalH; x < cutX + totalH; x += step) {
+            this.ctx.moveTo(x, trackBottom);
+            this.ctx.lineTo(x + totalH, RULER_HEIGHT);
+          }
+          this.ctx.stroke();
+          this.ctx.restore();
+        }
+      }
+
       // --- Draw Image/Text Segments ---
       for (let i = 0; i < sortedSegments.length; i++) {
         const seg = sortedSegments[i];
@@ -7904,33 +8411,100 @@ class TimelineEditor {
         this.ctx.fillRect(cutoffX, 0, width - cutoffX, RULER_HEIGHT);
       }
 
-      // --- Generation seam markers (fork addition) ---
-      // Amber dashed lines where each chained window meets the next (see getWindowBoundaries).
-      // Segment edges snap to the same positions, so a cut/fade dropped here hides the seam.
-      const seams = this.getWindowBoundaries();
-      if (seams.length) {
-        const seamBottom = RULER_HEIGHT + this.blockHeight + this.motionTrackHeight + this.audioTrackHeight;
-        this.ctx.save();
-        this.ctx.strokeStyle = "rgba(255, 179, 71, 0.8)";
-        this.ctx.fillStyle = "rgba(255, 179, 71, 0.95)";
-        this.ctx.lineWidth = 1;
-        for (let i = 0; i < seams.length; i++) {
-          const sx = (seams[i] / totalFrames) * width;
-          if (sx <= 0 || sx >= width) continue;
-          this.ctx.setLineDash([4, 3]);
+      // --- Foreground: Soft / Hard Iteration Cut Lines & Top Marker Heads ---
+      const cuts = this.timeline.cuts || [];
+      if (cuts.length > 0) {
+        const trackBottom = RULER_HEIGHT + this.blockHeight + this.motionTrackHeight + this.audioTrackHeight;
+
+        for (const cut of cuts) {
+          const cutX = (cut.frame_index / totalFrames) * width;
+          const overlapFrames = cut.overlap_frames || 22;
+          const overlapStartFrame = Math.max(0, cut.frame_index - overlapFrames);
+          const overlapStartX = (overlapStartFrame / totalFrames) * width;
+          const isSelected = (this.selectionType === "cut" && this.selectedCutId === cut.id);
+          const isHard = (cut.type === "hard");
+          const lineCol = isHard ? "rgba(168, 85, 247, 1.0)" : "rgba(59, 130, 246, 1.0)";
+          const selectedLineCol = isHard ? "rgba(216, 180, 254, 1.0)" : "rgba(147, 197, 253, 1.0)";
+          const leftBoundaryCol = isHard ? "rgba(168, 85, 247, 0.5)" : "rgba(59, 130, 246, 0.5)";
+
+          // 1. Overlap Left Boundary Vertical Dashed Line (Top of ruler to bottom of tracks, opacity 0.5, never glows)
+          if (cut.frame_index > overlapFrames) {
+            this.ctx.save();
+            this.ctx.beginPath();
+            this.ctx.setLineDash([5, 4]);
+            this.ctx.moveTo(overlapStartX, 0);
+            this.ctx.lineTo(overlapStartX, trackBottom);
+            this.ctx.strokeStyle = leftBoundaryCol;
+            this.ctx.lineWidth = 1.5;
+            this.ctx.stroke();
+            this.ctx.restore();
+          }
+
+          // 2. Cut Marker Vertical Dashed Line (Head down to track bottom, opacity 1.0, glows when selected)
+          this.ctx.save();
           this.ctx.beginPath();
-          this.ctx.moveTo(sx, RULER_HEIGHT);
-          this.ctx.lineTo(sx, seamBottom);
+          this.ctx.setLineDash([5, 4]);
+          this.ctx.moveTo(cutX, 16);
+          this.ctx.lineTo(cutX, trackBottom);
+          this.ctx.strokeStyle = isSelected ? selectedLineCol : lineCol;
+          this.ctx.lineWidth = isSelected ? 2.2 : 1.5;
+          if (isSelected) {
+            this.ctx.shadowColor = lineCol;
+            this.ctx.shadowBlur = 6;
+          }
           this.ctx.stroke();
-          // little downward triangle in the ruler so it reads as a snap handle
-          this.ctx.setLineDash([]);
+          this.ctx.restore();
+
+          // 3. Smooth dragging & White Ghost Line
+          const isDraggingThis = (this._isDragging && this._dragType === "cut_marker" && this._dragTargetCutId === cut.id && this._dragCutMouseX !== undefined);
+          const headX = isDraggingThis ? this._dragCutMouseX : cutX;
+
+          if (isDraggingThis) {
+            this.ctx.save();
+            this.ctx.beginPath();
+            this.ctx.setLineDash([5, 4]);
+            this.ctx.moveTo(headX, 16);
+            this.ctx.lineTo(headX, trackBottom);
+            this.ctx.strokeStyle = "rgba(255, 255, 255, 0.33)";
+            this.ctx.lineWidth = 1.5;
+            this.ctx.stroke();
+            this.ctx.restore();
+          }
+
+          // 4. Draggable Top Marker Head (drawn at headX so it smoothly follows mouse in real-time)
+          const handleW = 9;
+          const handleH = 16;
+
+          this.ctx.save();
           this.ctx.beginPath();
-          this.ctx.moveTo(sx - 4, RULER_HEIGHT);
-          this.ctx.lineTo(sx + 4, RULER_HEIGHT);
-          this.ctx.lineTo(sx, RULER_HEIGHT + 5);
+          this.ctx.moveTo(headX - handleW, 0);
+          this.ctx.lineTo(headX + handleW, 0);
+          this.ctx.lineTo(headX + handleW, handleH - 5);
+          this.ctx.lineTo(headX, handleH); // downward tip
+          this.ctx.lineTo(headX - handleW, handleH - 5);
+          this.ctx.closePath();
+
+          this.ctx.fillStyle = isHard ? "#9333ea" : "#2563eb";
+          if (isSelected) {
+            this.ctx.shadowColor = isHard ? "#c084fc" : "#60a5fa";
+            this.ctx.shadowBlur = 8;
+          }
           this.ctx.fill();
+
+          if (isSelected) {
+            this.ctx.strokeStyle = "#ffffff";
+            this.ctx.lineWidth = 1.5;
+            this.ctx.stroke();
+          }
+
+          // Handle letter badge ('S' for soft, 'H' for hard)
+          this.ctx.fillStyle = "#ffffff";
+          this.ctx.font = "bold 9px sans-serif";
+          this.ctx.textAlign = "center";
+          this.ctx.textBaseline = "middle";
+          this.ctx.fillText(isHard ? "H" : "S", headX, 6);
+          this.ctx.restore();
         }
-        this.ctx.restore();
       }
     }
 
@@ -8093,12 +8667,24 @@ class TimelineEditor {
     const width = this.canvas.offsetWidth;
     const totalFrames = this.getVisualDurationFrames();
 
-    // Check Playhead Handle first
+    // 1. Check Cut Marker Heads at TOP (highest priority, before playhead & ruler)
+    const cuts = this.timeline.cuts || [];
+    for (let i = cuts.length - 1; i >= 0; i--) {
+      const cut = cuts[i];
+      const cutX = (cut.frame_index / totalFrames) * width;
+      // Head at top of ruler (y <= RULER_HEIGHT + 2, |mouseX - cutX| <= 10)
+      if (mouseY <= RULER_HEIGHT + 2 && Math.abs(mouseX - cutX) <= 10) {
+        return { type: "cut_marker", cutId: cut.id, cut: cut };
+      }
+    }
+
+    // 2. Check Playhead Handle
     const playheadX = (this.currentFrame / totalFrames) * width;
     if (mouseY <= 24 && Math.abs(mouseX - playheadX) <= 12) {
       return { type: "playhead" };
     }
 
+    // 3. Check Ruler
     if (mouseY <= RULER_HEIGHT) {
       return { type: "ruler" };
     }
@@ -8382,6 +8968,7 @@ class TimelineEditor {
     if (!hit) {
       if (!isCtrl) {
         this.selectedSegmentIds = [];
+        this.selectedCutId = null;
         this.selectedIndex = -1;
         this.updateUIFromSelection();
       }
@@ -8389,7 +8976,23 @@ class TimelineEditor {
       return;
     }
 
+    if (hit.type === "cut_marker") {
+      this.selectionType = "cut";
+      this.selectedCutId = hit.cutId;
+      this.selectedIndex = -1;
+      this.selectedSegmentIds = [];
+      this._isDragging = true;
+      this._dragType = "cut_marker";
+      this._dragTargetCutId = hit.cutId;
+      this._dragStartX = x;
+      this._dragCutMouseX = x;
+      this.updateUIFromSelection();
+      this.render();
+      return;
+    }
+
     if (hit.type === "playhead" || hit.type === "ruler") {
+      this.selectedCutId = null;
       this._isDragging = true;
       this._dragType = "playhead";
       const logicalWidth = this.canvas.offsetWidth;
@@ -8855,6 +9458,28 @@ class TimelineEditor {
       this.render();
       if (this.isPlaying) {
         this.playAudio(); // Scrub (restart from new position)
+      }
+      return;
+    }
+
+    if (this._dragType === "cut_marker" && this._dragTargetCutId) {
+      this.canvas.style.cursor = "ew-resize";
+      this._dragCutMouseX = mouseX;
+      const cut = (this.timeline.cuts || []).find(c => c.id === this._dragTargetCutId);
+      if (cut) {
+        const logicalWidth = this.canvas.offsetWidth;
+        const totalFrames = this.getVisualDurationFrames();
+        const fps = this.getFrameRate();
+        let rawTargetFrame = Math.round(mouseX * (totalFrames / logicalWidth));
+        let validFrame = getValidCutFrame(rawTargetFrame, cut.id, this.timeline.cuts, cut.overlap_frames || 22, totalFrames);
+        if (validFrame !== null) {
+          cut.frame_index = validFrame;
+          cut.time_seconds = parseFloat((validFrame / fps).toFixed(3));
+          this.timeline.cuts.sort((a, b) => a.frame_index - b.frame_index);
+          this.updateCutInspectorValues(cut);
+          this.commitChanges(true);
+        }
+        this.render();
       }
       return;
     }
@@ -9643,6 +10268,18 @@ class TimelineEditor {
     }
 
     if (this._isDragging) {
+      if (this._dragType === "cut_marker") {
+        this._isDragging = false;
+        this._dragType = null;
+        this._dragTargetCutId = null;
+        this._dragCutMouseX = undefined;
+        this.canvas.style.cursor = "default";
+        this.updateUIFromSelection();
+        this.commitChanges();
+        this.render();
+        return;
+      }
+
       if (this._dragType === "box_select") {
         this._isSelectingBox = false;
         this._selectBoxStart = null;
@@ -12941,6 +13578,90 @@ class TimelineEditor {
     this.commitChanges();
   }
 
+  addCutMarker(type = "soft") {
+    if (!this.timeline.cuts) this.timeline.cuts = [];
+    const totalFrames = this.getVisualDurationFrames();
+    const fps = this.getFrameRate();
+
+    let playheadFrame = Math.round(this.currentFrame || 0);
+    let targetFrame = getValidCutFrame(playheadFrame, null, this.timeline.cuts, 22, totalFrames);
+    if (targetFrame === null) {
+      for (let k = 1; ; k++) {
+        let candidate = 17 * k + 5;
+        if (candidate >= totalFrames) break;
+        let valid = getValidCutFrame(candidate, null, this.timeline.cuts, 22, totalFrames);
+        if (valid === candidate) {
+          targetFrame = candidate;
+          break;
+        }
+      }
+      if (targetFrame === null) {
+        alert("Cannot add cut marker: not enough room on the timeline without overlapping existing cut zones.");
+        return;
+      }
+    }
+
+    const existing = this.timeline.cuts.find(c => c.frame_index === targetFrame);
+    if (existing) {
+      existing.type = type;
+      this.selectionType = "cut";
+      this.selectedCutId = existing.id;
+      this.selectedIndex = -1;
+      this.selectedSegmentIds = [];
+      this.updateUIFromSelection();
+      this.commitChanges();
+      this.render();
+      return;
+    }
+
+    const cutId = "cut_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
+    const newCut = {
+      id: cutId,
+      type: type, // "soft" or "hard"
+      frame_index: targetFrame,
+      time_seconds: parseFloat((targetFrame / fps).toFixed(3)),
+      overlap_frames: 22,
+    };
+
+    this.timeline.cuts.push(newCut);
+    this.timeline.cuts.sort((a, b) => a.frame_index - b.frame_index);
+
+    this.selectionType = "cut";
+    this.selectedCutId = cutId;
+    this.selectedIndex = -1;
+    this.selectedSegmentIds = [];
+
+    this.updateUIFromSelection();
+    this.commitChanges();
+    this.render();
+  }
+
+  updateCutInspectorValues(cut) {
+    if (!cut) return;
+    const isHard = (cut.type === "hard");
+    if (this.cutBadge) {
+      this.cutBadge.textContent = isHard ? "Hard Cut" : "Soft Cut";
+      this.cutBadge.className = `mmxd-cut-badge ${isHard ? "hard" : "soft"}`;
+    }
+    if (this.cutTypeSelect) {
+      this.cutTypeSelect.value = isHard ? "hard" : "soft";
+    }
+    if (this.cutFrameInput) {
+      this.cutFrameInput.value = cut.frame_index;
+    }
+    if (this.cutTimeInput) {
+      this.cutTimeInput.value = cut.time_seconds.toFixed(2);
+    }
+    if (this.cutOverlapSelect) {
+      this.cutOverlapSelect.value = String(cut.overlap_frames || 22);
+    }
+    if (this.segmentBoundsDisplay) {
+      const fps = this.getFrameRate();
+      const timeStr = this.formatTime(cut.frame_index / fps);
+      this.segmentBoundsDisplay.textContent = `Cut Marker: Frame ${cut.frame_index} (${timeStr}) | Overlap: ${cut.overlap_frames || 22}f`;
+    }
+  }
+
   updateSeekBarBackground() {
     if (!this.seekBar) return;
     const max = parseFloat(this.seekBar.max) || 1;
@@ -13991,14 +14712,15 @@ app.registerExtension({
         widget.computeSize = function (width) {
           const canvasH = self._timelineEditor ? self._timelineEditor.canvasHeight : CANVAS_HEIGHT;
           const propH = self._timelineEditor ? (self._timelineEditor.propHeight || 90) : 90;
-          const globalPropH = self._timelineEditor ? (self._timelineEditor.globalPropHeight || 60) : 60;
+          const globalPropH = self._timelineEditor ? (self._timelineEditor.globalPropHeight || 114) : 114;
+          const genPropH = 68; // Space for Cut / Iteration Properties panel (62px height + 6px margin)
           // Reserve room for the @refN reference panel at the bottom so the node doesn't
           // collapse and crop it whenever ComfyUI recomputes the node height.
           const charPanelH = self._timelineEditor
             ? (self._timelineEditor.charPanelHeight || subjectPanelHeight(3, self.properties?.subjectSlotHeight))
             : subjectPanelHeight(3, self.properties?.subjectSlotHeight);
           const nodeWidth = self.size?.[0] || width || 1375;
-          return [Math.max(10, nodeWidth - 30), canvasH + propH + globalPropH + charPanelH + 160];
+          return [Math.max(10, nodeWidth - 30), canvasH + propH + globalPropH + genPropH + charPanelH + 185];
         };
 
         // --- Live prompt preview -------------------------------------------------
@@ -14266,6 +14988,14 @@ app.registerExtension({
         setTimeout(() => {
           try {
             self._timelineEditor = new TimelineEditor(self, container, widget);
+            if (self.size && typeof self.computeSize === "function") {
+              const minH = self.computeSize()[1];
+              if (self.size[1] < minH) {
+                self.setSize([self.size[0], minH]);
+              }
+              self._widgetSlotsDirty = true;
+              self.setDirtyCanvas(true, true);
+            }
             // every edit funnels through commitChanges, so that is the one hook needed
             const ed = self._timelineEditor;
             if (ed && typeof ed.commitChanges === "function" && !ed._mmxPromptHooked) {

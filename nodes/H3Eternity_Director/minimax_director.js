@@ -1239,6 +1239,111 @@ function hsvToRgbString(h, s, v, alpha) {
   return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
 }
 
+// --- Dynamic SVG Label Tab with Gradients (s_tml_label_02_grad.svg vector 9-slice) ---
+function drawSvgLabelTabGrad(ctx, xCenter, yTop, textW, deltaY, hue) {
+  const scaleY = deltaY / 5.14062;
+  const scaleX = scaleY;
+  const wingW = 3.48438 * scaleX;
+  const wCenter = textW + 14;
+  const totalW = wCenter + 2 * wingW;
+  const xLeft = xCenter - totalW / 2;
+  const xRight = xCenter + totalW / 2;
+  const yBottom = yTop + deltaY;
+
+  // 1. Fill Background with Radial Gradient
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(xLeft, yTop);
+
+  // Left curve going down
+  ctx.bezierCurveTo(
+    xLeft + 1.0625 * scaleX, yTop,
+    xLeft + 1.21875 * scaleX, yTop + 1.39062 * scaleY,
+    xLeft + 1.59375 * scaleX, yTop + 2.59375 * scaleY
+  );
+  ctx.bezierCurveTo(
+    xLeft + 2.13045 * scaleX, yTop + 4.31567 * scaleY,
+    xLeft + 2.25 * scaleX, yBottom,
+    xLeft + wingW, yBottom
+  );
+
+  // Bottom flat segment
+  ctx.lineTo(xRight - wingW, yBottom);
+
+  // Right curve going up
+  ctx.bezierCurveTo(
+    xRight - 2.25 * scaleX, yBottom,
+    xRight - 2.13045 * scaleX, yTop + 4.31567 * scaleY,
+    xRight - 1.59375 * scaleX, yTop + 2.59375 * scaleY
+  );
+  ctx.bezierCurveTo(
+    xRight - 1.21875 * scaleX, yTop + 1.39062 * scaleY,
+    xRight - 1.0625 * scaleX, yTop,
+    xRight, yTop
+  );
+
+  ctx.closePath();
+
+  // Radial gradient: center at bottom center (xCenter, yBottom), radiating outwards/upwards
+  const radRadius = Math.max(totalW * 0.55, deltaY * 1.5);
+  const radGrad = ctx.createRadialGradient(
+    xCenter, yBottom, 0,
+    xCenter, yBottom, radRadius
+  );
+  radGrad.addColorStop(0.0, hsvToRgbString(hue, 75, 60, 1.0));
+  radGrad.addColorStop(0.2, hsvToRgbString(hue, 75, 60, 1.0));
+  radGrad.addColorStop(1.0, hsvToRgbString(hue, 75, 15, 1.0));
+
+  ctx.globalAlpha = 0.25; // Background overall opacity = 25%
+  ctx.fillStyle = radGrad;
+  ctx.fill();
+  ctx.restore();
+
+  // 2. Outline with Horizontal Linear Gradient (thickness 2px, opacity 1.0)
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(xLeft, yTop);
+
+  // Left curve going down
+  ctx.bezierCurveTo(
+    xLeft + 1.0625 * scaleX, yTop,
+    xLeft + 1.21875 * scaleX, yTop + 1.39062 * scaleY,
+    xLeft + 1.59375 * scaleX, yTop + 2.59375 * scaleY
+  );
+  ctx.bezierCurveTo(
+    xLeft + 2.13045 * scaleX, yTop + 4.31567 * scaleY,
+    xLeft + 2.25 * scaleX, yBottom,
+    xLeft + wingW, yBottom
+  );
+
+  // Bottom flat segment
+  ctx.lineTo(xRight - wingW, yBottom);
+
+  // Right curve going up
+  ctx.bezierCurveTo(
+    xRight - 2.25 * scaleX, yBottom,
+    xRight - 2.13045 * scaleX, yTop + 4.31567 * scaleY,
+    xRight - 1.59375 * scaleX, yTop + 2.59375 * scaleY
+  );
+  ctx.bezierCurveTo(
+    xRight - 1.21875 * scaleX, yTop + 1.39062 * scaleY,
+    xRight - 1.0625 * scaleX, yTop,
+    xRight, yTop
+  );
+
+  const lineGrad = ctx.createLinearGradient(xLeft, yTop, xRight, yTop);
+  lineGrad.addColorStop(0.0, hsvToRgbString(hue, 75, 40, 1.0));
+  lineGrad.addColorStop(0.5, hsvToRgbString(hue, 75, 100, 1.0));
+  lineGrad.addColorStop(1.0, hsvToRgbString(hue, 75, 40, 1.0));
+
+  ctx.strokeStyle = lineGrad;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+
+  return { xLeft, xRight, yCenter: yTop + deltaY / 2 };
+}
+
 // --- H3 Frame Lattice Helper (17k + 5) & Collision Prevention ---
 function getNearestH3LatticeFrame(targetFrame, maxFrames = Infinity) {
   let k = Math.round((targetFrame - 5) / 17);
@@ -7666,12 +7771,12 @@ class TimelineEditor {
 
           this.ctx.save();
           this.ctx.beginPath();
-          this.ctx.rect(overlapStartX, 0, overlapW, trackBottom);
+          this.ctx.rect(overlapStartX, 13, overlapW, trackBottom - 13);
           this.ctx.clip();
 
           // Background tint (0.01 unselected, 0.03 selected)
           this.ctx.fillStyle = bgCol;
-          this.ctx.fillRect(overlapStartX, 0, overlapW, trackBottom);
+          this.ctx.fillRect(overlapStartX, 13, overlapW, trackBottom - 13);
 
           // 45-degree diagonal stripes across tracks & ruler area (0.02 unselected, 0.03 selected)
           this.ctx.strokeStyle = stripeCol;
@@ -8417,12 +8522,12 @@ class TimelineEditor {
 
         this.ctx.save();
         this.ctx.beginPath();
-        this.ctx.rect(overlapStartX, 0, overlapW, RULER_HEIGHT);
+        this.ctx.rect(overlapStartX, 13, overlapW, RULER_HEIGHT - 13);
         this.ctx.clip();
 
         // Background tint (0.01 unselected, 0.03 selected)
         this.ctx.fillStyle = bgCol;
-        this.ctx.fillRect(overlapStartX, 0, overlapW, RULER_HEIGHT);
+        this.ctx.fillRect(overlapStartX, 13, overlapW, RULER_HEIGHT - 13);
 
         // 45-degree diagonal stripes across ruler area (0.02 unselected, 0.03 selected, perfectly continuous with tracks below)
         this.ctx.strokeStyle = stripeCol;
@@ -8504,17 +8609,17 @@ class TimelineEditor {
       const x = (frameVal / totalFrames) * width;
 
       this.ctx.fillStyle = "#aaa";
-      this.ctx.fillRect(Math.floor(x), RULER_HEIGHT - 6, 1, 6);
+      this.ctx.fillRect(Math.floor(x), RULER_HEIGHT - 3, 1, 3);
 
       if (frameVal > 0 && frameVal < totalFrames) {
         this.ctx.textAlign = "center";
-        this.ctx.fillText(this.formatTime(frameVal, true), x, RULER_HEIGHT - 12);
+        this.ctx.fillText(this.formatTime(frameVal, true), x, RULER_HEIGHT - 9);
       }
     }
 
     this.ctx.textAlign = "left";
     const zeroLabel = mode === "seconds" ? "0" : this.formatTime(0, true);
-    this.ctx.fillText(zeroLabel, 4, RULER_HEIGHT - 12);
+    this.ctx.fillText(zeroLabel, 4, RULER_HEIGHT - 9);
 
     // Divider
     this.ctx.fillStyle = "#111";
@@ -8598,6 +8703,16 @@ class TimelineEditor {
       if (!this._regionHueMap) this._regionHueMap = new Map();
       const fps = this.getFrameRate();
 
+      // Ensure all region hues are populated
+      for (let i = 0; i < regions.length; i++) {
+        const reg = regions[i];
+        if (!this._regionHueMap.has(reg.key)) {
+          this._regionHueMap.set(reg.key, Math.floor(Math.random() * 360));
+        }
+      }
+
+      // --- Top Strip (y = 0..12): Solid Iteration Areas, Overlap Diagonal Hatches, and Generated Frames Labels ---
+      // A. Fill solid iteration background in top strip (y = 0..12, radial gradient dark stop: hsv(hue, 75, 15), opacity 0.5)
       for (let i = 0; i < regions.length; i++) {
         const reg = regions[i];
         const startX = (reg.startFrame / totalFrames) * width;
@@ -8605,18 +8720,113 @@ class TimelineEditor {
         const regW = endX - startX;
         if (regW <= 0) continue;
 
-        if (!this._regionHueMap.has(reg.key)) {
-          this._regionHueMap.set(reg.key, Math.floor(Math.random() * 360));
-        }
         const hue = this._regionHueMap.get(reg.key);
-        const lineCol = hsvToRgbString(hue, 75, 100, 0.33);
-        const textCol = hsvToRgbString(hue, 75, 100, 0.66);
+        this.ctx.fillStyle = hsvToRgbString(hue, 75, 15, 0.5);
+        this.ctx.fillRect(startX, 0, regW, 12);
+      }
 
-        // 1. 2px thick horizontal line at the very top of timeline/ruler
-        this.ctx.fillStyle = lineCol;
-        this.ctx.fillRect(startX, 0, regW, 2);
+      // B. Overlap zones in top strip (y = 0..12): diagonally hatched with alternating equal-width bands of both iteration colors
+      for (let i = 0; i < sortedCuts.length; i++) {
+        const cut = sortedCuts[i];
+        const overlapFrames = cut.overlap_frames || 22;
+        const overlapStartFrame = Math.max(0, cut.frame_index - overlapFrames);
+        const overlapStartX = (overlapStartFrame / totalFrames) * width;
+        const cutX = (cut.frame_index / totalFrames) * width;
+        const overlapW = cutX - overlapStartX;
+        if (overlapW <= 0) continue;
 
-        // 2. Duration label under the line: "<x>f • <y>s"
+        if (i + 1 < regions.length) {
+          const prevHue = this._regionHueMap.get(regions[i].key);
+          const nextHue = this._regionHueMap.get(regions[i + 1].key);
+          const prevCol = hsvToRgbString(prevHue, 75, 15, 0.5);
+          const nextCol = hsvToRgbString(nextHue, 75, 15, 0.5);
+
+          this.ctx.save();
+          this.ctx.beginPath();
+          this.ctx.rect(overlapStartX, 0, overlapW, 12);
+          this.ctx.clip();
+
+          // Base background cleared to neutral
+          this.ctx.fillStyle = "#1e1e1e";
+          this.ctx.fillRect(overlapStartX, 0, overlapW, 12);
+
+          const wStripe = 6.0;
+          const cycle = wStripe * 2;
+          const h = 12;
+
+          for (let x = overlapStartX - 24; x < cutX + 24; x += cycle) {
+            // Equal-width parallelogram for previous iteration
+            this.ctx.fillStyle = prevCol;
+            this.ctx.beginPath();
+            this.ctx.moveTo(x, h);
+            this.ctx.lineTo(x + h, 0);
+            this.ctx.lineTo(x + h + wStripe, 0);
+            this.ctx.lineTo(x + wStripe, h);
+            this.ctx.closePath();
+            this.ctx.fill();
+
+            // Equal-width parallelogram for next iteration
+            this.ctx.fillStyle = nextCol;
+            this.ctx.beginPath();
+            this.ctx.moveTo(x + wStripe, h);
+            this.ctx.lineTo(x + h + wStripe, 0);
+            this.ctx.lineTo(x + h + cycle, 0);
+            this.ctx.lineTo(x + cycle, h);
+            this.ctx.closePath();
+            this.ctx.fill();
+          }
+
+          this.ctx.restore();
+        }
+      }
+
+      // C. Generated Frames text in top strip (y = 0..12, centered horizontally per iteration)
+      for (let i = 0; i < regions.length; i++) {
+        const reg = regions[i];
+        const startX = (reg.startFrame / totalFrames) * width;
+        const endX = (reg.endFrame / totalFrames) * width;
+        const regW = endX - startX;
+        if (regW <= 0) continue;
+
+        let genFrames = 0;
+        if (i === 0) {
+          genFrames = reg.endFrame; // 0 to cut[0].frame_index (or totalFrames)
+        } else {
+          const prevCut = sortedCuts[i - 1];
+          const overlap = prevCut.overlap_frames || 22;
+          const genStart = Math.max(0, prevCut.frame_index - overlap);
+          genFrames = reg.endFrame - genStart;
+        }
+
+        const genSecs = (genFrames / fps).toFixed(2);
+        const genLabelText = `${genFrames}f \u2022 ${genSecs}s`;
+        const hue = this._regionHueMap.get(reg.key);
+        const xCenter = (startX + endX) / 2;
+
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.rect(startX, 0, regW, 12);
+        this.ctx.clip();
+
+        this.ctx.font = "bold 9px sans-serif";
+        this.ctx.fillStyle = hsvToRgbString(hue, 75, 100, 1.0);
+        this.ctx.shadowColor = "rgba(0, 0, 0, 0.7)";
+        this.ctx.shadowBlur = 3;
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText(genLabelText, xCenter, 6);
+        this.ctx.restore();
+      }
+
+      // --- Delivered Frames Labels & Continuous Horizontal Lines at yTop = 13.0 ---
+      for (let i = 0; i < regions.length; i++) {
+        const reg = regions[i];
+        const startX = (reg.startFrame / totalFrames) * width;
+        const endX = (reg.endFrame / totalFrames) * width;
+        const regW = endX - startX;
+        if (regW <= 0) continue;
+
+        const hue = this._regionHueMap.get(reg.key);
         const durFrames = reg.endFrame - reg.startFrame;
         const durSecs = (durFrames / fps).toFixed(2);
         const labelText = `${durFrames}f \u2022 ${durSecs}s`;
@@ -8626,11 +8836,39 @@ class TimelineEditor {
         this.ctx.rect(startX, 0, regW, RULER_HEIGHT);
         this.ctx.clip();
 
-        this.ctx.fillStyle = textCol;
-        this.ctx.font = "9px sans-serif";
+        this.ctx.font = "500 10px sans-serif";
+        const textMetrics = this.ctx.measureText(labelText);
+        const textW = textMetrics.width;
+        const deltaY = 12; // 16 - 4px = 12px (label is 4px thinner)
+        const yTop = 13.0; // 1.0 + 12px = 13.0px (shifted 12px down)
+        const xCenter = (startX + endX) / 2;
+
+        // 1. Draw dynamic SVG tab with radial background & linear outline gradients (s_tml_label_02_grad.svg)
+        const tabBounds = drawSvgLabelTabGrad(this.ctx, xCenter, yTop, textW, deltaY, hue);
+
+        // 2. Draw 2px thick horizontal line outside the tab shifted 12px down: hsv(hue, 75, 40), opacity 1.0
+        this.ctx.strokeStyle = hsvToRgbString(hue, 75, 40, 1.0);
+        this.ctx.lineWidth = 2;
+
+        if (tabBounds.xLeft > startX) {
+          this.ctx.beginPath();
+          this.ctx.moveTo(startX, yTop);
+          this.ctx.lineTo(tabBounds.xLeft, yTop);
+          this.ctx.stroke();
+        }
+        if (endX > tabBounds.xRight) {
+          this.ctx.beginPath();
+          this.ctx.moveTo(tabBounds.xRight, yTop);
+          this.ctx.lineTo(endX, yTop);
+          this.ctx.stroke();
+        }
+
+        // 3. Draw text inside the tab (shifted 1px up inside tab): hsv(hue, 75, 100), opacity 1.0
+        this.ctx.fillStyle = hsvToRgbString(hue, 75, 100, 1.0);
         this.ctx.textAlign = "center";
-        this.ctx.textBaseline = "top";
-        this.ctx.fillText(labelText, (startX + endX) / 2, 6);
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText(labelText, xCenter, tabBounds.yCenter - 1);
+
         this.ctx.restore();
       }
 
@@ -8651,12 +8889,12 @@ class TimelineEditor {
           const leftBoundaryOpacity = isSelected ? 0.5 : 0.33;
           const leftBoundaryCol = isChain ? `rgba(255, 171, 87, ${leftBoundaryOpacity})` : `rgba(237, 255, 71, ${leftBoundaryOpacity})`;
 
-          // 1. Overlap Left Boundary Vertical Dashed Line (Top of ruler to bottom of tracks, opacity 0.5, never glows)
+          // 1. Overlap Left Boundary Vertical Dashed Line (Terminates at horizontal iteration line y=13, opacity 0.5, never glows)
           if (cut.frame_index > overlapFrames) {
             this.ctx.save();
             this.ctx.beginPath();
             this.ctx.setLineDash([1, 3]);
-            this.ctx.moveTo(overlapStartX, 0);
+            this.ctx.moveTo(overlapStartX, 13);
             this.ctx.lineTo(overlapStartX, trackBottom);
             this.ctx.strokeStyle = leftBoundaryCol;
             this.ctx.lineWidth = 1;
@@ -8664,11 +8902,11 @@ class TimelineEditor {
             this.ctx.restore();
           }
 
-          // 2. Cut Marker Vertical Dashed Line (Head down to track bottom, opacity 1.0, glows when selected)
+          // 2. Cut Marker Vertical Dashed Line (Terminates at horizontal iteration line y=13, opacity 1.0, glows when selected)
           this.ctx.save();
           this.ctx.beginPath();
           this.ctx.setLineDash([1, 3]);
-          this.ctx.moveTo(cutX, RULER_HEIGHT - 48);
+          this.ctx.moveTo(cutX, 13);
           this.ctx.lineTo(cutX, trackBottom);
           this.ctx.strokeStyle = isSelected ? selectedLineCol : lineCol;
           this.ctx.lineWidth = isSelected ? 1.5 : 1;
@@ -8679,7 +8917,7 @@ class TimelineEditor {
           this.ctx.stroke();
           this.ctx.restore();
 
-          // 3. Smooth dragging & White Ghost Line
+          // 3. Smooth dragging & White Ghost Line (Terminates at horizontal iteration line y=13)
           const isDraggingThis = (this._isDragging && this._dragType === "cut_marker" && this._dragTargetCutId === cut.id && this._dragCutMouseX !== undefined);
           const headX = isDraggingThis ? this._dragCutMouseX : cutX;
 
@@ -8687,7 +8925,7 @@ class TimelineEditor {
             this.ctx.save();
             this.ctx.beginPath();
             this.ctx.setLineDash([1, 3]);
-            this.ctx.moveTo(headX, RULER_HEIGHT - 40);
+            this.ctx.moveTo(headX, 13);
             this.ctx.lineTo(headX, trackBottom);
             this.ctx.strokeStyle = "rgba(255, 255, 255, 0.55)";
             this.ctx.lineWidth = 1;
@@ -8734,7 +8972,7 @@ class TimelineEditor {
 
     // --- Draw Playhead ---
     const playheadX = (this.currentFrame / totalFrames) * width;
-    const pHeight = 45;
+    const pHeight = 35;
     let pWidth = 16;
     if (PLAYHEAD_IMAGE.complete && PLAYHEAD_IMAGE.naturalWidth > 0 && PLAYHEAD_IMAGE.naturalHeight > 0) {
       pWidth = pHeight * (PLAYHEAD_IMAGE.naturalWidth / PLAYHEAD_IMAGE.naturalHeight);

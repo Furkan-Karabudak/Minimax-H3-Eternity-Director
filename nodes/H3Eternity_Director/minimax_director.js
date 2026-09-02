@@ -19,7 +19,7 @@ const { api } = window.comfyAPI.api;
 const mmxdLog = (...a) => { if (window.MMXD_DEBUG) console.log(...a); };
 
 // --- UI Constants & Configuration ---
-const RULER_HEIGHT = 24;
+const RULER_HEIGHT = 48;
 const BLOCK_HEIGHT = 160; // Increased to make the image timeline area much taller
 const AUDIO_TRACK_HEIGHT = 80;
 const MOTION_TRACK_HEIGHT = 80; // used as the Reference Video track height
@@ -197,38 +197,38 @@ const STYLES = `
     color: #ffaaaa;
   }
   .mmxd-toolbar .mmxd-btn.mmxd-btn-soft-cut {
-    border: 1px solid #3b82f6 !important;
-    color: #60a5fa !important;
-    background: rgba(59, 130, 246, 0.12) !important;
+    border: 1px solid #EDFF47 !important;
+    color: #EDFF47 !important;
+    background: rgba(237, 255, 71, 0.12) !important;
   }
   .mmxd-toolbar .mmxd-btn.mmxd-btn-soft-cut svg {
-    stroke: #60a5fa !important;
-    color: #60a5fa !important;
+    stroke: #EDFF47 !important;
+    color: #EDFF47 !important;
   }
   .mmxd-toolbar .mmxd-btn.mmxd-btn-soft-cut:hover:not(:disabled) {
-    background: rgba(59, 130, 246, 0.28) !important;
-    border-color: #93c5fd !important;
+    background: rgba(237, 255, 71, 0.28) !important;
+    border-color: #EDFF47 !important;
     color: #ffffff !important;
   }
   .mmxd-toolbar .mmxd-btn.mmxd-btn-soft-cut:hover:not(:disabled) svg {
     stroke: #ffffff !important;
     color: #ffffff !important;
   }
-  .mmxd-toolbar .mmxd-btn.mmxd-btn-hard-cut {
-    border: 1px solid #a855f7 !important;
-    color: #c084fc !important;
-    background: rgba(168, 85, 247, 0.12) !important;
+  .mmxd-toolbar .mmxd-btn.mmxd-btn-chain-cut, .mmxd-toolbar .mmxd-btn.mmxd-btn-hard-cut {
+    border: 1px solid #FFAB57 !important;
+    color: #FFAB57 !important;
+    background: rgba(255, 171, 87, 0.12) !important;
   }
-  .mmxd-toolbar .mmxd-btn.mmxd-btn-hard-cut svg {
-    stroke: #c084fc !important;
-    color: #c084fc !important;
+  .mmxd-toolbar .mmxd-btn.mmxd-btn-chain-cut svg, .mmxd-toolbar .mmxd-btn.mmxd-btn-hard-cut svg {
+    stroke: #FFAB57 !important;
+    color: #FFAB57 !important;
   }
-  .mmxd-toolbar .mmxd-btn.mmxd-btn-hard-cut:hover:not(:disabled) {
-    background: rgba(168, 85, 247, 0.28) !important;
-    border-color: #d8b4fe !important;
+  .mmxd-toolbar .mmxd-btn.mmxd-btn-chain-cut:hover:not(:disabled), .mmxd-toolbar .mmxd-btn.mmxd-btn-hard-cut:hover:not(:disabled) {
+    background: rgba(255, 171, 87, 0.28) !important;
+    border-color: #FFAB57 !important;
     color: #ffffff !important;
   }
-  .mmxd-toolbar .mmxd-btn.mmxd-btn-hard-cut:hover:not(:disabled) svg {
+  .mmxd-toolbar .mmxd-btn.mmxd-btn-chain-cut:hover:not(:disabled) svg, .mmxd-toolbar .mmxd-btn.mmxd-btn-hard-cut:hover:not(:disabled) svg {
     stroke: #ffffff !important;
     color: #ffffff !important;
   }
@@ -266,14 +266,14 @@ const STYLES = `
     font-weight: 600;
   }
   .mmxd-cut-badge.soft {
-    background: rgba(37, 99, 235, 0.2);
-    border: 1px solid #3b82f6;
-    color: #93c5fd;
+    background: rgba(237, 255, 71, 0.15);
+    border: 1px solid #EDFF47;
+    color: #EDFF47;
   }
-  .mmxd-cut-badge.hard {
-    background: rgba(147, 51, 234, 0.2);
-    border: 1px solid #a855f7;
-    color: #d8b4fe;
+  .mmxd-cut-badge.chain, .mmxd-cut-badge.hard {
+    background: rgba(255, 171, 87, 0.15);
+    border: 1px solid #FFAB57;
+    color: #FFAB57;
   }
   .mmxd-cut-row {
     display: flex;
@@ -550,6 +550,7 @@ const STYLES = `
     border-color: #4fff8f;
     background: #1a3a2a;
   }
+  /* Default seek-bar (keeps original node styles intact) */
   .mmxd-seek-bar {
     -webkit-appearance: none;
     appearance: none;
@@ -570,12 +571,69 @@ const STYLES = `
     cursor: pointer;
     border: 2px solid #222;
   }
+  .mmxd-seek-bar::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #ff4444;
+    cursor: pointer;
+    border: 2px solid #222;
+  }
+
+  /* Scoped specifically to H3 Eternity Director - never affects original node */
+  .h3-eternity-director-root .mmxd-seek-bar,
+  .h3-eternity-wrapper .mmxd-seek-bar {
+    -webkit-appearance: none !important;
+    appearance: none !important;
+    height: 6px !important;
+    background: #444;
+    border-radius: 3px !important;
+    outline: none !important;
+    cursor: pointer !important;
+    border: 1px solid #222 !important;
+    accent-color: #38CDFF !important;
+  }
+  .h3-eternity-director-root .mmxd-seek-bar::-webkit-slider-runnable-track,
+  .h3-eternity-wrapper .mmxd-seek-bar::-webkit-slider-runnable-track {
+    height: 6px !important;
+    border-radius: 3px !important;
+  }
+  .h3-eternity-director-root .mmxd-seek-bar::-webkit-slider-thumb,
+  .h3-eternity-wrapper .mmxd-seek-bar::-webkit-slider-thumb {
+    -webkit-appearance: none !important;
+    appearance: none !important;
+    width: 14px !important;
+    height: 14px !important;
+    border-radius: 50% !important;
+    background: #38CDFF !important;
+    background-color: #38CDFF !important;
+    cursor: pointer !important;
+    border: 2px solid #222 !important;
+    margin-top: -4px !important;
+  }
+  .h3-eternity-director-root .mmxd-seek-bar::-moz-range-track,
+  .h3-eternity-wrapper .mmxd-seek-bar::-moz-range-track {
+    height: 6px !important;
+    border-radius: 3px !important;
+  }
+  .h3-eternity-director-root .mmxd-seek-bar::-moz-range-thumb,
+  .h3-eternity-wrapper .mmxd-seek-bar::-moz-range-thumb {
+    width: 14px !important;
+    height: 14px !important;
+    border-radius: 50% !important;
+    background: #38CDFF !important;
+    background-color: #38CDFF !important;
+    cursor: pointer !important;
+    border: 2px solid #222 !important;
+  }
   .mmxd-timeline-viewport {
-    width: 100%;
+    flex: 1 1 0%;
+    min-width: 0;
+    width: 0;
     overflow-x: auto;
     overflow-y: hidden;
     padding-bottom: 10px;
-    box-sizing: content-box;
+    box-sizing: border-box;
   }
   .mmxd-timeline-viewport::-webkit-scrollbar {
     height: 10px;
@@ -893,10 +951,10 @@ const STYLES = `
   .mmxd-character-step-count { font-size: 9px; color: #6a6a6a; text-transform: uppercase; letter-spacing: 0.5px; user-select: none; min-width: 56px; text-align: center; }
 `;
 
-let styleEl = document.getElementById("minimax-h3-director-styles");
+let styleEl = document.getElementById("h3-eternity-director-styles");
 if (!styleEl) {
   styleEl = document.createElement("style");
-  styleEl.id = "minimax-h3-director-styles";
+  styleEl.id = "h3-eternity-director-styles";
   document.head.appendChild(styleEl);
 }
 styleEl.textContent = STYLES;
@@ -1137,6 +1195,50 @@ const ICONS = {
   magnet: `<svg width="15" height="15" viewBox="-30 -55 580 580" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path stroke="currentColor" stroke-width="15" stroke-linejoin="round" stroke-linecap="round" d="M502.915,274.353l-64.2-64.2c-5.5-5.5-14.4-5.5-19.9,0l-155.1,155c-45.4,45.4-99.2,20.4-119.6,0 c-20.3-20.3-45.8-73.8,0-119.6l155.1-155c5.5-5.5,5.5-14.4,0-19.9l-64.2-64.2c-2.6-2.6-9.9-9.9-19.9,0l-155.1,155 c-101.4,116.1-55.4,232.4,0,287.9c49.4,49.4,171.9,99.3,287.8,0l155.1-155.1C512.915,284.253,505.615,276.953,502.915,274.353z M225.115,36.253l44.3,44.3l-26,26l-44.3-44.3L225.115,36.253z M328.015,429.453c-61.3,61.3-175.2,72.8-248,0 c-72.9-72.9-64.9-183.1,0-248l99.2-99.2l44.3,44.3l-99.2,99.2c-47.5,47.5-45.1,114.2,0,159.4c44.8,44.8,114.4,45,159.4,0 l99.2-99.2l44.3,44.3L328.015,429.453z M447.115,310.253l-44.3-44.3l26-26l44.3,44.3L447.115,310.253z"/></svg>`
 };
 
+const getTimelineAssetUrl = (relPath) => {
+  const query = "path=" + encodeURIComponent(relPath) + "&t=" + Date.now();
+  return (window.api && window.api.apiURL)
+    ? window.api.apiURL("/minimax_director/asset?" + query)
+    : "/minimax_director/asset?" + query;
+};
+
+const PLAYHEAD_IMAGE = new Image();
+PLAYHEAD_IMAGE.src = getTimelineAssetUrl("timeline/i_tml_playhead.png");
+
+const CUT_SOFT_IMAGE = new Image();
+CUT_SOFT_IMAGE.src = getTimelineAssetUrl("timeline/i_tml_cut_soft.png");
+
+const CUT_CHAIN_IMAGE = new Image();
+CUT_CHAIN_IMAGE.src = getTimelineAssetUrl("timeline/i_tml_cut_chain.png");
+
+window.MMXD_reloadTimelineAssets = function() {
+  PLAYHEAD_IMAGE.src = getTimelineAssetUrl("timeline/i_tml_playhead.png");
+  CUT_SOFT_IMAGE.src = getTimelineAssetUrl("timeline/i_tml_cut_soft.png");
+  CUT_CHAIN_IMAGE.src = getTimelineAssetUrl("timeline/i_tml_cut_chain.png");
+  if (window._mmxdActiveEditor) window._mmxdActiveEditor.render();
+};
+
+// --- HSV to RGBA color helper ---
+function hsvToRgbString(h, s, v, alpha) {
+  const sat = s / 100;
+  const val = v / 100;
+  const c = val * sat;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = val - c;
+  let r = 0, g = 0, b = 0;
+  const hSector = Math.floor(h / 60) % 6;
+  if (hSector === 0) { r = c; g = x; b = 0; }
+  else if (hSector === 1) { r = x; g = c; b = 0; }
+  else if (hSector === 2) { r = 0; g = c; b = x; }
+  else if (hSector === 3) { r = 0; g = x; b = c; }
+  else if (hSector === 4) { r = x; g = 0; b = c; }
+  else { r = c; g = 0; b = x; }
+  const red = Math.round((r + m) * 255);
+  const green = Math.round((g + m) * 255);
+  const blue = Math.round((b + m) * 255);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
 // --- H3 Frame Lattice Helper (17k + 5) & Collision Prevention ---
 function getNearestH3LatticeFrame(targetFrame, maxFrames = Infinity) {
   let k = Math.round((targetFrame - 5) / 17);
@@ -1265,7 +1367,13 @@ function parseInitial(jsonStr) {
         parsed.reference_mode = p.reference_mode === "OFF" ? "OFF" : "REF2VA";
       }
       if (p.cuts !== undefined && Array.isArray(p.cuts)) {
-        parsed.cuts = p.cuts;
+        parsed.cuts = p.cuts.map(c => ({
+          id: c.id || ("cut_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6)),
+          type: (c.type === "chain" || c.type === "hard") ? "chain" : "soft",
+          frame_index: parseInt(c.frame_index, 10) || 0,
+          time_seconds: c.time_seconds !== undefined ? parseFloat(c.time_seconds) : 0,
+          overlap_frames: parseInt(c.overlap_frames, 10) || 22
+        })).sort((a, b) => a.frame_index - b.frame_index);
       }
       if (p.analyzeProvider !== undefined) parsed.analyzeProvider = p.analyzeProvider;
       if (p.analyzeBaseUrl !== undefined) parsed.analyzeBaseUrl = p.analyzeBaseUrl;
@@ -2266,22 +2374,19 @@ class TimelineEditor {
     const totalFrames = this.getVisualDurationFrames();
     const thresholdFrames = (15 / logicalWidth) * totalFrames;
 
-    // Generation seams win with priority and a wider grab (fork addition), and snap to the
-    // EXACT boundary frame — so a segment edge locks onto a window boundary and can never
-    // straddle into the next generation. Checked before every other snap target.
-    let bestSeam = null, bestSeamDiff = thresholdFrames * 1.8;
-    for (const b of this.getWindowBoundaries()) {
-      const d = Math.abs(mouseFrameX - b);
-      if (d < bestSeamDiff) { bestSeamDiff = d; bestSeam = b; }
-    }
-    if (bestSeam !== null) return Math.round(bestSeam);
-
     const snapCandidates = [0, this.getDurationFrames()];
 
     // Add start and end frames of active generation range
     snapCandidates.push(this.getStartFrames());
     if (this.endFramesWidget && this.endFramesWidget.value !== undefined) {
       snapCandidates.push(parseInt(this.endFramesWidget.value, 10));
+    }
+
+    // Cut markers
+    if (this.timeline.cuts) {
+      for (const cut of this.timeline.cuts) {
+        snapCandidates.push(cut.frame_index);
+      }
     }
 
     if (this.retakeMode) {
@@ -2719,7 +2824,7 @@ class TimelineEditor {
 
   createDOM() {
     this.wrapper = document.createElement("div");
-    this.wrapper.className = "mmxd-wrapper";
+    this.wrapper.className = "mmxd-wrapper h3-eternity-wrapper h3-eternity-director-root";
 
     this.wrapper.addEventListener("mouseenter", () => { this._isHovering = true; });
     this.wrapper.addEventListener("mouseleave", () => { this._isHovering = false; });
@@ -2914,7 +3019,7 @@ class TimelineEditor {
 
     const CUT_TYPES = [
       { value: "soft", label: "Soft Cut" },
-      { value: "hard", label: "Hard Cut" },
+      { value: "chain", label: "Chain Cut" },
     ];
     const cutTypeSelect = createMenuSelect(CUT_TYPES, { width: "110px" });
     cutTypeSelect.classList.add("mmxd-dropdown");
@@ -3151,26 +3256,27 @@ class TimelineEditor {
     });
     this.refOptionSelect = refOptionSelect;
 
-    // --- Soft Cut (Blue) and Hard Cut (Purple) Buttons ---
+    // --- Soft Cut (#EDFF47) and Chain Cut (#FFAB57) Buttons ---
     const softCutBtn = document.createElement("button");
     softCutBtn.className = "mmxd-btn mmxd-btn-soft-cut";
-    softCutBtn.style.border = "1px solid #3b82f6";
-    softCutBtn.style.color = "#60a5fa";
-    softCutBtn.style.background = "rgba(59, 130, 246, 0.12)";
+    softCutBtn.style.border = "1px solid #EDFF47";
+    softCutBtn.style.color = "#EDFF47";
+    softCutBtn.style.background = "rgba(237, 255, 71, 0.12)";
     softCutBtn.innerHTML = `${ICONS.infinity} Soft Cut`;
     softCutBtn.title = "Insert Soft Cut at current playhead position\n(Seamless latent & visual continuation with previous iteration)";
     softCutBtn.addEventListener("click", () => this.addCutMarker("soft"));
     this.softCutBtn = softCutBtn;
 
-    const hardCutBtn = document.createElement("button");
-    hardCutBtn.className = "mmxd-btn mmxd-btn-hard-cut";
-    hardCutBtn.style.border = "1px solid #a855f7";
-    hardCutBtn.style.color = "#c084fc";
-    hardCutBtn.style.background = "rgba(168, 85, 247, 0.12)";
-    hardCutBtn.innerHTML = `${ICONS.infinity} Hard Cut`;
-    hardCutBtn.title = "Insert Hard Cut at current playhead position\n(Semantic scene change / fresh keyframe continuation)";
-    hardCutBtn.addEventListener("click", () => this.addCutMarker("hard"));
-    this.hardCutBtn = hardCutBtn;
+    const chainCutBtn = document.createElement("button");
+    chainCutBtn.className = "mmxd-btn mmxd-btn-chain-cut";
+    chainCutBtn.style.border = "1px solid #FFAB57";
+    chainCutBtn.style.color = "#FFAB57";
+    chainCutBtn.style.background = "rgba(255, 171, 87, 0.12)";
+    chainCutBtn.innerHTML = `${ICONS.infinity} Chain Cut`;
+    chainCutBtn.title = "Insert Chain Cut at current playhead position\n(Semantic scene change / fresh keyframe continuation)";
+    chainCutBtn.addEventListener("click", () => this.addCutMarker("chain"));
+    this.chainCutBtn = chainCutBtn;
+    this.hardCutBtn = chainCutBtn;
 
     actionGroup.appendChild(this.fileInput);
     actionGroup.appendChild(this.audioFileInput);
@@ -3184,7 +3290,7 @@ class TimelineEditor {
     actionGroup.appendChild(deleteBtn);
     actionGroup.appendChild(refOptionSelect);
     actionGroup.appendChild(softCutBtn);
-    actionGroup.appendChild(hardCutBtn);
+    actionGroup.appendChild(chainCutBtn);
 
     // Retake-mode-only delete button (shown next to Add Video when retakeMode is on)
     const deleteRetakeBtn = document.createElement("button");
@@ -4252,6 +4358,7 @@ class TimelineEditor {
     this.seekBar.min = "0";
     this.seekBar.value = "0";
     this.seekBar.style.flex = "1"; // take up remaining space
+    this.seekBar.style.accentColor = "#38CDFF";
     this.seekBar.addEventListener("input", (e) => {
       let val = parseInt(e.target.value, 10);
       if (this.retakeMode && this.timeline.retakeVideo) {
@@ -4863,9 +4970,10 @@ class TimelineEditor {
 
     this.layoutContainer.appendChild(this.sidebar);
 
-    // Viewport takes remaining space
-    this.viewport.style.flexGrow = "1";
+    // Viewport takes remaining space exactly without overflowing layoutContainer
+    this.viewport.style.flex = "1 1 0%";
     this.viewport.style.minWidth = "0";
+    this.viewport.style.width = "0";
     this.layoutContainer.appendChild(this.viewport);
 
     this.wrapper.appendChild(this.generalPropertiesPanel);
@@ -5003,16 +5111,21 @@ class TimelineEditor {
       this.wrapper.style.boxSizing = "border-box";
     }
     if (this.viewport) {
-      this.viewport.style.boxSizing = "content-box";
+      this.viewport.style.boxSizing = "border-box";
       this.viewport.style.height = `${this.canvasHeight}px`;
       this.viewport.style.minHeight = `${this.canvasHeight}px`;
-      this.viewport.style.flexShrink = "0";
+      this.viewport.style.flex = "1 1 0%";
+      this.viewport.style.minWidth = "0";
+      this.viewport.style.width = "0";
     }
     if (this.layoutContainer) {
       this.layoutContainer.style.flexShrink = "0";
+      this.layoutContainer.style.width = "100%";
+      this.layoutContainer.style.boxSizing = "border-box";
     }
 
-    const viewportWidth = this.viewport?.clientWidth || targetWidth;
+    const availableWidth = this.viewport?.clientWidth || (this.sidebar ? Math.max(10, targetWidth - (this.sidebar.offsetWidth || 120)) : targetWidth);
+    const viewportWidth = availableWidth;
     const canvasWidth = Math.max(viewportWidth, viewportWidth * this.zoomLevel);
     const currentWidth = parseFloat(this.canvas?.style?.width) || 0;
     if (viewportWidth > 0 && Math.abs(currentWidth - canvasWidth) > 1) {
@@ -7532,7 +7645,7 @@ class TimelineEditor {
 
       }
     } else {
-      // --- Background: Draw Diagonal Hatched Overlap Zones (Behind Segments) ---
+      // --- Background: Draw Diagonal Hatched Overlap Zones (Behind Segments & Across Ruler) ---
       const bgCuts = (!this.retakeMode) ? (this.timeline.cuts || []) : [];
       if (bgCuts.length > 0) {
         const trackBottom = RULER_HEIGHT + this.blockHeight + this.motionTrackHeight + this.audioTrackHeight;
@@ -7544,28 +7657,31 @@ class TimelineEditor {
           const overlapW = cutX - overlapStartX;
           if (overlapW <= 0) continue;
 
-          const isHard = (cut.type === "hard");
-          const bgCol = isHard ? "rgba(147, 51, 234, 0.04)" : "rgba(37, 99, 235, 0.04)";
-          const stripeCol = isHard ? "rgba(192, 132, 252, 0.10)" : "rgba(96, 165, 250, 0.10)";
+          const isSelected = (this.selectionType === "cut" && this.selectedCutId === cut.id);
+          const isChain = (cut.type === "chain" || cut.type === "hard");
+          const bgOpacity = isSelected ? 0.03 : 0.01;
+          const stripeOpacity = isSelected ? 0.03 : 0.02;
+          const bgCol = isChain ? `rgba(255, 171, 87, ${bgOpacity})` : `rgba(237, 255, 71, ${bgOpacity})`;
+          const stripeCol = isChain ? `rgba(255, 171, 87, ${stripeOpacity})` : `rgba(237, 255, 71, ${stripeOpacity})`;
 
           this.ctx.save();
           this.ctx.beginPath();
-          this.ctx.rect(overlapStartX, RULER_HEIGHT, overlapW, trackBottom - RULER_HEIGHT);
+          this.ctx.rect(overlapStartX, 0, overlapW, trackBottom);
           this.ctx.clip();
 
-          // Background tint
+          // Background tint (0.01 unselected, 0.03 selected)
           this.ctx.fillStyle = bgCol;
-          this.ctx.fillRect(overlapStartX, RULER_HEIGHT, overlapW, trackBottom - RULER_HEIGHT);
+          this.ctx.fillRect(overlapStartX, 0, overlapW, trackBottom);
 
-          // 45-degree diagonal stripes (opacity 0.10)
+          // 45-degree diagonal stripes across tracks & ruler area (0.02 unselected, 0.03 selected)
           this.ctx.strokeStyle = stripeCol;
           this.ctx.lineWidth = 1.5;
           this.ctx.beginPath();
           const step = 10;
-          const totalH = trackBottom - RULER_HEIGHT;
+          const totalH = trackBottom;
           for (let x = overlapStartX - totalH; x < cutX + totalH; x += step) {
             this.ctx.moveTo(x, trackBottom);
-            this.ctx.lineTo(x + totalH, RULER_HEIGHT);
+            this.ctx.lineTo(x + totalH, 0);
           }
           this.ctx.stroke();
           this.ctx.restore();
@@ -8280,6 +8396,49 @@ class TimelineEditor {
     this.ctx.fillStyle = "#1e1e1e";
     this.ctx.fillRect(0, 0, width, RULER_HEIGHT);
 
+    // Overlap Zones on Ruler Area (Zaman alanı / marker alanı)
+    const rulerCuts = (!this.retakeMode) ? (this.timeline.cuts || []) : [];
+    if (rulerCuts.length > 0) {
+      const trackBottom = RULER_HEIGHT + this.blockHeight + this.motionTrackHeight + this.audioTrackHeight;
+      for (const cut of rulerCuts) {
+        const cutX = (cut.frame_index / totalFrames) * width;
+        const overlapFrames = cut.overlap_frames || 22;
+        const overlapStartFrame = Math.max(0, cut.frame_index - overlapFrames);
+        const overlapStartX = (overlapStartFrame / totalFrames) * width;
+        const overlapW = cutX - overlapStartX;
+        if (overlapW <= 0) continue;
+
+        const isSelected = (this.selectionType === "cut" && this.selectedCutId === cut.id);
+        const isChain = (cut.type === "chain" || cut.type === "hard");
+        const bgOpacity = isSelected ? 0.03 : 0.01;
+        const stripeOpacity = isSelected ? 0.03 : 0.02;
+        const bgCol = isChain ? `rgba(255, 171, 87, ${bgOpacity})` : `rgba(237, 255, 71, ${bgOpacity})`;
+        const stripeCol = isChain ? `rgba(255, 171, 87, ${stripeOpacity})` : `rgba(237, 255, 71, ${stripeOpacity})`;
+
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.rect(overlapStartX, 0, overlapW, RULER_HEIGHT);
+        this.ctx.clip();
+
+        // Background tint (0.01 unselected, 0.03 selected)
+        this.ctx.fillStyle = bgCol;
+        this.ctx.fillRect(overlapStartX, 0, overlapW, RULER_HEIGHT);
+
+        // 45-degree diagonal stripes across ruler area (0.02 unselected, 0.03 selected, perfectly continuous with tracks below)
+        this.ctx.strokeStyle = stripeCol;
+        this.ctx.lineWidth = 1.5;
+        this.ctx.beginPath();
+        const step = 10;
+        const totalH = trackBottom;
+        for (let x = overlapStartX - totalH; x < cutX + totalH; x += step) {
+          this.ctx.moveTo(x, trackBottom);
+          this.ctx.lineTo(x + totalH, 0);
+        }
+        this.ctx.stroke();
+        this.ctx.restore();
+      }
+    }
+
     // Crisp Ruler Text
     this.ctx.fillStyle = "#aaa";
     this.ctx.textAlign = "center";
@@ -8349,13 +8508,13 @@ class TimelineEditor {
 
       if (frameVal > 0 && frameVal < totalFrames) {
         this.ctx.textAlign = "center";
-        this.ctx.fillText(this.formatTime(frameVal, true), x, RULER_HEIGHT / 2);
+        this.ctx.fillText(this.formatTime(frameVal, true), x, RULER_HEIGHT - 12);
       }
     }
 
     this.ctx.textAlign = "left";
     const zeroLabel = mode === "seconds" ? "0" : this.formatTime(0, true);
-    this.ctx.fillText(zeroLabel, 4, RULER_HEIGHT / 2);
+    this.ctx.fillText(zeroLabel, 4, RULER_HEIGHT - 12);
 
     // Divider
     this.ctx.fillStyle = "#111";
@@ -8411,6 +8570,70 @@ class TimelineEditor {
         this.ctx.fillRect(cutoffX, 0, width - cutoffX, RULER_HEIGHT);
       }
 
+      // --- Cut Region 2px Top Horizontal Lines & Duration Labels ---
+      const sortedCuts = (this.timeline.cuts || []).slice().sort((a, b) => a.frame_index - b.frame_index);
+      const regions = [];
+      let prevFrame = 0;
+      let prevKey = "start";
+      for (let i = 0; i < sortedCuts.length; i++) {
+        const cut = sortedCuts[i];
+        if (cut.frame_index > prevFrame) {
+          regions.push({
+            startFrame: prevFrame,
+            endFrame: cut.frame_index,
+            key: prevKey + "_" + cut.id
+          });
+        }
+        prevFrame = cut.frame_index;
+        prevKey = cut.id;
+      }
+      if (totalFrames > prevFrame) {
+        regions.push({
+          startFrame: prevFrame,
+          endFrame: totalFrames,
+          key: prevKey + "_end"
+        });
+      }
+
+      if (!this._regionHueMap) this._regionHueMap = new Map();
+      const fps = this.getFrameRate();
+
+      for (let i = 0; i < regions.length; i++) {
+        const reg = regions[i];
+        const startX = (reg.startFrame / totalFrames) * width;
+        const endX = (reg.endFrame / totalFrames) * width;
+        const regW = endX - startX;
+        if (regW <= 0) continue;
+
+        if (!this._regionHueMap.has(reg.key)) {
+          this._regionHueMap.set(reg.key, Math.floor(Math.random() * 360));
+        }
+        const hue = this._regionHueMap.get(reg.key);
+        const lineCol = hsvToRgbString(hue, 75, 100, 0.33);
+        const textCol = hsvToRgbString(hue, 75, 100, 0.66);
+
+        // 1. 2px thick horizontal line at the very top of timeline/ruler
+        this.ctx.fillStyle = lineCol;
+        this.ctx.fillRect(startX, 0, regW, 2);
+
+        // 2. Duration label under the line: "<x>f • <y>s"
+        const durFrames = reg.endFrame - reg.startFrame;
+        const durSecs = (durFrames / fps).toFixed(2);
+        const labelText = `${durFrames}f \u2022 ${durSecs}s`;
+
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.rect(startX, 0, regW, RULER_HEIGHT);
+        this.ctx.clip();
+
+        this.ctx.fillStyle = textCol;
+        this.ctx.font = "9px sans-serif";
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "top";
+        this.ctx.fillText(labelText, (startX + endX) / 2, 6);
+        this.ctx.restore();
+      }
+
       // --- Foreground: Soft / Hard Iteration Cut Lines & Top Marker Heads ---
       const cuts = this.timeline.cuts || [];
       if (cuts.length > 0) {
@@ -8422,20 +8645,21 @@ class TimelineEditor {
           const overlapStartFrame = Math.max(0, cut.frame_index - overlapFrames);
           const overlapStartX = (overlapStartFrame / totalFrames) * width;
           const isSelected = (this.selectionType === "cut" && this.selectedCutId === cut.id);
-          const isHard = (cut.type === "hard");
-          const lineCol = isHard ? "rgba(168, 85, 247, 1.0)" : "rgba(59, 130, 246, 1.0)";
-          const selectedLineCol = isHard ? "rgba(216, 180, 254, 1.0)" : "rgba(147, 197, 253, 1.0)";
-          const leftBoundaryCol = isHard ? "rgba(168, 85, 247, 0.5)" : "rgba(59, 130, 246, 0.5)";
+          const isChain = (cut.type === "chain" || cut.type === "hard");
+          const lineCol = isChain ? "rgba(255, 171, 87, 1.0)" : "rgba(237, 255, 71, 1.0)";
+          const selectedLineCol = isChain ? "rgba(255, 205, 150, 1.0)" : "rgba(245, 255, 140, 1.0)";
+          const leftBoundaryOpacity = isSelected ? 0.5 : 0.33;
+          const leftBoundaryCol = isChain ? `rgba(255, 171, 87, ${leftBoundaryOpacity})` : `rgba(237, 255, 71, ${leftBoundaryOpacity})`;
 
           // 1. Overlap Left Boundary Vertical Dashed Line (Top of ruler to bottom of tracks, opacity 0.5, never glows)
           if (cut.frame_index > overlapFrames) {
             this.ctx.save();
             this.ctx.beginPath();
-            this.ctx.setLineDash([5, 4]);
+            this.ctx.setLineDash([1, 3]);
             this.ctx.moveTo(overlapStartX, 0);
             this.ctx.lineTo(overlapStartX, trackBottom);
             this.ctx.strokeStyle = leftBoundaryCol;
-            this.ctx.lineWidth = 1.5;
+            this.ctx.lineWidth = 1;
             this.ctx.stroke();
             this.ctx.restore();
           }
@@ -8443,11 +8667,11 @@ class TimelineEditor {
           // 2. Cut Marker Vertical Dashed Line (Head down to track bottom, opacity 1.0, glows when selected)
           this.ctx.save();
           this.ctx.beginPath();
-          this.ctx.setLineDash([5, 4]);
-          this.ctx.moveTo(cutX, 16);
+          this.ctx.setLineDash([1, 3]);
+          this.ctx.moveTo(cutX, RULER_HEIGHT - 48);
           this.ctx.lineTo(cutX, trackBottom);
           this.ctx.strokeStyle = isSelected ? selectedLineCol : lineCol;
-          this.ctx.lineWidth = isSelected ? 2.2 : 1.5;
+          this.ctx.lineWidth = isSelected ? 1.5 : 1;
           if (isSelected) {
             this.ctx.shadowColor = lineCol;
             this.ctx.shadowBlur = 6;
@@ -8462,47 +8686,47 @@ class TimelineEditor {
           if (isDraggingThis) {
             this.ctx.save();
             this.ctx.beginPath();
-            this.ctx.setLineDash([5, 4]);
-            this.ctx.moveTo(headX, 16);
+            this.ctx.setLineDash([1, 3]);
+            this.ctx.moveTo(headX, RULER_HEIGHT - 40);
             this.ctx.lineTo(headX, trackBottom);
-            this.ctx.strokeStyle = "rgba(255, 255, 255, 0.33)";
-            this.ctx.lineWidth = 1.5;
+            this.ctx.strokeStyle = "rgba(255, 255, 255, 0.55)";
+            this.ctx.lineWidth = 1;
             this.ctx.stroke();
             this.ctx.restore();
           }
 
-          // 4. Draggable Top Marker Head (drawn at headX so it smoothly follows mouse in real-time)
-          const handleW = 9;
-          const handleH = 16;
+          // 4. Draggable Top Marker Head (PNG icon preserving natural aspect ratio without distortion)
+          const imgToDraw = isChain ? CUT_CHAIN_IMAGE : CUT_SOFT_IMAGE;
+          let handleH = 36;
+          let handleW = 16.6;
+          if (imgToDraw.complete && imgToDraw.naturalWidth > 0 && imgToDraw.naturalHeight > 0) {
+            handleW = handleH * (imgToDraw.naturalWidth / imgToDraw.naturalHeight);
+          }
+          const handleTop = RULER_HEIGHT - handleH + 5;
 
           this.ctx.save();
-          this.ctx.beginPath();
-          this.ctx.moveTo(headX - handleW, 0);
-          this.ctx.lineTo(headX + handleW, 0);
-          this.ctx.lineTo(headX + handleW, handleH - 5);
-          this.ctx.lineTo(headX, handleH); // downward tip
-          this.ctx.lineTo(headX - handleW, handleH - 5);
-          this.ctx.closePath();
-
-          this.ctx.fillStyle = isHard ? "#9333ea" : "#2563eb";
           if (isSelected) {
-            this.ctx.shadowColor = isHard ? "#c084fc" : "#60a5fa";
+            this.ctx.shadowColor = isChain ? "#FFAB57" : "#EDFF47";
             this.ctx.shadowBlur = 8;
           }
-          this.ctx.fill();
-
-          if (isSelected) {
-            this.ctx.strokeStyle = "#ffffff";
-            this.ctx.lineWidth = 1.5;
-            this.ctx.stroke();
+          if (imgToDraw.complete && imgToDraw.naturalWidth > 0) {
+            this.ctx.drawImage(imgToDraw, headX - handleW / 2, handleTop - handleH * 0.85, handleW, handleH);
+          } else {
+            this.ctx.beginPath();
+            this.ctx.moveTo(headX - handleW / 2, handleTop);
+            this.ctx.lineTo(headX + handleW / 2, handleTop);
+            this.ctx.lineTo(headX + handleW / 2, handleTop + handleH - 5);
+            this.ctx.lineTo(headX, handleTop + handleH);
+            this.ctx.lineTo(headX - handleW / 2, handleTop + handleH - 5);
+            this.ctx.closePath();
+            this.ctx.fillStyle = isChain ? "#FFAB57" : "#EDFF47";
+            this.ctx.fill();
+            this.ctx.fillStyle = "#000000";
+            this.ctx.font = "bold 9px sans-serif";
+            this.ctx.textAlign = "center";
+            this.ctx.textBaseline = "middle";
+            this.ctx.fillText(isChain ? "C" : "S", headX, handleTop + 8);
           }
-
-          // Handle letter badge ('S' for soft, 'H' for hard)
-          this.ctx.fillStyle = "#ffffff";
-          this.ctx.font = "bold 9px sans-serif";
-          this.ctx.textAlign = "center";
-          this.ctx.textBaseline = "middle";
-          this.ctx.fillText(isHard ? "H" : "S", headX, 6);
           this.ctx.restore();
         }
       }
@@ -8510,24 +8734,34 @@ class TimelineEditor {
 
     // --- Draw Playhead ---
     const playheadX = (this.currentFrame / totalFrames) * width;
+    const pHeight = 45;
+    let pWidth = 16;
+    if (PLAYHEAD_IMAGE.complete && PLAYHEAD_IMAGE.naturalWidth > 0 && PLAYHEAD_IMAGE.naturalHeight > 0) {
+      pWidth = pHeight * (PLAYHEAD_IMAGE.naturalWidth / PLAYHEAD_IMAGE.naturalHeight);
+    }
+    const pHandleTop = RULER_HEIGHT - pHeight + 5;
 
     // Playhead Line
     this.ctx.beginPath();
-    this.ctx.moveTo(playheadX, 14);
+    this.ctx.moveTo(playheadX, RULER_HEIGHT + 5);
     this.ctx.lineTo(playheadX, this.canvasHeight);
-    this.ctx.strokeStyle = "#ff4444";
+    this.ctx.strokeStyle = "#38CDFF";
     this.ctx.lineWidth = 1.5;
     this.ctx.stroke();
 
-    // Playhead Handle (Polygon above numbers)
-    this.ctx.fillStyle = "#ff4444";
-    this.ctx.beginPath();
-    this.ctx.moveTo(playheadX - 6, 0);
-    this.ctx.lineTo(playheadX + 6, 0);
-    this.ctx.lineTo(playheadX + 6, 8);
-    this.ctx.lineTo(playheadX, 14);
-    this.ctx.lineTo(playheadX - 6, 8);
-    this.ctx.fill();
+    // Playhead Handle (SVG/PNG Icon preserving natural aspect ratio)
+    if (PLAYHEAD_IMAGE.complete && PLAYHEAD_IMAGE.naturalWidth > 0) {
+      this.ctx.drawImage(PLAYHEAD_IMAGE, playheadX - pWidth / 2, pHandleTop, pWidth, pHeight);
+    } else {
+      this.ctx.fillStyle = "#38CDFF";
+      this.ctx.beginPath();
+      this.ctx.moveTo(playheadX - pWidth / 2, pHandleTop);
+      this.ctx.lineTo(playheadX + pWidth / 2, pHandleTop);
+      this.ctx.lineTo(playheadX + pWidth / 2, pHandleTop + Math.round(pHeight * (27 / 34)));
+      this.ctx.lineTo(playheadX, pHandleTop + pHeight);
+      this.ctx.lineTo(playheadX - pWidth / 2, pHandleTop + Math.round(pHeight * (27 / 34)));
+      this.ctx.fill();
+    }
 
     // Draw vertical grab bar on the right edge of viewport for resizing width
     const grabBarW = 4;
@@ -8667,20 +8901,33 @@ class TimelineEditor {
     const width = this.canvas.offsetWidth;
     const totalFrames = this.getVisualDurationFrames();
 
-    // 1. Check Cut Marker Heads at TOP (highest priority, before playhead & ruler)
+    // 1. Check Cut Marker Heads at TOP (strictly on the head icon, not in the gap below)
     const cuts = this.timeline.cuts || [];
     for (let i = cuts.length - 1; i >= 0; i--) {
       const cut = cuts[i];
       const cutX = (cut.frame_index / totalFrames) * width;
-      // Head at top of ruler (y <= RULER_HEIGHT + 2, |mouseX - cutX| <= 10)
-      if (mouseY <= RULER_HEIGHT + 2 && Math.abs(mouseX - cutX) <= 10) {
+      const isChain = (cut.type === "chain" || cut.type === "hard");
+      const imgToDraw = isChain ? CUT_CHAIN_IMAGE : CUT_SOFT_IMAGE;
+      let handleH = 36;
+      let handleW = 16.6;
+      if (imgToDraw.complete && imgToDraw.naturalWidth > 0 && imgToDraw.naturalHeight > 0) {
+        handleW = handleH * (imgToDraw.naturalWidth / imgToDraw.naturalHeight);
+      }
+      const handleTop = RULER_HEIGHT - handleH + 5;
+      const headDrawY = handleTop - handleH * 0.85;
+      const headDrawBottom = headDrawY + handleH;
+      const halfW = handleW / 2;
+
+      // Strictly hit-test the head icon itself (y from top of icon to bottom tip of icon)
+      if (mouseX >= cutX - halfW - 2 && mouseX <= cutX + halfW + 2 &&
+          mouseY >= headDrawY - 4 && mouseY <= headDrawBottom + 2) {
         return { type: "cut_marker", cutId: cut.id, cut: cut };
       }
     }
 
     // 2. Check Playhead Handle
     const playheadX = (this.currentFrame / totalFrames) * width;
-    if (mouseY <= 24 && Math.abs(mouseX - playheadX) <= 12) {
+    if (mouseY <= RULER_HEIGHT && Math.abs(mouseX - playheadX) <= 12) {
       return { type: "playhead" };
     }
 
@@ -11356,7 +11603,14 @@ class TimelineEditor {
       audioSegments: (this.timeline.audioSegments || []).map(s => {
         const { _sSecs, _lSecs, _tSecs, _dSecs, _uploading, _decoding, _blobUrl, _audioBuffer, ...rest } = s;
         return rest;
-      })
+      }),
+      cuts: (this.timeline.cuts || []).map(c => ({
+        id: c.id,
+        type: (c.type === "chain" || c.type === "hard") ? "chain" : "soft",
+        frame_index: c.frame_index,
+        time_seconds: c.time_seconds !== undefined ? c.time_seconds : parseFloat((c.frame_index / this.getFrameRate()).toFixed(3)),
+        overlap_frames: c.overlap_frames !== undefined ? c.overlap_frames : 22
+      }))
     };
 
     const jsonStr = JSON.stringify(toSave);
@@ -13638,13 +13892,13 @@ class TimelineEditor {
 
   updateCutInspectorValues(cut) {
     if (!cut) return;
-    const isHard = (cut.type === "hard");
+    const isChain = (cut.type === "chain" || cut.type === "hard");
     if (this.cutBadge) {
-      this.cutBadge.textContent = isHard ? "Hard Cut" : "Soft Cut";
-      this.cutBadge.className = `mmxd-cut-badge ${isHard ? "hard" : "soft"}`;
+      this.cutBadge.textContent = isChain ? "Chain Cut" : "Soft Cut";
+      this.cutBadge.className = `mmxd-cut-badge ${isChain ? "chain" : "soft"}`;
     }
     if (this.cutTypeSelect) {
-      this.cutTypeSelect.value = isHard ? "hard" : "soft";
+      this.cutTypeSelect.value = isChain ? "chain" : "soft";
     }
     if (this.cutFrameInput) {
       this.cutFrameInput.value = cut.frame_index;
@@ -13667,7 +13921,8 @@ class TimelineEditor {
     const max = parseFloat(this.seekBar.max) || 1;
     const val = parseFloat(this.seekBar.value) || 0;
     const pct = (val / max) * 100;
-    this.seekBar.style.background = `linear-gradient(to right, #ff4444 0%, #ff4444 ${pct}%, #444 ${pct}%, #444 100%)`;
+    this.seekBar.style.background = `linear-gradient(to right, #38CDFF 0%, #38CDFF ${pct}%, #444 ${pct}%, #444 100%)`;
+    this.seekBar.style.accentColor = "#38CDFF";
   }
 
   // --- Audio Player Engine ---
@@ -14702,7 +14957,7 @@ app.registerExtension({
         };
 
         const container = document.createElement("div");
-
+        container.className = "h3-eternity-director-root";
         container.style.boxSizing = "border-box";
         const widget = this.addDOMWidget("timeline_ui", "timeline_ui", container, {
           getValue: () => "",

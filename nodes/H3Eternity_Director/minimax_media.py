@@ -306,6 +306,33 @@ async def minimax_director_check_file(request):
     return web.json_response({"exists": False})
 
 
+@routes.get("/minimax_director/asset")
+async def minimax_director_asset(request):
+    """Serve static assets directly from the repository's assets directory without caching."""
+    asset_path = request.query.get("path", "")
+    if not asset_path:
+        return web.Response(status=400, text="Asset path required")
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    clean_path = os.path.normpath(asset_path).lstrip(r"\/")
+    full_path = os.path.join(root_dir, "assets", clean_path)
+    if not os.path.exists(full_path) or not os.path.isfile(full_path):
+        return web.Response(status=404, text=f"Asset not found: {asset_path}")
+
+    with open(full_path, "rb") as fp:
+        content = fp.read()
+
+    content_type = "image/png" if full_path.lower().endswith(".png") else "image/svg+xml" if full_path.lower().endswith(".svg") else "application/octet-stream"
+    return web.Response(
+        body=content,
+        content_type=content_type,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, post-check=0, pre-check=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
+    )
+
+
 @routes.post("/minimax_director/compile_prompt")
 async def compile_prompt_endpoint(request):
     """Live prompt preview for the editor.

@@ -4,6 +4,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Ensure UTF-8 output encoding across all platforms (specifically Windows consoles / Git hooks)
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 PYPROJECT_PATH = ROOT_DIR / "pyproject.toml"
 
@@ -33,6 +39,8 @@ def main():
             ["git", "tag"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True
         )
         existing_tags = [t.strip() for t in result.stdout.splitlines() if t.strip()]
@@ -65,3 +73,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

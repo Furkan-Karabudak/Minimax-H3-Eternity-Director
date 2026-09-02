@@ -105,7 +105,7 @@ def clear_node_timestamp_cache(node_id: Optional[str] = None) -> None:
 class CutMarker:
     """Represents a timeline cut point between iterations."""
     id: str
-    type: str  # "soft" (Soft Iteration Cut) | "hard" (Hard Iteration Cut)
+    type: str  # "soft" (Soft Iteration Cut) | "chain" (Chain Iteration Cut)
     time_seconds: float
     frame_index: int
     overlap_frames: int = DEFAULT_OVERLAP
@@ -115,9 +115,11 @@ class CutMarker:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CutMarker:
+        raw_type = str(data.get("type", "soft")).lower()
+        norm_type = "chain" if raw_type in ("chain", "hard") else "soft"
         return cls(
             id=str(data.get("id", "")),
-            type=str(data.get("type", "soft")),
+            type=norm_type,
             time_seconds=float(data.get("time_seconds", 0.0)),
             frame_index=int(data.get("frame_index", 0)),
             overlap_frames=int(data.get("overlap_frames", DEFAULT_OVERLAP)),
@@ -128,13 +130,14 @@ class CutMarker:
 class IterationDefinition:
     """Defines a single iteration window slice on the timeline."""
     index: int
-    type: str  # "initial" | "soft_iteration_cut" | "hard_iteration_cut"
+    type: str  # "initial" | "soft_iteration_cut" | "chain_iteration_cut"
     start_frame: int
     end_frame: int
     duration_frames: int
     overlap_lead_frames: int
     delivered_frames: int
     prompt: str
+    is_chain_cut: bool = False
     is_hard_cut: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -142,6 +145,7 @@ class IterationDefinition:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> IterationDefinition:
+        is_chain = bool(data.get("is_chain_cut", data.get("is_hard_cut", False)))
         return cls(
             index=int(data.get("index", 0)),
             type=str(data.get("type", "initial")),
@@ -151,7 +155,8 @@ class IterationDefinition:
             overlap_lead_frames=int(data.get("overlap_lead_frames", 0)),
             delivered_frames=int(data.get("delivered_frames", 0)),
             prompt=str(data.get("prompt", "")),
-            is_hard_cut=bool(data.get("is_hard_cut", False)),
+            is_chain_cut=is_chain,
+            is_hard_cut=is_chain,
         )
 
 
@@ -218,6 +223,7 @@ def compile_iterations_from_cuts(
                 overlap_lead_frames=0,
                 delivered_frames=total_frames,
                 prompt=default_prompt,
+                is_chain_cut=False,
                 is_hard_cut=False,
             ).to_dict()
         )
@@ -235,6 +241,7 @@ def compile_iterations_from_cuts(
             overlap_lead_frames=0,
             delivered_frames=first_end,
             prompt=default_prompt,
+            is_chain_cut=False,
             is_hard_cut=False,
         ).to_dict()
     )
@@ -253,8 +260,8 @@ def compile_iterations_from_cuts(
 
         dur_f = end_f - start_f
         deliv_f = end_f - cut.frame_index
-        is_hard = (cut.type.lower() == "hard")
-        cut_type_str = "hard_iteration_cut" if is_hard else "soft_iteration_cut"
+        is_chain = (cut.type.lower() in ("chain", "hard"))
+        cut_type_str = "chain_iteration_cut" if is_chain else "soft_iteration_cut"
 
         iterations.append(
             IterationDefinition(
@@ -266,7 +273,8 @@ def compile_iterations_from_cuts(
                 overlap_lead_frames=overlap,
                 delivered_frames=deliv_f,
                 prompt=default_prompt,
-                is_hard_cut=is_hard,
+                is_chain_cut=is_chain,
+                is_hard_cut=is_chain,
             ).to_dict()
         )
 

@@ -225,7 +225,7 @@ function updateSamplerAudioFormatOptions(node, forceResetToDefault = true) {
 }
 
 app.registerExtension({
-  name: "minimax.h3.eternity.sampler",
+  name: "H3Eternity.Sampler",
   async nodeCreated(node) {
     if (!SAMPLER_NODE_IDS.includes(node.comfyClass)) return;
 

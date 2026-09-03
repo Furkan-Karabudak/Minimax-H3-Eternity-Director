@@ -73,7 +73,7 @@ app.registerExtension({
       // maxHeight, which lets the layout engine hand it the leftover space instead. Same
       // deal here: one floor, no ceiling, resizable in both directions.
       const MIN_PREVIEW_H = 140;
-      const widget = this.addDOMWidget("minimax_preview_ui", "minimax_preview_ui", panel.root, {
+      const widget = this.addDOMWidget("h3_eternity_preview_ui", "h3_eternity_preview_ui", panel.root, {
         getValue: () => "",
         setValue: () => {},
         getMinHeight: () => MIN_PREVIEW_H,
@@ -135,7 +135,7 @@ app.registerExtension({
   },
 
   async setup() {
-    api.addEventListener("minimax_h3_preview", (event) => {
+    api.addEventListener("h3_eternity_preview", (event) => {
       const d = event.detail || {};
       // node ids are strings server-side and numbers in the graph — compare loosely
       const node = app.graph?._nodes?.find((n) => String(n.id) === String(d.node_id));

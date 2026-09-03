@@ -37,7 +37,7 @@ TODO.md
 *.local.md
 *.private.md
 
-
+AGENTS.md
 .agents/
 reference/
 tests/

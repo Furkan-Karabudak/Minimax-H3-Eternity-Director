@@ -5,7 +5,7 @@ which becomes a <Picture i> reference, what the storyboard prompt reads like —
 here and works on metadata alone. Three callers share it:
 
 * the Director node, which then loads exactly the media the plan calls for,
-* the /minimax_director/compile_prompt endpoint behind the editor's live prompt
+* the /h3_eternity_director/compile_prompt endpoint behind the editor's live prompt
   preview, which loads nothing at all,
 * the chain node, which plans one window per shot.
 
@@ -1647,3 +1647,78 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
         "window_seconds": window_seconds,
         "length": length, "actual_seconds": actual_seconds,
     }
+
+
+def plan_iteration_timeline(
+    tdata: dict,
+    start_frame: int,
+    duration_frames: int,
+    fps: float = 24.0,
+    global_prompt: str = "",
+    iteration_index: int = 0,
+    is_continuation: bool = False,
+    is_chain_cut: bool = False,
+    overlap_frames: int = 0,
+    extra_ref_images: int = 0,
+    ref_image_notes: str = "",
+    **kwargs,
+) -> dict:
+    """Compiles the timeline plan strictly for the active iteration window.
+
+    Args:
+        tdata: Parsed timeline data dictionary.
+        start_frame: Starting frame index of this iteration window on the global timeline.
+        duration_frames: Length of this iteration window in timeline frames.
+        fps: Timeline frame rate.
+        global_prompt: Optional global style/scene prompt override.
+        iteration_index: Active iteration index (0, 1, 2, ...).
+        is_continuation: True for Iteration N > 0 continuing from a previous shot.
+        is_chain_cut: True if separated by a Chain Cut rather than Soft Cut.
+        overlap_frames: Number of overlap lead frames (1, 5, 22, 39).
+        extra_ref_images: Count of additional semantic reference frames.
+        ref_image_notes: Description notes for reference images.
+
+    Returns:
+        Planned iteration dictionary with iteration prompt and metadata.
+    """
+    p = plan_timeline(
+        tdata=tdata,
+        win_start=start_frame,
+        duration_frames=duration_frames,
+        fps=fps,
+        global_prompt=global_prompt,
+        extra_ref_image_count=extra_ref_images,
+        ref_image_notes=ref_image_notes,
+        **kwargs,
+    )
+
+    p["iteration_index"] = iteration_index
+    p["is_continuation"] = is_continuation
+    p["is_chain_cut"] = is_chain_cut
+    p["overlap_frames"] = overlap_frames
+
+    if is_continuation and not p.get("retake"):
+        original_prompt = p.get("prompt", "")
+        start_sec = start_frame / fps
+        time_tag = fmt_seconds(start_sec)
+
+        continuation_header = "[video continuation]"
+        transition_type = "Chain cut" if is_chain_cut else "Soft cut"
+
+        directives = []
+        if continuation_header not in original_prompt:
+            directives.append(continuation_header)
+
+        if extra_ref_images > 0:
+            directives.append(
+                "How the reference pictures align with the target video:\n"
+                "The reference pictures capture the preceding action and motion trajectory leading into this shot. "
+                "Maintain visual, character, and environmental continuity."
+            )
+
+        if directives:
+            directive_text = "\n".join(directives) + "\n\n"
+            p["prompt"] = directive_text + original_prompt
+
+    return p
+

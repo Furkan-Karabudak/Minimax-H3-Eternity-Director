@@ -115,14 +115,16 @@ class CutMarker:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CutMarker:
-        raw_type = str(data.get("type", "soft")).lower()
+        raw_type = str(data.get("type", data.get("cut_type", "soft"))).lower()
         norm_type = "chain" if raw_type in ("chain", "hard") else "soft"
+        frame = data.get("frame_index", data.get("frame", data.get("cut_frame", 0)))
+        overlap = data.get("overlap_frames", data.get("overlap_duration", data.get("overlap", DEFAULT_OVERLAP)))
         return cls(
             id=str(data.get("id", "")),
             type=norm_type,
             time_seconds=float(data.get("time_seconds", 0.0)),
-            frame_index=int(data.get("frame_index", 0)),
-            overlap_frames=int(data.get("overlap_frames", DEFAULT_OVERLAP)),
+            frame_index=int(frame),
+            overlap_frames=int(overlap),
         )
 
 

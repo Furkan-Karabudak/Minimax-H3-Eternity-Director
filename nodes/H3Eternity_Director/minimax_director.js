@@ -951,10 +951,10 @@ const STYLES = `
   .mmxd-character-step-count { font-size: 9px; color: #6a6a6a; text-transform: uppercase; letter-spacing: 0.5px; user-select: none; min-width: 56px; text-align: center; }
 `;
 
-let styleEl = document.getElementById("h3-eternity-director-styles");
+let styleEl = document.getElementById("h3-eternity-styles");
 if (!styleEl) {
   styleEl = document.createElement("style");
-  styleEl.id = "h3-eternity-director-styles";
+  styleEl.id = "h3-eternity-styles";
   document.head.appendChild(styleEl);
 }
 styleEl.textContent = STYLES;
@@ -1198,8 +1198,8 @@ const ICONS = {
 const getTimelineAssetUrl = (relPath) => {
   const query = "path=" + encodeURIComponent(relPath) + "&t=" + Date.now();
   return (window.api && window.api.apiURL)
-    ? window.api.apiURL("/minimax_director/asset?" + query)
-    : "/minimax_director/asset?" + query;
+    ? window.api.apiURL("/h3_eternity_director/asset?" + query)
+    : "/h3_eternity_director/asset?" + query;
 };
 
 const PLAYHEAD_IMAGE = new Image();
@@ -2677,7 +2677,7 @@ class TimelineEditor {
     }
 
     const extractionPromise = (async () => {
-      const resp = await api.fetchApi(`/minimax_director_get_audio?filename=${encodeURIComponent(fileKey)}`);
+      const resp = await api.fetchApi(`/h3_eternity_director_get_audio?filename=${encodeURIComponent(fileKey)}`);
       if (resp.status === 200) {
         return await resp.json();
       }
@@ -5419,14 +5419,14 @@ class TimelineEditor {
   // Shared chunked upload helper for all video types in the MiniMax H3 Director.
   // Files <= 50 MB go through ComfyUI's standard /upload/image endpoint;
   // larger files are split into 50 MB chunks and sent to the MiniMax H3 Director's
-  // own /minimax_director_upload_chunk endpoint to bypass the 413 size limit.
+  // own /h3_eternity_director_upload_chunk endpoint to bypass the 413 size limit.
   async _uploadVideoFile(file) {
     const CHUNK_SIZE = 50 * 1024 * 1024; // 50 MB
     const safeFileName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
 
     // First check if the file already exists on the server to de-duplicate
     try {
-      const checkResp = await api.fetchApi(`/minimax_director_check_file?filename=${encodeURIComponent(safeFileName)}&size=${file.size}`);
+      const checkResp = await api.fetchApi(`/h3_eternity_director_check_file?filename=${encodeURIComponent(safeFileName)}&size=${file.size}`);
       if (checkResp.status === 200) {
         const checkResult = await checkResp.json();
         if (checkResult.exists) {
@@ -5449,7 +5449,7 @@ class TimelineEditor {
         formData.append("filename", safeName);
         formData.append("chunk_index", i);
         formData.append("total_chunks", totalChunks);
-        const resp = await api.fetchApi("/minimax_director_upload_chunk", { method: "POST", body: formData });
+        const resp = await api.fetchApi("/h3_eternity_director_upload_chunk", { method: "POST", body: formData });
         if (resp.status !== 200) throw new Error("MiniMax H3 Director video chunk upload failed");
       }
       return safeName; // filename (no subfolder) in the input dir
@@ -5713,7 +5713,7 @@ class TimelineEditor {
 
                 // Query server for extracted WAV audio file and waveform peaks
                 if (filePath) {
-                  api.fetchApi(`/minimax_director_get_audio?filename=${encodeURIComponent(filePath)}`)
+                  api.fetchApi(`/h3_eternity_director_get_audio?filename=${encodeURIComponent(filePath)}`)
                     .then(r => r.json())
                     .then(res => {
                       if (res.audio_file && res.peaks) {
@@ -6003,7 +6003,7 @@ class TimelineEditor {
       const videoFile = await this._uploadVideoFile(file);
       if (!videoFile) throw new Error("the upload did not complete");
 
-      const resp = await api.fetchApi("/minimax_director/probe_video", {
+      const resp = await api.fetchApi("/h3_eternity_director/probe_video", {
         method: "POST", body: JSON.stringify({ file: videoFile }),
       });
       const d = await resp.json();
@@ -8501,7 +8501,7 @@ class TimelineEditor {
     this.ctx.fillStyle = "#1e1e1e";
     this.ctx.fillRect(0, 0, width, RULER_HEIGHT);
 
-    // Overlap Zones on Ruler Area (Zaman alanı / marker alanı)
+    // Overlap Zones on Ruler Area
     const rulerCuts = (!this.retakeMode) ? (this.timeline.cuts || []) : [];
     if (rulerCuts.length > 0) {
       const trackBottom = RULER_HEIGHT + this.blockHeight + this.motionTrackHeight + this.audioTrackHeight;
@@ -8712,7 +8712,11 @@ class TimelineEditor {
       }
 
       // --- Top Strip (y = 0..12): Solid Iteration Areas, Overlap Diagonal Hatches, and Generated Frames Labels ---
-      // A. Fill solid iteration background in top strip (y = 0..12, radial gradient dark stop: hsv(hue, 75, 15), opacity 0.5)
+      // A. Top Strip (y = 0..13): Bright iteration background on sides (matching horizontal line) + dark slanted trapezoid bucket in center above label
+      const yTop = 13.0;
+      const slant = 4.0;
+      this.ctx.font = "500 10px sans-serif";
+
       for (let i = 0; i < regions.length; i++) {
         const reg = regions[i];
         const startX = (reg.startFrame / totalFrames) * width;
@@ -8721,8 +8725,62 @@ class TimelineEditor {
         if (regW <= 0) continue;
 
         const hue = this._regionHueMap.get(reg.key);
-        this.ctx.fillStyle = hsvToRgbString(hue, 75, 15, 0.5);
-        this.ctx.fillRect(startX, 0, regW, 12);
+        const brightCol = hsvToRgbString(hue, 75, 40, 1.0); // Exactly the same bright color as the horizontal line
+        const darkCol = hsvToRgbString(hue, 75, 15, 0.5);   // Radial gradient dark color (0.5 opacity)
+
+        const durFrames = reg.endFrame - reg.startFrame;
+        const durSecs = (durFrames / fps).toFixed(2);
+        const labelText = `${durFrames}f \u2022 ${durSecs}s`;
+
+        const textW = this.ctx.measureText(labelText).width;
+        const deltaY = 12;
+        const scaleX = deltaY / 5.14062;
+        const wingW = 3.48438 * scaleX;
+        const totalW = textW + 14 + 2 * wingW;
+        const xCenter = (startX + endX) / 2;
+        const xl = xCenter - totalW / 2;
+        const xr = xCenter + totalW / 2;
+
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.rect(startX, 0, regW, yTop);
+        this.ctx.clip();
+
+        // 1. Left bright region
+        if (xl > startX) {
+          this.ctx.fillStyle = brightCol;
+          this.ctx.beginPath();
+          this.ctx.moveTo(startX, 0);
+          this.ctx.lineTo(xl - slant, 0);
+          this.ctx.lineTo(xl, yTop);
+          this.ctx.lineTo(startX, yTop);
+          this.ctx.closePath();
+          this.ctx.fill();
+        }
+
+        // 2. Right bright region
+        if (endX > xr) {
+          this.ctx.fillStyle = brightCol;
+          this.ctx.beginPath();
+          this.ctx.moveTo(xr + slant, 0);
+          this.ctx.lineTo(endX, 0);
+          this.ctx.lineTo(endX, yTop);
+          this.ctx.lineTo(xr, yTop);
+          this.ctx.closePath();
+          this.ctx.fill();
+        }
+
+        // 3. Center dark trapezoid (aligned with label's top corners and slanted outwards at top)
+        this.ctx.fillStyle = darkCol;
+        this.ctx.beginPath();
+        this.ctx.moveTo(xl - slant, 0);
+        this.ctx.lineTo(xr + slant, 0);
+        this.ctx.lineTo(xr, yTop);
+        this.ctx.lineTo(xl, yTop);
+        this.ctx.closePath();
+        this.ctx.fill();
+
+        this.ctx.restore();
       }
 
       // B. Overlap zones in top strip (y = 0..12): diagonally hatched with alternating equal-width bands of both iteration colors
@@ -8738,21 +8796,21 @@ class TimelineEditor {
         if (i + 1 < regions.length) {
           const prevHue = this._regionHueMap.get(regions[i].key);
           const nextHue = this._regionHueMap.get(regions[i + 1].key);
-          const prevCol = hsvToRgbString(prevHue, 75, 15, 0.5);
-          const nextCol = hsvToRgbString(nextHue, 75, 15, 0.5);
+          const prevCol = hsvToRgbString(prevHue, 75, 40, 1.0);
+          const nextCol = hsvToRgbString(nextHue, 75, 40, 1.0);
 
           this.ctx.save();
           this.ctx.beginPath();
-          this.ctx.rect(overlapStartX, 0, overlapW, 12);
+          this.ctx.rect(overlapStartX, 0, overlapW, 13);
           this.ctx.clip();
 
           // Base background cleared to neutral
           this.ctx.fillStyle = "#1e1e1e";
-          this.ctx.fillRect(overlapStartX, 0, overlapW, 12);
+          this.ctx.fillRect(overlapStartX, 0, overlapW, 13);
 
           const wStripe = 6.0;
           const cycle = wStripe * 2;
-          const h = 12;
+          const h = 13;
 
           for (let x = overlapStartX - 24; x < cutX + 24; x += cycle) {
             // Equal-width parallelogram for previous iteration
@@ -8800,18 +8858,15 @@ class TimelineEditor {
 
         const genSecs = (genFrames / fps).toFixed(2);
         const genLabelText = `${genFrames}f \u2022 ${genSecs}s`;
-        const hue = this._regionHueMap.get(reg.key);
         const xCenter = (startX + endX) / 2;
 
         this.ctx.save();
         this.ctx.beginPath();
-        this.ctx.rect(startX, 0, regW, 12);
+        this.ctx.rect(startX, 0, regW, 13);
         this.ctx.clip();
 
         this.ctx.font = "bold 9px sans-serif";
-        this.ctx.fillStyle = hsvToRgbString(hue, 75, 100, 1.0);
-        this.ctx.shadowColor = "rgba(0, 0, 0, 0.7)";
-        this.ctx.shadowBlur = 3;
+        this.ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
         this.ctx.textAlign = "center";
         this.ctx.textBaseline = "middle";
         this.ctx.fillText(genLabelText, xCenter, 6);
@@ -11509,7 +11564,7 @@ class TimelineEditor {
     )).filter(Boolean);
 
     try {
-      const resp = await api.fetchApi("/minimax_director/analyze_character", {
+      const resp = await api.fetchApi("/h3_eternity_director/analyze_character", {
         method: "POST",
         body: JSON.stringify({
           clip_name: clip_name,
@@ -13859,7 +13914,7 @@ class TimelineEditor {
     btnOpenFolder.style.margin = "0";
     btnOpenFolder.addEventListener("click", async () => {
       try {
-        const response = await api.fetchApi("/minimax_director_open_folder");
+        const response = await api.fetchApi("/h3_eternity_director_open_folder");
         const data = await response.json();
         if (!data.success) {
           console.error("Failed to open workspace folder:", data.error || "Unknown error");
@@ -14617,7 +14672,7 @@ app.registerExtension({
           } catch (e) {}
           if (provider !== "off") {
             try {
-              await api.fetchApi("/minimax_director/unload_ollama", {
+              await api.fetchApi("/h3_eternity_director/unload_ollama", {
                 method: "POST",
                 body: JSON.stringify({ provider, base_url: baseUrl, model,
                                        api_key: getAnalyzeApiKey() }),
@@ -15434,7 +15489,7 @@ app.registerExtension({
               ref_images_connected:
                 self.inputs?.find(i => i.name === "ref_images")?.link != null,
             };
-            const resp = await api.fetchApi("/minimax_director/compile_prompt", {
+            const resp = await api.fetchApi("/h3_eternity_director/compile_prompt", {
               method: "POST", body: JSON.stringify(body),
             });
             const d = await resp.json();

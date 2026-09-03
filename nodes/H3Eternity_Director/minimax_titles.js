@@ -33,7 +33,7 @@ function healTitle(node) {
 }
 
 app.registerExtension({
-  name: "MiniMaxH3.TitleCleanup",
+  name: "H3Eternity.TitleCleanup",
 
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (!RENAMED[nodeData.name]) return;

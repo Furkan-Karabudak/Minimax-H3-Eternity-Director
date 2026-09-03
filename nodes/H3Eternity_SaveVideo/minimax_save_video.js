@@ -550,7 +550,7 @@ function addVideoPreviewWidget(node) {
       seqControlsEl.style.display = "none";
       let srcUrl;
       if (isSpecialTranscode) {
-        srcUrl = api.apiURL(`/minimax/viewvideo?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(previewData.subfolder || "")}&type=${encodeURIComponent(previewData.type || "output")}&t=${Date.now()}`);
+        srcUrl = api.apiURL(`/h3_eternity/viewvideo?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(previewData.subfolder || "")}&type=${encodeURIComponent(previewData.type || "output")}&t=${Date.now()}`);
       } else {
         srcUrl = api.apiURL(`/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(previewData.subfolder || "")}&type=${encodeURIComponent(previewData.type || "output")}&t=${Date.now()}`);
       }
@@ -561,8 +561,8 @@ function addVideoPreviewWidget(node) {
       videoEl.load();
 
       videoEl.onerror = () => {
-        if (!videoEl.src.includes("/minimax/viewvideo")) {
-          const fallbackUrl = api.apiURL(`/minimax/viewvideo?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(previewData.subfolder || "")}&type=${encodeURIComponent(previewData.type || "output")}&t=${Date.now()}`);
+        if (!videoEl.src.includes("/h3_eternity/viewvideo")) {
+          const fallbackUrl = api.apiURL(`/h3_eternity/viewvideo?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(previewData.subfolder || "")}&type=${encodeURIComponent(previewData.type || "output")}&t=${Date.now()}`);
           videoEl.src = fallbackUrl;
           videoEl.load();
         }

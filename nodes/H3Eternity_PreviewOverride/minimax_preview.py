@@ -38,7 +38,7 @@ from protocol import BinaryEventTypes
 
 log = logging.getLogger(__name__)
 
-EVENT = "minimax_h3_preview"
+EVENT = "h3_eternity_preview"
 DECODE_FAST = "latent2rgb (fast)"
 DECODE_VAE = "vae (quality)"
 PLAYBACK_TRUE = "true speed"
@@ -456,7 +456,7 @@ class MiniMaxH3PreviewOverride(io.ComfyNode):
         # `clone()` deep-copies model_options, so this cannot leak into the source patcher.
         comfy.patcher_extension.add_wrapper_with_key(
             comfy.patcher_extension.WrappersMP.OUTER_SAMPLE,
-            "minimax_h3_preview", wrapper, m.model_options, is_model_options=True)
+            "h3_eternity_preview", wrapper, m.model_options, is_model_options=True)
 
         registered = comfy.patcher_extension.get_all_wrappers(
             comfy.patcher_extension.WrappersMP.OUTER_SAMPLE, m.model_options,
@@ -466,7 +466,7 @@ class MiniMaxH3PreviewOverride(io.ComfyNode):
             # registering twice and firing the preview for every step twice over
             log.info("[MiniMaxDirector] using ModelPatcher-side wrapper registration.")
             m.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.OUTER_SAMPLE,
-                                   "minimax_h3_preview", wrapper)
+                                   "h3_eternity_preview", wrapper)
         return io.NodeOutput(m)
 
 

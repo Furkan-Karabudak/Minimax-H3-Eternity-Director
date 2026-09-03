@@ -4,7 +4,7 @@ Contains code derived from the LTX Director node by WhatDreamsCost (GPL-3.0, see
 LICENSE), via the CS fork by CGlide; modified in 2026 for MiniMax H3. The timeline UI
 behaves identically on purpose: same chunked upload path, same waveform peaks, same
 workspace folder, same drag-and-drop handling. Route paths are namespaced under
-/minimax_director* so both nodes can be installed side by side.
+/h3_eternity_director* and /h3_eternity* so both stock MiniMax H3 Director and LTX Director can be installed side by side.
 
 The upload workspace stays `input/whatdreamscost` on purpose — assets dropped into
 either Director are then visible to both.
@@ -183,7 +183,7 @@ def _try_register_routes():
         except Exception:
             pass
 
-@routes.get("/minimax/viewvideo")
+@routes.get("/h3_eternity/viewvideo")
 async def minimax_view_video(request):
     """Dynamic video preview streaming endpoint for all video formats (FFV1, ProRes, HEVC, Sequences, etc.)."""
     filename = request.query.get("filename", "")
@@ -262,7 +262,7 @@ async def minimax_view_video(request):
         return web.FileResponse(path=file_path)
 
 
-@routes.get("/minimax_director_check_file")
+@routes.get("/h3_eternity_director_check_file")
 async def minimax_director_check_file(request):
     """Dedupe uploads: report whether an identically named (and sized) file already exists."""
     filename = request.query.get("filename", "")
@@ -306,7 +306,7 @@ async def minimax_director_check_file(request):
     return web.json_response({"exists": False})
 
 
-@routes.get("/minimax_director/asset")
+@routes.get("/h3_eternity_director/asset")
 async def minimax_director_asset(request):
     """Serve static assets directly from the repository's assets directory without caching."""
     asset_path = request.query.get("path", "")
@@ -333,7 +333,7 @@ async def minimax_director_asset(request):
     )
 
 
-@routes.post("/minimax_director/compile_prompt")
+@routes.post("/h3_eternity_director/compile_prompt")
 async def compile_prompt_endpoint(request):
     """Live prompt preview for the editor.
 
@@ -420,7 +420,7 @@ async def compile_prompt_endpoint(request):
         return web.json_response({"status": "error", "message": str(e)}, status=500)
 
 
-@routes.post("/minimax_director/probe_video")
+@routes.post("/h3_eternity_director/probe_video")
 async def probe_video_endpoint(request):
     """Duration, size and a first frame for a video the browser could not open.
 
@@ -489,7 +489,7 @@ async def probe_video_endpoint(request):
         return web.json_response({"status": "error", "message": str(e)})
 
 
-@routes.get("/minimax_director_get_audio")
+@routes.get("/h3_eternity_director_get_audio")
 async def minimax_director_get_audio(request):
     filename = request.query.get("filename")
     if not filename:
@@ -516,7 +516,7 @@ async def minimax_director_get_audio(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
-@routes.get("/minimax_director_open_folder")
+@routes.get("/h3_eternity_director_open_folder")
 async def minimax_director_open_folder(request):
     """Open the OS file manager focused on the whatdreamscost input folder."""
     upload_dir = folder_paths.get_input_directory()
@@ -542,7 +542,7 @@ def _write_chunk(file, file_path, mode):
         f.write(file.file.read())
 
 
-@routes.post("/minimax_director_upload_chunk")
+@routes.post("/h3_eternity_director_upload_chunk")
 async def minimax_director_upload_chunk(request):
     """Chunked upload — sidesteps the 413 Payload Too Large limit on big videos."""
     post = await request.post()
@@ -801,7 +801,7 @@ async def vlm_generate(images_b64, prompt, provider, base_url, model,
     return strip_thinking(text)
 
 
-@routes.post("/minimax_director/analyze_character")
+@routes.post("/h3_eternity_director/analyze_character")
 async def analyze_character_endpoint(request):
     try:
         from . import minimax_plan as plan
@@ -908,7 +908,7 @@ async def unload_model(provider, base_url, model, api_key=None):
         return False
 
 
-@routes.post("/minimax_director/unload_ollama")
+@routes.post("/h3_eternity_director/unload_ollama")
 async def unload_ollama_endpoint(request):
     """Evict the analysis VLM from VRAM right before a run so it doesn't fight H3 for memory."""
     try:

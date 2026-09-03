@@ -48,6 +48,13 @@ from .render_plan import (
     deserialize_render_plan,
     compile_iterations_from_cuts,
 )
+from .hybrid_stitch import (
+    build_empty_av_latent,
+    extract_continuation_payload,
+    attach_hybrid_conditioning,
+)
+from .patch_layout import apply_patch as apply_layout_patch
+from .patch_payload import apply_patch as apply_payload_patch
 
 AUDIO_SR = media.AUDIO_SR
 
@@ -870,50 +877,62 @@ class MiniMaxH3Director(io.ComfyNode):
                 override_audio=False, ref_image_size="match",
                 shift_video=12.0, shift_audio=3.0, ref_images=None, ref_image_notes="",
                 render_plan=None,
-                sampler=None, sigmas=None, noise_seed=0, window_seconds=5.0,
-                tiled_vae_decode=False, seam_audio="aligned",
-                long_form_mode="chained", overlap_seconds=2.0,
                 start=None, end=None, duration=None,
                 width=None, height=None, **kwargs) -> io.NodeOutput:
+
+        # 1. Apply runtime patches (idempotent)
+        apply_layout_patch()
+        apply_payload_patch()
 
         mm = core()
         tdata = plan.parse_timeline(timeline_data)
         fps = float(frame_rate) if frame_rate else 24.0
 
-        win_start, duration_frames = resolve_window(
-            tdata, fps, start_frame, duration_frames, start, end, duration)
-        # resolved here, next to the window, so both automation paths are refused in the
-        # same place — and before `width`/`height` are reused for the resolved canvas
+        cuts_data = tdata.get("cuts", []) if isinstance(tdata, dict) else []
+        total_timeline_frames = int(tdata.get("normalDurationFrames", duration_frames)) if isinstance(tdata, dict) else int(duration_frames)
+
+        # 2. Synchronize or initialize render_plan
+        node_id = str(kwargs.get("unique_id", "director"))
         box_w, box_h = resolve_size(custom_width, custom_height, width, height)
 
-        # --- long-form chaining (fork addition) -------------------------------------
-        # A sampler + sigmas wired in means "render the whole timeline as chained windows,
-        # sampling internally". Retake is single-window by definition (it splices one marked
-        # range back into a base video), so it always takes the normal path below.
-        if sampler is not None and sigmas is not None and not plan.retake_state(tdata):
-            if long_form_mode == "seamless":
-                return cls._execute_seamless(
-                    mm, tdata, timeline_data, fps, win_start, duration_frames,
-                    clip, vae, audio_vae, sampler, sigmas, noise_seed, window_seconds,
-                    overlap_seconds, model=model, model_ref2va=model_ref2va,
-                    global_prompt=global_prompt, use_custom_motion=use_custom_motion,
-                    use_custom_audio=use_custom_audio, override_audio=override_audio,
-                    ref_image_size=ref_image_size, shift_video=shift_video, shift_audio=shift_audio,
-                    box_w=box_w, box_h=box_h, resize_method=resize_method,
-                    divisible_by=divisible_by, img_compression=img_compression,
-                    ref_images=ref_images, ref_image_notes=ref_image_notes,
-                    tiled_vae_decode=tiled_vae_decode)
-            return cls._execute_windowed(
-                mm, tdata, timeline_data, fps, win_start, duration_frames,
-                clip, vae, audio_vae, sampler, sigmas, noise_seed, window_seconds,
-                model=model, model_ref2va=model_ref2va, global_prompt=global_prompt,
-                use_custom_motion=use_custom_motion, use_custom_audio=use_custom_audio,
-                override_audio=override_audio, ref_image_size=ref_image_size,
-                shift_video=shift_video, shift_audio=shift_audio,
-                box_w=box_w, box_h=box_h, resize_method=resize_method,
-                divisible_by=divisible_by, img_compression=img_compression,
-                ref_images=ref_images, ref_image_notes=ref_image_notes,
-                tiled_vae_decode=tiled_vae_decode, seam_audio=seam_audio)
+        if render_plan is None:
+            rplan = create_render_plan(
+                node_id=node_id,
+                width=int(box_w or DEFAULT_W),
+                height=int(box_h or DEFAULT_H),
+                fps=fps,
+                total_frames=total_timeline_frames,
+                cuts=cuts_data,
+            )
+        else:
+            rplan = deserialize_render_plan(render_plan)
+            rplan["cuts"] = cuts_data
+            rplan["iterations"] = compile_iterations_from_cuts(
+                total_frames=total_timeline_frames,
+                cuts=cuts_data,
+                fps=fps,
+            )
+            rplan["total_iterations"] = len(rplan["iterations"])
+
+        # 3. Determine active iteration parameters
+        cur_idx = int(rplan.get("current_iteration", 0))
+        iterations = rplan.get("iterations", [])
+        if iterations:
+            if cur_idx >= len(iterations):
+                cur_idx = len(iterations) - 1
+                rplan["current_iteration"] = cur_idx
+            active_iter = iterations[cur_idx]
+            win_start = int(active_iter["start_frame"])
+            iter_duration = int(active_iter["duration_frames"])
+            overlap_lead = int(active_iter.get("overlap_lead_frames", 0))
+            is_chain = bool(active_iter.get("is_chain_cut", False))
+            is_continuation = (cur_idx > 0)
+        else:
+            win_start, iter_duration = resolve_window(
+                tdata, fps, start_frame, duration_frames, start, end, duration)
+            overlap_lead = 0
+            is_chain = False
+            is_continuation = False
 
         extra_refs = 0
         if ref_images is not None:
@@ -922,52 +941,56 @@ class MiniMaxH3Director(io.ComfyNode):
             except Exception:
                 extra_refs = 0
 
-        p = plan.plan_timeline(tdata, win_start, duration_frames, fps,
-                               global_prompt=global_prompt,
-                               use_custom_motion=use_custom_motion,
-                               use_custom_audio=use_custom_audio,
-                               override_audio=override_audio,
-                               extra_ref_image_count=extra_refs,
-                               ref_image_notes=ref_image_notes)
+        # 4. Continuation payload extraction (Path A + Path B) if Iteration N > 0
+        minimax_keyframes = []
+        minimax_audio_ref = None
+        semantic_ref_frames = []
+
+        if is_continuation:
+            saved_artifacts = rplan.get("saved_artifacts", [])
+            if saved_artifacts:
+                prev_artifact = saved_artifacts[-1]
+                minimax_keyframes, minimax_audio_ref, semantic_ref_frames = extract_continuation_payload(
+                    previous_artifact=prev_artifact,
+                    overlap_frames=overlap_lead,
+                    canvas_w=box_w or DEFAULT_W,
+                    canvas_h=box_h or DEFAULT_H,
+                    fps=fps,
+                )
+
+        # 5. Plan iteration timeline prompt & events
+        total_extra_refs = extra_refs + len(semantic_ref_frames)
+        p = plan.plan_iteration_timeline(
+            tdata=tdata,
+            start_frame=win_start,
+            duration_frames=iter_duration,
+            fps=fps,
+            global_prompt=global_prompt,
+            iteration_index=cur_idx,
+            is_continuation=is_continuation,
+            is_chain_cut=is_chain,
+            overlap_frames=overlap_lead,
+            use_custom_motion=use_custom_motion,
+            use_custom_audio=use_custom_audio,
+            override_audio=override_audio,
+            extra_ref_images=total_extra_refs,
+            ref_image_notes=ref_image_notes,
+        )
 
         length = p["length"]
-        if length > plan.TRAINED_MAX_FRAMES:
-            # Not a limit and never was: nothing here caps the length, and longer windows
-            # do render (issue #12). What leaves the model card's 4-15s envelope is the
-            # quality, and the clock — attention is quadratic in sequence length, so the
-            # render time climbs faster than the video does.
-            log.warning("[MiniMaxDirector] %d frames (%.1fs) is past H3's trained range of "
-                        "~%d-%d frames (the model card's 4-15s). It renders — expect drift "
-                        "or looping, and a render time that climbs faster than the length. "
-                        "For a dependable result shorten the timeline, or render it as "
-                        "several windows and splice them together.",
-                        length, p["actual_seconds"], plan.TRAINED_MIN_FRAMES,
-                        plan.TRAINED_MAX_FRAMES)
-        elif length < plan.TRAINED_MIN_FRAMES:
-            log.info("[MiniMaxDirector] %d frames (%.1fs) is below H3's trained range "
-                     "(~%d frames / 5s). Fine for tests, weaker motion than a full shot.",
-                     length, p["actual_seconds"], plan.TRAINED_MIN_FRAMES)
-        if p["prompt_is_fallback"]:
-            log.warning("[MiniMaxDirector] No prompt text on the timeline — falling back to 'video'.")
-        for warning in p.get("ref_warnings") or []:
-            log.warning("[MiniMaxDirector] %s", warning)
-
         retake = p["retake"]
 
-        # --- load the pixels the plan calls for ------------------------------------
         for ev in p["events"]:
             ev["tensor"] = _load_event_tensor(ev, fps, win_start)
 
         first_src = last_src = None
         if retake:
-            # anchor on the base video's own frames either side of the marked range
             first_src = _grab_base_frame(retake["video"], retake["start"] - 1, fps)
             tail_index = retake["start"] + retake["length"]
             if not retake["base_frames"] or tail_index < retake["base_frames"]:
                 last_src = _grab_base_frame(retake["video"], tail_index, fps)
             if first_src is None and last_src is None:
-                log.warning("[MiniMaxDirector] Retake: could not read anchor frames from '%s' "
-                            "— falling back to a plain text-to-video window.", retake["video"])
+                log.warning("[MiniMaxDirector] Retake: could not read anchor frames from '%s'", retake["video"])
         else:
             for ev in p["events"]:
                 if ev["role"] == plan.ROLE_FIRST:
@@ -975,32 +998,20 @@ class MiniMaxH3Director(io.ComfyNode):
                 elif ev["role"] == plan.ROLE_LAST:
                     last_src = ev["tensor"][-1:]
 
-        # --- canvas -----------------------------------------------------------------
+        # 6. Resolve canvas geometry
         canvas_src = first_src
         if canvas_src is None:
             canvas_src = p["events"][0]["tensor"] if p["events"] else None
-        width, height = resolve_canvas(mm, box_w, box_h,
-                                       int(divisible_by), resize_method, canvas_src)
+        width, height = resolve_canvas(mm, box_w, box_h, int(divisible_by), resize_method, canvas_src)
 
-        # Core's PackedLayout divides by `math.sqrt(latent_h * latent_w)`, so a zero-edged
-        # latent takes it down with a bare "float division by zero" six frames deep, naming
-        # nothing that would lead back here. A slightly larger canvas clears that and then
-        # fails inside the video VAE instead. Neither is reachable with the default
-        # divisible_by of 32; custom_width=4 with divisible_by=1 is (issue #4).
         if width < MIN_CANVAS_EDGE or height < MIN_CANVAS_EDGE:
             raise ValueError(
-                "MiniMax H3 Director: the canvas came out %dx%d. H3 needs at least %dpx per "
-                "side — below that its VAE has nothing left to work with and the failure "
-                "surfaces deep in ComfyUI as a division by zero. Raise custom_width / "
-                "custom_height, or raise divisible_by (32 is H3's own step)."
-                % (width, height, MIN_CANVAS_EDGE))
+                "MiniMax H3 Director: the canvas came out %dx%d — below H3's %dpx floor. "
+                "Raise custom_width/height or divisible_by." % (width, height, MIN_CANVAS_EDGE))
 
         def fit(tensor):
             out = media.resize_image(tensor, width, height, resize_method, int(divisible_by))
             if out.shape[1] != height or out.shape[2] != width:
-                # A later image with a different aspect than the one that set the canvas.
-                # The canvas is already fixed, so cover-crop it to match exactly — otherwise
-                # the core node would stretch the keyframe and distort it.
                 out = media.resize_image(out, width, height, "crop", int(divisible_by))
             if int(img_compression) > 0:
                 out = media.compress_image(out, int(img_compression))
@@ -1009,10 +1020,12 @@ class MiniMaxH3Director(io.ComfyNode):
         first_frame = fit(first_src) if first_src is not None else None
         last_frame = fit(last_src) if last_src is not None else None
 
-        # --- reference payloads ------------------------------------------------------
+        # 7. Collect reference inputs (Videos, Audios, Images, and Semantic Path A frames)
         ref_image_tensors, ref_videos, ref_video_audios, ref_audios = [], {}, {}, {}
         if p["ref_mode_on"]:
             ref_image_tensors = load_ref_image_tensors(p["ref_image_slots"], fit, ref_images)
+            for sem_frame in semantic_ref_frames:
+                ref_image_tensors.append(fit(sem_frame))
 
             for seg in p["ref_video_segs"]:
                 idx = len(ref_videos)
@@ -1020,25 +1033,13 @@ class MiniMaxH3Director(io.ComfyNode):
                 seg_len = float(seg.get("length", 1))
                 offset = max(0.0, win_start - seg_start)
                 trim = float(seg.get("trimStart", 0)) + offset
-                # The segment's own length is the answer, capped only at the model card's
-                # ceiling. It used to be floored at 2s as well, which meant trimming a clip
-                # shorter than that silently handed the VAE *more* than was asked for —
-                # the opposite of what someone trimming it down is trying to do. The
-                # planner already warns when a clip is under the card's 2s minimum.
                 clip_sec = min(plan.REF_VIDEO_MAX_SEC, (seg_len - offset) / fps)
-                # Reference frames are VAE-encoded whole and then ride through every
-                # sampling step, so their resolution is the largest single lever on memory:
-                # halving the short edge is roughly a quarter of the footprint. Per clip,
-                # because one reference may be carrying a look worth the pixels while
-                # another is only carrying a camera move.
                 short_edge = int(seg.get("refSize") or plan.REF_VIDEO_SHORT_EDGE)
                 frames = media.load_video_tensor(
                     seg["videoFile"], trim / fps, clip_sec,
                     max_short_edge=short_edge,
                     max_pixels=int(short_edge * short_edge * plan.REF_VIDEO_ASPECT_BUDGET))
                 if frames.shape[0] < 5:
-                    log.warning("[MiniMaxDirector] Reference video '%s' is shorter than 5 "
-                                "frames — skipped.", seg.get("fileName", seg["videoFile"]))
                     continue
                 ref_videos["ref_video_%d" % idx] = frames
                 if override_audio:
@@ -1054,28 +1055,14 @@ class MiniMaxH3Director(io.ComfyNode):
                     ref_audios["ref_audio_%d" % len(ref_audios)] = clip_audio
 
             if first_frame is not None or last_frame is not None:
-                log.info("[MiniMaxDirector] ref2va has no first/last keyframe slot — the "
-                         "timeline keyframes were added as <Picture i> references instead.")
                 first_frame = last_frame = None
 
         prompt = p["prompt"]
-        log.info("[MiniMaxDirector] %s%s | %dx%d | %d frames (%.2fs @24fps) | %d shots | "
-                 "refs: %d img / %d vid / %d audio",
-                 p["mode"], " (retake)" if retake else "", width, height, length,
-                 p["actual_seconds"], len(p["shots"]),
-                 len(ref_image_tensors), len(ref_videos), len(ref_audios))
-        # The full storyboard is one to two screens of text; the node's `prompt` output and
-        # the COMPILED PROMPT panel both show it, so keep it out of the console by default.
-        log.debug("[MiniMaxDirector] prompt:\n%s", prompt)
 
-        # --- conditioning ------------------------------------------------------------
+        # 8. Encode stock conditioning
         if p["ref_mode_on"]:
             if (ref_audios or ref_video_audios) and audio_vae is None:
-                raise ValueError(
-                    "MiniMax H3 Director: audio references need the audio VAE. Connect "
-                    "minimax_h3_audio_vae to the Director's 'audio_vae' input (or turn off "
-                    "the audio track / Override Audio)."
-                )
+                raise ValueError("MiniMax H3 Director: audio references need the audio VAE. Connect minimax_h3_audio_vae to 'audio_vae'.")
             out = mm.MiniMaxH3ReferenceToVideo.execute(
                 clip=clip, vae=vae, audio_vae=audio_vae, prompt=prompt,
                 width=width, height=height, length=length,
@@ -1086,19 +1073,25 @@ class MiniMaxH3Director(io.ComfyNode):
                 ref_audios=ref_audios or None,
             )
         else:
-            middles = [e for e in p["events"] if e["role"] == plan.ROLE_MIDDLE]
-            if middles:
-                log.warning("[MiniMaxDirector] %d timeline image(s) sit in the middle of the "
-                            "window. H3 only anchors keyframes at the first and last frame, so "
-                            "they were ignored — switch the toolbar to 'Refs ON (ref2va)' to "
-                            "use them as <Picture i> references.", len(middles))
             out = mm.MiniMaxH3ImageToVideo.execute(
                 clip=clip, vae=vae, prompt=prompt,
                 width=width, height=height, length=length,
                 first_frame=first_frame, last_frame=last_frame,
             )
 
-        conditioning, latent = _unpack(out)[:2]
+        conditioning, _ = _unpack(out)[:2]
+
+        # 9. Attach Path B Keyframes & Audio Ref if continuing
+        if is_continuation and minimax_keyframes:
+            conditioning = attach_hybrid_conditioning(
+                conditioning=conditioning,
+                minimax_keyframes=minimax_keyframes,
+                minimax_audio_ref=minimax_audio_ref,
+                duration_frames=length,
+            )
+
+        # 10. Allocate clean empty AV latent for sampling
+        latent = build_empty_av_latent(duration_frames=length, width=width, height=height)
 
         chosen_model = pick_model(model, model_ref2va, p["ref_mode_on"])
         patched_model = _unpack(mm.MiniMaxH3SigmaShift.execute(
@@ -1122,674 +1115,17 @@ class MiniMaxH3Director(io.ComfyNode):
                 "width": int(width), "height": int(height),
             })
 
-        # --- Synchronize or Initialize render_plan ---
-        cuts_data = tdata.get("cuts", []) if isinstance(tdata, dict) else []
-        total_timeline_frames = int(tdata.get("normalDurationFrames", duration_frames)) if isinstance(tdata, dict) else int(duration_frames)
-        if render_plan is None:
-            rplan = create_render_plan(
-                node_id="director",
-                width=int(width),
-                height=int(height),
-                fps=fps,
-                total_frames=total_timeline_frames,
-                cuts=cuts_data,
-            )
-        else:
-            rplan = deserialize_render_plan(render_plan)
-            rplan["width"] = int(width)
-            rplan["height"] = int(height)
-            rplan["fps"] = fps
-            rplan["total_frames"] = total_timeline_frames
-            rplan["cuts"] = cuts_data
-            rplan["iterations"] = compile_iterations_from_cuts(
-                total_frames=total_timeline_frames,
-                cuts=cuts_data,
-                fps=fps,
-            )
-            rplan["total_iterations"] = len(rplan["iterations"])
+        # 11. Synchronize render_plan state and attach current iteration tensors
+        rplan["canvas"]["width"] = int(width)
+        rplan["canvas"]["height"] = int(height)
+        rplan["canvas"]["fps"] = fps
+        rplan["current_conditioning"] = conditioning
+        rplan["current_latent"] = latent
 
         return io.NodeOutput(rplan, patched_model, conditioning, latent, audio_out,
                              MODEL_FPS, int(width), int(height), int(length), prompt,
                              retake_info)
 
-    # ------------------------------------------------------ long-form chaining
-
-    @classmethod
-    def _execute_windowed(cls, mm, tdata, timeline_data, fps, win_start, duration_frames,
-                          clip, vae, audio_vae, sampler, sigmas, noise_seed, window_seconds,
-                          model=None, model_ref2va=None, global_prompt="",
-                          use_custom_motion=True, use_custom_audio=False, override_audio=False,
-                          ref_image_size="match", shift_video=12.0, shift_audio=3.0,
-                          box_w=0, box_h=0, resize_method="crop", divisible_by=32,
-                          img_compression=0, ref_images=None, ref_image_notes="",
-                          tiled_vae_decode=False, seam_audio="aligned") -> io.NodeOutput:
-        """Render the whole render range as a chain of windows, sampling internally.
-
-        Each window opens on the previous window's decoded last frame, which is a tensor that
-        only exists after that window is sampled and decoded — so it cannot be expressed as a
-        static graph and the sampling has to live here. Two-phase decode (anchor-only in the
-        loop while the DiT is resident, full decode once after it is freed) keeps every decode
-        on the GPU instead of spilling to CPU and exhausting system RAM on a long chain."""
-        sm = samplers()
-
-        if window_seconds < 4.0:
-            log.warning("[MiniMaxDirector] window_seconds=%.2f is below H3's 4s trained floor "
-                        "— using 5.0.", window_seconds)
-            window_seconds = 5.0
-        window_frames = max(1, int(round(window_seconds * fps)))
-        # H3's trained 4-15s range, expressed in TIMELINE frames (windows are cut in timeline
-        # frames, then each window's own plan snaps its length to the 24fps model grid).
-        min_frames = max(1, int(round(plan.TRAINED_MIN_FRAMES * fps / MODEL_FPS)))
-        max_frames = int(round(plan.TRAINED_MAX_FRAMES * fps / MODEL_FPS))
-        windows = split_windows(duration_frames, window_frames, min_frames, max_frames)
-        log.info("[MiniMaxDirector] long-form: %d frames -> %d window(s) of ~%.2fs",
-                 duration_frames, len(windows), window_seconds)
-
-        extra_refs = 0
-        if ref_images is not None:
-            try:
-                extra_refs = int(ref_images.shape[0])
-            except Exception:
-                extra_refs = 0
-
-        chosen_model = pick_model(model, model_ref2va, plan.ref_mode_from(tdata))
-        patched_model = _unpack(mm.MiniMaxH3SigmaShift.execute(
-            model=chosen_model, shift_video=float(shift_video),
-            shift_audio=float(shift_audio)))[0]
-
-        all_images, all_audio, window_prompts = [], [], []
-        pending = []
-        first_p = None
-        last_conditioning = last_latent = None
-        prev_last = None
-        width = height = None
-        pbar = comfy.utils.ProgressBar(len(windows))
-
-        for index, (offset, span) in enumerate(windows):
-            comfy.model_management.throw_exception_if_processing_interrupted()
-            cur_start = int(win_start) + offset
-
-            p = plan.plan_timeline(tdata, cur_start, span, fps,
-                                   global_prompt=global_prompt,
-                                   use_custom_motion=use_custom_motion,
-                                   use_custom_audio=use_custom_audio,
-                                   override_audio=override_audio,
-                                   extra_ref_image_count=extra_refs,
-                                   ref_image_notes=ref_image_notes)
-            window_prompts.append(p["prompt"])
-            if first_p is None:
-                first_p = p
-
-            for ev in p["events"]:
-                ev["tensor"] = _load_event_tensor(ev, fps, cur_start)
-
-            first_src = last_src = None
-            for ev in p["events"]:
-                if ev["role"] == plan.ROLE_FIRST:
-                    first_src = ev["tensor"][:1]
-                elif ev["role"] == plan.ROLE_LAST:
-                    last_src = ev["tensor"][-1:]
-
-            # canvas is fixed by the first window and held for the whole chain — a mid-chain
-            # resolution change would break continuity and the frame concat at the end
-            if width is None:
-                canvas_src = first_src if first_src is not None else (
-                    p["events"][0]["tensor"] if p["events"] else None)
-                width, height = resolve_canvas(
-                    mm, box_w, box_h, int(divisible_by), resize_method, canvas_src)
-                if width < MIN_CANVAS_EDGE or height < MIN_CANVAS_EDGE:
-                    raise ValueError(
-                        "MiniMax H3 Director: the canvas came out %dx%d — below H3's %dpx "
-                        "floor. Raise custom_width/height or divisible_by."
-                        % (width, height, MIN_CANVAS_EDGE))
-
-            def fit(t):
-                out = media.resize_image(t, width, height, resize_method, int(divisible_by))
-                if out.shape[1] != height or out.shape[2] != width:
-                    out = media.resize_image(out, width, height, "crop", int(divisible_by))
-                if int(img_compression) > 0:
-                    out = media.compress_image(out, int(img_compression))
-                return out
-
-            # continuity: every window after the first opens on the previous window's last
-            # frame, which outranks whatever the timeline put at this window's start
-            if prev_last is not None:
-                first_frame = prev_last
-            else:
-                first_frame = fit(first_src) if first_src is not None else None
-            last_frame = fit(last_src) if last_src is not None else None
-
-            if p["ref_mode_on"]:
-                ref_image_tensors = load_ref_image_tensors(p["ref_image_slots"], fit, ref_images)
-                ref_videos, ref_video_audios, ref_audios = {}, {}, {}
-
-                for seg in p["ref_video_segs"]:
-                    idx = len(ref_videos)
-                    seg_start = float(seg.get("start", 0))
-                    seg_len = float(seg.get("length", 1))
-                    offs = max(0.0, cur_start - seg_start)
-                    trim = float(seg.get("trimStart", 0)) + offs
-                    clip_sec = min(plan.REF_VIDEO_MAX_SEC, (seg_len - offs) / fps)
-                    short_edge = int(seg.get("refSize") or plan.REF_VIDEO_SHORT_EDGE)
-                    frames = media.load_video_tensor(
-                        seg["videoFile"], trim / fps, clip_sec,
-                        max_short_edge=short_edge,
-                        max_pixels=int(short_edge * short_edge * plan.REF_VIDEO_ASPECT_BUDGET))
-                    if frames.shape[0] < 5:
-                        continue
-                    ref_videos["ref_video_%d" % idx] = frames
-                    if override_audio:
-                        clip_audio = media.load_audio_segment(
-                            {"audioFile": seg["videoFile"], "trimStart": trim,
-                             "length": clip_sec * fps}, fps, file_key="audioFile")
-                        if clip_audio is not None:
-                            ref_video_audios["ref_video_audio_%d" % idx] = clip_audio
-
-                for seg in p["ref_audio_segs"]:
-                    # Each window references the slice of the audio track lined up with ITS
-                    # time range [cur_start, cur_start+span), the same way the video ref above
-                    # is offset — otherwise every window styles its audio off the segment's
-                    # opening instead of the part that actually plays then.
-                    seg_start = float(seg.get("start", 0))
-                    seg_len = float(seg.get("length", 1))
-                    offs = max(0.0, cur_start - seg_start)
-                    if offs >= seg_len:
-                        continue  # segment ends before this window — nothing to reference
-                    win_seg = dict(seg)
-                    win_seg["trimStart"] = float(seg.get("trimStart", 0)) + offs
-                    win_seg["length"] = max(1.0, min(seg_len - offs, float(span)))
-                    clip_audio = media.load_audio_segment(win_seg, fps)
-                    if clip_audio is not None:
-                        ref_audios["ref_audio_%d" % len(ref_audios)] = clip_audio
-
-                # anchor the window as a <Picture> reference when there is a free slot
-                if first_frame is not None and len(ref_image_tensors) < plan.MAX_REF_IMAGES:
-                    ref_image_tensors.append(first_frame)
-
-                if (ref_audios or ref_video_audios) and audio_vae is None:
-                    raise ValueError(
-                        "MiniMax H3 Director: audio references need the audio VAE. Connect "
-                        "minimax_h3_audio_vae to 'audio_vae'.")
-                out = mm.MiniMaxH3ReferenceToVideo.execute(
-                    clip=clip, vae=vae, audio_vae=audio_vae, prompt=p["prompt"],
-                    width=width, height=height, length=p["length"],
-                    ref_image_size=ref_image_size,
-                    ref_images={"ref_image_%d" % i: t for i, t in enumerate(ref_image_tensors)} or None,
-                    ref_videos=ref_videos or None,
-                    ref_video_audios=ref_video_audios or None,
-                    ref_audios=ref_audios or None)
-            else:
-                out = mm.MiniMaxH3ImageToVideo.execute(
-                    clip=clip, vae=vae, prompt=p["prompt"], width=width, height=height,
-                    length=p["length"], first_frame=first_frame, last_frame=last_frame)
-
-            conditioning, latent = _unpack(out)[:2]
-            last_conditioning = conditioning
-
-            guider = _unpack(sm.BasicGuider.execute(
-                model=patched_model, conditioning=conditioning))[0]
-            noise = sm.Noise_RandomNoise(int(noise_seed) + index)
-            sampled = _unpack(sm.SamplerCustomAdvanced.execute(
-                noise=noise, guider=guider, sampler=sampler, sigmas=sigmas,
-                latent_image=latent))[0]
-            last_latent = sampled
-
-            # Phase 1: recover ONLY the anchor (this window's last frame) so the next window
-            # can open on it, and stash the latent. The full, memory-heavy decode is deferred
-            # to phase 2 — after the DiT is freed — which keeps decoding on the GPU instead of
-            # spilling to CPU and exhausting system RAM.
-            prev_last = _decode_anchor_frame(vae, sampled)
-            pending.append({"latent": sampled, "index": index})
-
-            log.info("[MiniMaxDirector] window %d/%d sampled (%s), anchor ready",
-                     index + 1, len(windows), p["mode"])
-            pbar.update(1)
-
-        # --- Phase 2: free the DiT, then decode every window on the GPU ------------------
-        # Sampling is done, so releasing the sampler model hands the VAE the whole card and
-        # each full decode runs on the GPU instead of falling back to CPU (which pegged system
-        # RAM and could hard-lock the machine). Freed ONCE here, not once per window.
-        comfy.model_management.unload_all_models()
-        comfy.model_management.soft_empty_cache()
-
-        pbar2 = comfy.utils.ProgressBar(len(pending))
-        for item in pending:
-            comfy.model_management.throw_exception_if_processing_interrupted()
-            images = _decode_video(vae, item["latent"], tiled=tiled_vae_decode)
-            audio_chunk = None
-            if audio_vae is not None:
-                audio_chunk, sr = _audio_to_stereo(_decode_audio(audio_vae, item["latent"]))
-                if audio_chunk is not None and sr != AUDIO_SR:
-                    try:
-                        import torchaudio
-                        audio_chunk = torchaudio.functional.resample(audio_chunk, sr, AUDIO_SR)
-                    except Exception:
-                        pass
-
-            # the opening frame of a chained window IS the previous window's last frame —
-            # keeping both would stutter on every seam. Video always drops it. Audio drops the
-            # matching samples too EXCEPT in 'aligned' mode, where the correlation splice finds
-            # the real overlap itself (a fixed cut here can skip real song when the generated
-            # audio doesn't overlap by exactly one frame).
-            drop = 1 if item["index"] > 0 else 0
-            if drop and images.shape[0] > 1:
-                images = images[drop:]
-                if audio_chunk is not None and seam_audio != "aligned":
-                    cut = int(round(drop / MODEL_FPS * AUDIO_SR))
-                    audio_chunk = audio_chunk[:, cut:]
-
-            all_images.append(images)
-            if audio_chunk is not None:
-                all_audio.append(audio_chunk)
-            log.info("[MiniMaxDirector] window %d/%d decoded: %d frames",
-                     item["index"] + 1, len(pending), images.shape[0])
-            pbar2.update(1)
-
-        out_images = torch.cat(all_images, dim=0)
-        total = int(out_images.shape[0])
-        want_audio = max(1, int(round(total / MODEL_FPS * AUDIO_SR)))
-        if all_audio:
-            if seam_audio == "aligned":
-                # Cross-fade across the whole one-frame window overlap so each window's loud
-                # middle covers the other's tapered (near-silent) edge — the fix for a seam
-                # dropping out when H3 follows an <Audio> reference. Audio is NOT pre-cut per
-                # window (see the decode loop), so the full overlap is still present to fade over.
-                out_audio = _concat_audio_aligned(all_audio, int(round(AUDIO_SR / MODEL_FPS)))
-            elif seam_audio == "crossfade":
-                # Fixed ~12ms equal-power blend — coherent-but-not-identical audio.
-                out_audio = _concat_audio_declick(all_audio, int(round(0.012 * AUDIO_SR)))
-            else:  # "hard cut" — independent takes, any blend smears two unrelated textures
-                out_audio = torch.cat(all_audio, dim=1)
-            if out_audio is None:
-                out_audio = torch.cat(all_audio, dim=1)
-            # Lock length to the video: 'aligned' trims a variable few ms per seam, so pin the
-            # end so A/V cannot drift (trim overrun, pad a shortfall with silence).
-            if out_audio.shape[1] > want_audio:
-                out_audio = out_audio[:, :want_audio]
-            elif out_audio.shape[1] < want_audio:
-                out_audio = torch.cat(
-                    [out_audio, torch.zeros((out_audio.shape[0], want_audio - out_audio.shape[1]),
-                                            dtype=out_audio.dtype)], dim=1)
-        else:
-            out_audio = torch.zeros((2, want_audio), dtype=torch.float32)
-
-        # Build the timeline-audio mixdown to match the ACTUAL rendered length (windows snap
-        # up on the frame grid, so the total drifts a little past what was requested). total
-        # is output frames @24; build_combined_audio measures in timeline frames.
-        audio_tl_frames = max(1, int(round(total / MODEL_FPS * fps)))
-        combined_audio = media.build_combined_audio(
-            timeline_data, int(win_start), audio_tl_frames, fps, override_audio=override_audio)
-
-        prompt_txt = _build_chain_log(tdata, first_p, windows, window_prompts,
-                                      width, height, total, fps)
-
-        log.info("[MiniMaxDirector] chain finished: %d frames (%.2fs) at %dx%d",
-                 total, total / MODEL_FPS, width, height)
-
-        return io.NodeOutput(
-            patched_model, last_conditioning, last_latent, combined_audio,
-            MODEL_FPS, int(width), int(height), total, prompt_txt, "",
-            out_images, {"waveform": out_audio.unsqueeze(0), "sample_rate": AUDIO_SR})
-
-    # ----------------------------------------------- seamless (temporal MultiDiffusion)
-
-    @staticmethod
-    def _seamless_payload(meta):
-        """Rebuild the minimax_payload the model forward expects from a window's conditioning
-        metadata — mirrors comfy/model_base.py MiniMaxH3.extra_conds exactly."""
-        payload = {}
-        if meta.get("minimax_token_tags") is not None:
-            payload["text_token_tags"] = meta["minimax_token_tags"]
-        kf = meta.get("minimax_keyframes")
-        if kf is not None:
-            payload["keyframes"] = kf
-            payload["frame_count"] = meta.get("minimax_frame_count")
-            payload["cond_video_latents"] = [k["latent"] for k in kf]
-        refs = meta.get("minimax_refs")
-        if refs is not None:
-            payload["refs"] = refs
-            payload["cond_video_latents"] = [r["latent"] for r in refs if "latent" in r]
-            payload["cond_audio_latents"] = [r["audio_latent"] for r in refs
-                                             if r.get("audio_latent") is not None]
-        if meta.get("minimax_visual_cond_noise_aug") is not None:
-            payload["visual_cond_noise_aug"] = meta["minimax_visual_cond_noise_aug"]
-        if meta.get("minimax_audio_cond_noise_aug") is not None:
-            payload["audio_cond_noise_aug"] = meta["minimax_audio_cond_noise_aug"]
-        return payload
-
-    @classmethod
-    def _execute_seamless(cls, mm, tdata, timeline_data, fps, win_start, duration_frames,
-                          clip, vae, audio_vae, sampler, sigmas, noise_seed, window_seconds,
-                          overlap_seconds, model=None, model_ref2va=None, global_prompt="",
-                          use_custom_motion=True, use_custom_audio=False, override_audio=False,
-                          ref_image_size="match", shift_video=12.0, shift_audio=3.0,
-                          box_w=0, box_h=0, resize_method="crop", divisible_by=32,
-                          img_compression=0, ref_images=None, ref_image_notes="",
-                          tiled_vae_decode=False) -> io.NodeOutput:
-        """Temporal MultiDiffusion: ONE full-clip latent, co-denoised over overlapping windows,
-        each window conditioned on its OWN time-slice (the fix for whole-clip muddy audio). The
-        overlaps are averaged every step so windows converge — no stitch, no seam. See
-        docs/SEAMLESS_LONGFORM_SPEC.md."""
-        import comfy.ldm.minimax.model as h3m
-        sm = samplers()
-
-        extra_refs = 0
-        if ref_images is not None:
-            try:
-                extra_refs = int(ref_images.shape[0])
-            except Exception:
-                extra_refs = 0
-
-        # --- canvas + full-clip latent from the whole-timeline plan --------------------
-        whole = plan.plan_timeline(tdata, win_start, duration_frames, fps,
-                                   global_prompt=global_prompt, use_custom_motion=use_custom_motion,
-                                   use_custom_audio=use_custom_audio, override_audio=override_audio,
-                                   extra_ref_image_count=extra_refs, ref_image_notes=ref_image_notes)
-        for ev in whole["events"]:
-            ev["tensor"] = _load_event_tensor(ev, fps, win_start)
-        first_src = None
-        for ev in whole["events"]:
-            if ev["role"] == plan.ROLE_FIRST:
-                first_src = ev["tensor"][:1]
-                break
-        canvas_src = first_src if first_src is not None else (
-            whole["events"][0]["tensor"] if whole["events"] else None)
-        width, height = resolve_canvas(mm, box_w, box_h, int(divisible_by), resize_method, canvas_src)
-        if width < MIN_CANVAS_EDGE or height < MIN_CANVAS_EDGE:
-            raise ValueError("MiniMax H3 Director: canvas %dx%d below the %dpx floor."
-                             % (width, height, MIN_CANVAS_EDGE))
-
-        def fit(t):
-            out = media.resize_image(t, width, height, resize_method, int(divisible_by))
-            if out.shape[1] != height or out.shape[2] != width:
-                out = media.resize_image(out, width, height, "crop", int(divisible_by))
-            if int(img_compression) > 0:
-                out = media.compress_image(out, int(img_compression))
-            return out
-
-        length = whole["length"]
-        if whole["ref_mode_on"]:
-            full_out = mm.MiniMaxH3ReferenceToVideo.execute(
-                clip=clip, vae=vae, audio_vae=audio_vae, prompt=whole["prompt"],
-                width=width, height=height, length=length, ref_image_size=ref_image_size)
-        else:
-            full_out = mm.MiniMaxH3ImageToVideo.execute(
-                clip=clip, vae=vae, prompt=whole["prompt"], width=width, height=height, length=length)
-        full_cond, full_latent = _unpack(full_out)[:2]
-        tv = int(list(full_latent["samples"].unbind())[0].shape[2])
-
-        # --- co-denoise window schedule (video-latent frames, block-aligned) -----------
-        win_lat = _co_vlt(_co_align(max(5, int(round(window_seconds * fps)))))
-        ov_lat = max(1, _co_vlt(_co_align(max(1, int(round(overlap_seconds * fps))))))
-        windows = _plan_co_windows(tv, win_lat, ov_lat)
-        log.info("[MiniMaxSeamless] full=%d vlat · win=%d · ov=%d · %d windows: %s",
-                 tv, win_lat, ov_lat, len(windows),
-                 ", ".join("[%d,%d)" % (s, s + n) for s, n in windows))
-
-        chosen_model = pick_model(model, model_ref2va, plan.ref_mode_from(tdata))
-        patched_model = _unpack(mm.MiniMaxH3SigmaShift.execute(
-            model=chosen_model, shift_video=float(shift_video), shift_audio=float(shift_audio)))[0]
-
-        # --- per-window conditioning (each window's own time-slice) --------------------
-        win_conds, window_prompts, log_windows, first_p = [], [], [], None
-        for (gv, nv) in windows:
-            cur_start = int(win_start) + int(round(gv / max(1, tv) * duration_frames))
-            span = max(1, int(round(nv / max(1, tv) * duration_frames)))
-            log_windows.append((cur_start - int(win_start), span))
-            p = plan.plan_timeline(tdata, cur_start, span, fps, global_prompt=global_prompt,
-                                   use_custom_motion=use_custom_motion, use_custom_audio=use_custom_audio,
-                                   override_audio=override_audio, extra_ref_image_count=extra_refs,
-                                   ref_image_notes=ref_image_notes)
-            window_prompts.append(p["prompt"])
-            if first_p is None:
-                first_p = p
-            for ev in p["events"]:
-                ev["tensor"] = _load_event_tensor(ev, fps, cur_start)
-            if p["ref_mode_on"]:
-                ref_image_tensors = load_ref_image_tensors(p["ref_image_slots"], fit, ref_images)
-                ref_videos, ref_video_audios, ref_audios = {}, {}, {}
-                for seg in p["ref_video_segs"]:
-                    idx = len(ref_videos)
-                    seg_start = float(seg.get("start", 0)); seg_len = float(seg.get("length", 1))
-                    offset = max(0.0, cur_start - seg_start)
-                    trim = float(seg.get("trimStart", 0)) + offset
-                    clip_sec = min(plan.REF_VIDEO_MAX_SEC, (seg_len - offset) / fps)
-                    short_edge = int(seg.get("refSize") or plan.REF_VIDEO_SHORT_EDGE)
-                    frames = media.load_video_tensor(
-                        seg["videoFile"], trim / fps, clip_sec, max_short_edge=short_edge,
-                        max_pixels=int(short_edge * short_edge * plan.REF_VIDEO_ASPECT_BUDGET))
-                    if frames.shape[0] < 5:
-                        continue
-                    ref_videos["ref_video_%d" % idx] = frames
-                    if override_audio:
-                        ca = media.load_audio_segment(
-                            {"audioFile": seg["videoFile"], "trimStart": trim,
-                             "length": clip_sec * fps}, fps, file_key="audioFile")
-                        if ca is not None:
-                            ref_video_audios["ref_video_audio_%d" % idx] = ca
-                for seg in p["ref_audio_segs"]:
-                    seg_start = float(seg.get("start", 0)); seg_len = float(seg.get("length", 1))
-                    offs = max(0.0, cur_start - seg_start)
-                    if offs >= seg_len:
-                        continue
-                    win_seg = dict(seg)
-                    win_seg["trimStart"] = float(seg.get("trimStart", 0)) + offs
-                    win_seg["length"] = max(1.0, min(seg_len - offs, float(span)))
-                    ca = media.load_audio_segment(win_seg, fps)
-                    if ca is not None:
-                        ref_audios["ref_audio_%d" % len(ref_audios)] = ca
-                if (ref_audios or ref_video_audios) and audio_vae is None:
-                    raise ValueError("MiniMax H3 Director: audio references need the audio VAE.")
-                out = mm.MiniMaxH3ReferenceToVideo.execute(
-                    clip=clip, vae=vae, audio_vae=audio_vae, prompt=p["prompt"],
-                    width=width, height=height, length=p["length"], ref_image_size=ref_image_size,
-                    ref_images={"ref_image_%d" % i: t for i, t in enumerate(ref_image_tensors)} or None,
-                    ref_videos=ref_videos or None, ref_video_audios=ref_video_audios or None,
-                    ref_audios=ref_audios or None)
-            else:
-                out = mm.MiniMaxH3ImageToVideo.execute(
-                    clip=clip, vae=vae, prompt=p["prompt"], width=width, height=height, length=p["length"])
-            unpacked = _unpack(out)
-            cond = unpacked[0]
-            ctx = cond[0][0]
-            meta = cond[0][1] if len(cond[0]) > 1 else {}
-            # Keep each window's own conditioning + latent. The seamless co-denoise poisons the
-            # AUDIO (hard-stitched audio latents confuse each window's denoise into tonal mush), so
-            # audio is re-sampled per window INDEPENDENTLY below — the one thing that comes out
-            # clean — and only the VIDEO is taken from the co-denoise.
-            win_conds.append({"context": ctx, "meta": meta, "text_len": int(ctx.shape[1]),
-                              "gv": gv, "nv": nv, "cond": cond, "latent": unpacked[1]})
-
-        # Audio ownership: audio latents CANNOT be averaged the way video can — blending two
-        # windows' audio (each following a different slice of the track) decodes to noise. So each
-        # audio-latent frame is assigned to exactly ONE window — the one whose center is nearest,
-        # i.e. its confident middle, away from the tapered edges. Video is co-denoised (averaged),
-        # audio is piecewise-single-window. Boundaries land at the midpoints between window centers.
-        Ta_full = int(list(full_latent["samples"].unbind())[1].shape[-1])
-        aranges = []
-        for wc in win_conds:
-            ga = int(round(_globalcoord(wc["gv"])))
-            na = max(1, min(int(round(_globalcoord(wc["gv"] + wc["nv"]))) - ga, Ta_full - ga))
-            aranges.append((ga, na))
-        centers = [ga + na / 2.0 for (ga, na) in aranges]
-        audio_own = []
-        for i, (ga, na) in enumerate(aranges):
-            lo = 0 if i == 0 else int(round((centers[i - 1] + centers[i]) / 2.0))
-            hi = Ta_full if i == len(aranges) - 1 else int(round((centers[i] + centers[i + 1]) / 2.0))
-            audio_own.append((max(lo, ga), min(hi, ga + na)))
-
-        # Video crossfade weights: each window ramps 1->0 across its overlap with a neighbour so
-        # the blend is a smooth LINEAR crossfade (weights sum to 1 per frame) instead of a flat
-        # 50/50 average across the whole overlap — which motion-blurs the band. Each window then
-        # dominates its own confident middle; the blur collapses to a thin transition.
-        vweights = []
-        for i, wc in enumerate(win_conds):
-            gv, nv = wc["gv"], wc["nv"]
-            w = torch.ones(nv, dtype=torch.float32)
-            if i > 0:  # left overlap with previous window
-                ramp = max(0, (win_conds[i - 1]["gv"] + win_conds[i - 1]["nv"]) - gv)
-                if ramp > 1:
-                    w[:ramp] = torch.linspace(0.0, 1.0, ramp)
-            if i < len(win_conds) - 1:  # right overlap with next window
-                ramp = max(0, (gv + nv) - win_conds[i + 1]["gv"])
-                if ramp > 1:
-                    w[nv - ramp:] = torch.linspace(1.0, 0.0, ramp)
-            vweights.append(w)
-        state = {"first": True}
-
-        def wrapper(apply_model, args):
-            input_x = args["input"]
-            ts = args["timestep"]
-            c = args["c"]
-            shapes = list(c["latent_shapes"])
-            vfull, afull = comfy.utils.unpack_latents(input_x, shapes)
-            _, _, Tvv, H, W = vfull.shape
-            Ta = afull.shape[-1]
-            if state["first"]:
-                r0 = cls._seamless_payload(win_conds[0]["meta"])
-                bp = c.get("minimax_payload") or {}
-                log.info("[MiniMaxSeamless] wrapper first call: video=%s audio=%s | %d windows | "
-                         "window0 refs: %d video + %d audio conds | audio_scale=%s",
-                         tuple(vfull.shape), tuple(afull.shape), len(win_conds),
-                         len(r0.get("cond_video_latents") or []), len(r0.get("cond_audio_latents") or []),
-                         bp.get("audio_scale"))
-                state["first"] = False
-
-            acc_v = torch.zeros_like(vfull); acc_a = torch.zeros_like(afull)
-
-            for i, wc in enumerate(win_conds):
-                gv, nv = wc["gv"], wc["nv"]
-                ga, na = aranges[i]
-                if ga >= Ta:
-                    continue
-                vwin = vfull[:, :, gv:gv + nv].contiguous()
-                awin = afull[:, :, :, ga:ga + na].contiguous()
-                xw, shapes_w = comfy.utils.pack_latents([vwin, awin])
-
-                # Build the window's layout NORMALLY — no position shifting. Each window is a
-                # separate RoPE-relative forward, so absolute position is invariant to its output;
-                # continuity comes from the latent-space combine below. Block alignment (in the
-                # schedule) keeps the temporal spacing consistent. Shifting the target away from
-                # the refs only starved the audio reference of attention.
-                payload = cls._seamless_payload(wc["meta"])
-                # audio_scale + seed are model/sampler-derived (same for every window) — carry
-                # them from the full-clip payload extra_conds already built. audio_scale is the
-                # critical one: without it the forward runs the audio at scale 1.0 instead of the
-                # sigma-shift value and the audio decodes to noise.
-                base_payload = c.get("minimax_payload") or {}
-                for k in ("audio_scale", "seed"):
-                    if k in base_payload:
-                        payload[k] = base_payload[k]
-                payload["layout"] = h3m.PackedLayout(
-                    wc["text_len"], nv, H, W, na, keyframes=payload.get("keyframes"),
-                    refs=payload.get("refs"), frame_count=payload.get("frame_count"))
-
-                c_w = dict(c)
-                c_w["c_crossattn"] = wc["context"]
-                c_w["latent_shapes"] = shapes_w
-                c_w["minimax_payload"] = payload
-                out_w = apply_model(xw, ts, **c_w)
-                dv, da = comfy.utils.unpack_latents(out_w, shapes_w)
-                # VIDEO: linear crossfade combine (weights sum to 1 per frame -> no division;
-                # each window dominates its middle, blur collapses to a thin transition band)
-                vw = vweights[i].to(vfull.device, vfull.dtype).view(1, 1, nv, 1, 1)
-                acc_v[:, :, gv:gv + nv] += dv * vw
-                # AUDIO: assign this window's owned slice only — never average (-> noise)
-                olo, ohi = audio_own[i]
-                if ohi > olo:
-                    acc_a[:, :, :, olo:ohi] = da[:, :, :, olo - ga:ohi - ga]
-
-            out, _ = comfy.utils.pack_latents([acc_v, acc_a])
-            return out
-
-        m = patched_model.clone()
-        m.set_model_unet_function_wrapper(wrapper)
-        guider = _unpack(sm.BasicGuider.execute(model=m, conditioning=full_cond))[0]
-        noise = sm.Noise_RandomNoise(int(noise_seed))
-        sampled = _unpack(sm.SamplerCustomAdvanced.execute(
-            noise=noise, guider=guider, sampler=sampler, sigmas=sigmas, latent_image=full_latent))[0]
-
-        # --- independent per-window audio (WHILE the DiT is still loaded) -----------------
-        # The co-denoise gives beautiful VIDEO but poisons AUDIO (audio latents can't be averaged
-        # like video, so they're hard-stitched in the shared latent and each window denoises its
-        # audio while seeing its neighbours' discontinuous audio -> tonal mush). Independent samples
-        # don't share the audio latent, so they stay clean (proven: the establishment window,
-        # sampled alone, is pristine). Sample each window on its own here and take only its audio;
-        # video still comes from the co-denoise. Also gives a clean window-0 video for the ghost fix.
-        indep = []
-        for i, wc in enumerate(win_conds):
-            try:
-                g = _unpack(sm.BasicGuider.execute(model=patched_model, conditioning=wc["cond"]))[0]
-                s = _unpack(sm.SamplerCustomAdvanced.execute(
-                    noise=sm.Noise_RandomNoise(int(noise_seed) + i), guider=g,
-                    sampler=sampler, sigmas=sigmas, latent_image=wc["latent"]))[0]
-            except Exception as e:
-                log.warning("[MiniMaxSeamless] independent sample of window %d failed (%s)", i, e)
-                s = None
-            indep.append(s)
-
-        # --- two-phase-style: free the DiT, then decode everything on the GPU ------------
-        comfy.model_management.unload_all_models()
-        comfy.model_management.soft_empty_cache()
-        out_images = _decode_video(vae, sampled, tiled=tiled_vae_decode)
-        total = int(out_images.shape[0])
-
-        # AUDIO: assemble from the independent per-window samples, seams hidden at the quiet points.
-        out_audio = None
-        if audio_vae is not None:
-            try:
-                out_audio = _seamless_indep_audio(audio_vae, indep, aranges, total)
-            except Exception as e:
-                log.warning("[MiniMaxSeamless] independent-audio assembly failed (%s)", e)
-                out_audio = None
-            if out_audio is None:  # last resort: the co-denoise audio (poisoned, but not silence)
-                audio_chunk, sr = _audio_to_stereo(_decode_audio(audio_vae, sampled))
-                if audio_chunk is not None and sr != AUDIO_SR:
-                    try:
-                        import torchaudio
-                        audio_chunk = torchaudio.functional.resample(audio_chunk, sr, AUDIO_SR)
-                    except Exception:
-                        pass
-                out_audio = audio_chunk
-        if out_audio is None:
-            out_audio = torch.zeros(
-                (2, max(1, int(round(total / MODEL_FPS * AUDIO_SR)))), dtype=torch.float32)
-
-        # --- clean establishment (video) -------------------------------------------------
-        # The co-denoise also ghosts window 1's reference image into its first ~2-3 s of VIDEO;
-        # window 0's independent sample establishes it cleanly. Dissolve that clean video over the
-        # seamless start across the window-1/window-2 overlap. Guarded: any failure leaves the
-        # co-denoise video in place. (Audio already comes from the independent samples above.)
-        if len(windows) > 1 and indep and indep[0] is not None:
-            try:
-                intro_images = _decode_video(vae, indep[0], tiled=tiled_vae_decode)
-                F1 = int(intro_images.shape[0])
-                ratio = total / max(1, tv)                    # pixel frames per video-latent frame
-                ov_px = int(round(max(0, win_conds[0]["nv"] - windows[1][0]) * ratio))
-                ov_px = max(0, min(ov_px, F1 - 1, out_images.shape[0] - F1))
-                if 0 < F1 <= out_images.shape[0]:
-                    seam = F1 - ov_px
-                    merged = out_images.clone()
-                    merged[:seam] = intro_images[:seam]        # clean intro replaces the ghosted start
-                    if ov_px > 0:                              # dissolve into the seamless body
-                        r = torch.linspace(0.0, 1.0, ov_px, dtype=out_images.dtype).view(-1, 1, 1, 1)
-                        merged[seam:F1] = intro_images[seam:F1] * (1.0 - r) + out_images[seam:F1] * r
-                    out_images = merged
-                    log.info("[MiniMaxSeamless] clean intro video over first %d frames (overlap %d)",
-                             F1, ov_px)
-            except Exception as e:
-                log.warning("[MiniMaxSeamless] clean-intro video composite failed (%s)", e)
-
-        audio_tl_frames = max(1, int(round(total / MODEL_FPS * fps)))
-        combined_audio = media.build_combined_audio(
-            timeline_data, int(win_start), audio_tl_frames, fps, override_audio=override_audio)
-        prompt_txt = _build_chain_log(tdata, first_p, log_windows, window_prompts, width, height, total, fps, long_mode="seamless")
-        log.info("[MiniMaxSeamless] finished: %d frames (%.2fs) at %dx%d",
-                 total, total / MODEL_FPS, width, height)
-        return io.NodeOutput(
-            patched_model, full_cond, sampled, combined_audio,
-            MODEL_FPS, int(width), int(height), total, prompt_txt, "",
-            out_images, {"waveform": out_audio.unsqueeze(0), "sample_rate": AUDIO_SR})
 
 
 NODE_CLASS_MAPPINGS = {"H3Eternity_Director": MiniMaxH3Director}

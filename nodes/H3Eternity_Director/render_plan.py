@@ -344,11 +344,13 @@ def create_render_plan(
 
 
 def serialize_render_plan(plan: dict[str, Any]) -> dict[str, Any]:
-    """Extract a pure JSON-serializable copy of render_plan, omitting raw PyTorch tensors."""
-    clean = copy.deepcopy(plan)
+    """Extract a pure JSON-serializable copy of render_plan, omitting raw PyTorch tensors and model objects."""
+    clean = copy.copy(plan)
     clean.pop("current_conditioning", None)
     clean.pop("current_latent", None)
-    return clean
+    clean.pop("vae", None)
+    clean.pop("audio_vae", None)
+    return copy.deepcopy(clean)
 
 
 def deserialize_render_plan(data: dict[str, Any]) -> dict[str, Any]:
@@ -356,7 +358,27 @@ def deserialize_render_plan(data: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"render_plan must be a dictionary, got {type(data)}")
     
-    plan = copy.deepcopy(data)
+    vae = data.get("vae")
+    audio_vae = data.get("audio_vae")
+    cond = data.get("current_conditioning")
+    lat = data.get("current_latent")
+
+    data_copy = copy.copy(data)
+    data_copy.pop("vae", None)
+    data_copy.pop("audio_vae", None)
+    data_copy.pop("current_conditioning", None)
+    data_copy.pop("current_latent", None)
+
+    plan = copy.deepcopy(data_copy)
+    if cond is not None:
+        plan["current_conditioning"] = cond
+    if lat is not None:
+        plan["current_latent"] = lat
+    if vae is not None:
+        plan["vae"] = vae
+    if audio_vae is not None:
+        plan["audio_vae"] = audio_vae
+
     plan.setdefault("version", RENDER_PLAN_VERSION)
     plan.setdefault("video_name", "vid_unnamed")
     plan.setdefault("node_id", "default")

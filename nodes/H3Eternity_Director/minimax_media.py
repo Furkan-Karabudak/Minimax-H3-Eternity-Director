@@ -42,15 +42,33 @@ AUDIO_SR = 44100
 # --------------------------------------------------------------------------------------
 
 def resolve_input_path(rel_name: str):
-    """Resolve a timeline file reference to an absolute path inside ComfyUI/input."""
+    """Resolve a timeline file reference to an absolute path inside ComfyUI/input, temp, or filesystem."""
     if not rel_name:
         return None
+    # 1. Direct filesystem checks
+    if os.path.isabs(rel_name) and os.path.isfile(rel_name):
+        return rel_name
+    if os.path.isfile(rel_name):
+        return os.path.abspath(rel_name)
+
+    # 2. Check input directory
     input_dir = folder_paths.get_input_directory()
     candidates = [
         os.path.join(input_dir, rel_name),
         os.path.join(input_dir, WORKSPACE_SUBDIR, os.path.basename(rel_name)),
         os.path.join(input_dir, os.path.basename(rel_name)),
     ]
+    # 3. Check temp directory (for intermediate artifacts in recursive continuation)
+    try:
+        temp_dir = folder_paths.get_temp_directory()
+        candidates.extend([
+            os.path.join(temp_dir, rel_name),
+            os.path.join(temp_dir, os.path.basename(rel_name)),
+            os.path.join(temp_dir, "h3_eternity", os.path.basename(rel_name)),
+        ])
+    except Exception:
+        pass
+
     for path in candidates:
         if os.path.exists(path) and os.path.isfile(path):
             return path

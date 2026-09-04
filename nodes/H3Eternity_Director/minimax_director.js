@@ -197,7 +197,7 @@ const STYLES = `
     color: #ffaaaa;
   }
   .mmxd-toolbar .mmxd-btn.mmxd-btn-soft-cut {
-    border: 1px solid #EDFF47 !important;
+    border: 1px solid transparent !important;
     color: #EDFF47 !important;
     background: rgba(237, 255, 71, 0.12) !important;
   }
@@ -207,6 +207,7 @@ const STYLES = `
   }
   .mmxd-toolbar .mmxd-btn.mmxd-btn-soft-cut:hover:not(:disabled) {
     background: rgba(237, 255, 71, 0.28) !important;
+    border: 1px solid #EDFF47 !important;
     border-color: #EDFF47 !important;
     color: #ffffff !important;
   }
@@ -215,7 +216,7 @@ const STYLES = `
     color: #ffffff !important;
   }
   .mmxd-toolbar .mmxd-btn.mmxd-btn-chain-cut, .mmxd-toolbar .mmxd-btn.mmxd-btn-hard-cut {
-    border: 1px solid #FFAB57 !important;
+    border: 1px solid transparent !important;
     color: #FFAB57 !important;
     background: rgba(255, 171, 87, 0.12) !important;
   }
@@ -225,6 +226,7 @@ const STYLES = `
   }
   .mmxd-toolbar .mmxd-btn.mmxd-btn-chain-cut:hover:not(:disabled), .mmxd-toolbar .mmxd-btn.mmxd-btn-hard-cut:hover:not(:disabled) {
     background: rgba(255, 171, 87, 0.28) !important;
+    border: 1px solid #FFAB57 !important;
     border-color: #FFAB57 !important;
     color: #ffffff !important;
   }
@@ -3364,7 +3366,7 @@ class TimelineEditor {
     // --- Soft Cut (#EDFF47) and Chain Cut (#FFAB57) Buttons ---
     const softCutBtn = document.createElement("button");
     softCutBtn.className = "mmxd-btn mmxd-btn-soft-cut";
-    softCutBtn.style.border = "1px solid #EDFF47";
+    softCutBtn.style.border = "1px solid transparent";
     softCutBtn.style.color = "#EDFF47";
     softCutBtn.style.background = "rgba(237, 255, 71, 0.12)";
     softCutBtn.innerHTML = `${ICONS.infinity} Soft Cut`;
@@ -3374,7 +3376,7 @@ class TimelineEditor {
 
     const chainCutBtn = document.createElement("button");
     chainCutBtn.className = "mmxd-btn mmxd-btn-chain-cut";
-    chainCutBtn.style.border = "1px solid #FFAB57";
+    chainCutBtn.style.border = "1px solid transparent";
     chainCutBtn.style.color = "#FFAB57";
     chainCutBtn.style.background = "rgba(255, 171, 87, 0.12)";
     chainCutBtn.innerHTML = `${ICONS.infinity} Chain Cut`;
@@ -7765,7 +7767,7 @@ class TimelineEditor {
           const isSelected = (this.selectionType === "cut" && this.selectedCutId === cut.id);
           const isChain = (cut.type === "chain" || cut.type === "hard");
           const bgOpacity = isSelected ? 0.03 : 0.01;
-          const stripeOpacity = isSelected ? 0.03 : 0.02;
+          const stripeOpacity = isSelected ? 0.03 : 0.01;
           const bgCol = isChain ? `rgba(255, 171, 87, ${bgOpacity})` : `rgba(237, 255, 71, ${bgOpacity})`;
           const stripeCol = isChain ? `rgba(255, 171, 87, ${stripeOpacity})` : `rgba(237, 255, 71, ${stripeOpacity})`;
 
@@ -8939,9 +8941,9 @@ class TimelineEditor {
           const overlapStartX = (overlapStartFrame / totalFrames) * width;
           const isSelected = (this.selectionType === "cut" && this.selectedCutId === cut.id);
           const isChain = (cut.type === "chain" || cut.type === "hard");
-          const lineCol = isChain ? "rgba(255, 171, 87, 1.0)" : "rgba(237, 255, 71, 1.0)";
+          const lineCol = isChain ? "rgba(255, 171, 87, 0.5)" : "rgba(237, 255, 71, 0.5)";
           const selectedLineCol = isChain ? "rgba(255, 205, 150, 1.0)" : "rgba(245, 255, 140, 1.0)";
-          const leftBoundaryOpacity = isSelected ? 0.5 : 0.33;
+          const leftBoundaryOpacity = isSelected ? 0.5 : 0.15;
           const leftBoundaryCol = isChain ? `rgba(255, 171, 87, ${leftBoundaryOpacity})` : `rgba(237, 255, 71, ${leftBoundaryOpacity})`;
 
           // 1. Overlap Left Boundary Vertical Dashed Line (Terminates at horizontal iteration line y=13, opacity 0.5, never glows)

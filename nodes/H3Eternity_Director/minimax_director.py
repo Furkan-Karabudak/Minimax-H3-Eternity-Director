@@ -1115,12 +1115,16 @@ class MiniMaxH3Director(io.ComfyNode):
                 "width": int(width), "height": int(height),
             })
 
-        # 11. Synchronize render_plan state and attach current iteration tensors
+        # 11. Synchronize render_plan state and attach current iteration tensors & VAEs
         rplan["canvas"]["width"] = int(width)
         rplan["canvas"]["height"] = int(height)
         rplan["canvas"]["fps"] = fps
         rplan["current_conditioning"] = conditioning
         rplan["current_latent"] = latent
+        if vae is not None:
+            rplan["vae"] = vae
+        if audio_vae is not None:
+            rplan["audio_vae"] = audio_vae
 
         return io.NodeOutput(rplan, patched_model, conditioning, latent, audio_out,
                              MODEL_FPS, int(width), int(height), int(length), prompt,

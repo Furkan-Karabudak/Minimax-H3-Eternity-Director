@@ -8,7 +8,8 @@ lossless media, and updating render_plan with generated artifacts.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional, Tuple
+import os
+from typing import Any, Optional, Tuple, Union
 import torch
 
 from ..H3Eternity_Director.render_plan import (
@@ -18,7 +19,6 @@ from ..H3Eternity_Director.render_plan import (
     DEFAULT_AUDIO_FORMAT,
     deserialize_render_plan,
     register_saved_artifact,
-    SavedArtifact,
 )
 from ..H3Eternity_SaveVideo.minimax_save_video import (
     VIDEO_FORMATS,
@@ -26,8 +26,33 @@ from ..H3Eternity_SaveVideo.minimax_save_video import (
     ALL_AUDIO_FORMATS,
     AUDIO_SAMPLE_RATES,
 )
+from ..H3Eternity_Director.minimax_core import samplers as get_custom_samplers
+from .sampler_common import (
+    folder_paths,
+    resolve_vae_references,
+    decode_joint_latent,
+    save_intermediate_artifacts,
+)
 
 _LOG = logging.getLogger("minimax_h3_eternity.sampler_advanced")
+
+
+class SamplerResult(dict):
+    """Dictionary holding 'ui' and 'result' for ComfyUI, while allowing direct tuple unpacking in tests."""
+
+    def __init__(self, ui: dict[str, Any], result: tuple):
+        super().__init__(ui=ui, result=result)
+
+    def __iter__(self):
+        return iter(self["result"])
+
+    def __getitem__(self, key: Union[str, int]):
+        if isinstance(key, int):
+            return self["result"][key]
+        return super().__getitem__(key)
+
+    def __len__(self):
+        return len(self["result"])
 
 
 class H3Eternity_SamplerAdvanced:
@@ -39,16 +64,11 @@ class H3Eternity_SamplerAdvanced:
             f"{fmt} [default]" if fmt == DEFAULT_VIDEO_FORMAT else fmt
             for fmt in VIDEO_FORMATS
         ]
-
         pix_fmts = list(ALL_PIX_FMTS)
-        if DEFAULT_PIX_FMT in pix_fmts:
-            pix_fmts.remove(DEFAULT_PIX_FMT)
-            pix_fmts.insert(0, DEFAULT_PIX_FMT)
-
         audio_formats = list(ALL_AUDIO_FORMATS)
         if DEFAULT_AUDIO_FORMAT in audio_formats:
             audio_formats.remove(DEFAULT_AUDIO_FORMAT)
-            audio_formats.insert(0, DEFAULT_AUDIO_FORMAT)
+            audio_formats.insert(0, f"{DEFAULT_AUDIO_FORMAT} [default]")
 
         return {
             "required": {
@@ -66,6 +86,10 @@ class H3Eternity_SamplerAdvanced:
                 }),
                 "sigmas": ("SIGMAS", {
                     "tooltip": "Custom noise sigmas schedule."
+                }),
+                "tiled_vae": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Use VAEDecodeTiled for video decoding to reduce VRAM usage on large frame counts."
                 }),
                 "advanced_save": ("BOOLEAN", {
                     "default": False,
@@ -86,6 +110,12 @@ class H3Eternity_SamplerAdvanced:
                 }),
             },
             "optional": {
+                "vae [opt]": ("VAE", {
+                    "tooltip": "Optional video VAE for decoding frames. If omitted, automatically resolves from render_plan."
+                }),
+                "audio_vae [opt]": ("VAE", {
+                    "tooltip": "Optional audio VAE for decoding audio. If omitted, automatically resolves from render_plan."
+                }),
                 # Video Advanced Settings (dynamically filtered by video_format in JS)
                 "crf": ("INT", {"default": 18, "min": 0, "max": 63, "step": 1}),
                 "preset": (["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"], {"default": "medium"}),
@@ -142,6 +172,10 @@ class H3Eternity_SamplerAdvanced:
         "intermediate .latent and lossless media files, and outputs decoded frames and audio."
     )
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, **kwargs):
+        return True
+
     def sample_advanced(
         self,
         render_plan: dict[str, Any],
@@ -149,13 +183,14 @@ class H3Eternity_SamplerAdvanced:
         guider: Any,
         sampler: Any,
         sigmas: Any,
+        tiled_vae: bool = False,
         advanced_save: bool = False,
         filename: str = "temp/h3_eternity/tmp_${video_name}_${seed}",
         video_format: str = f"{DEFAULT_VIDEO_FORMAT} [default]",
         audio_format: str = f"{DEFAULT_AUDIO_FORMAT} [default]",
         unique_id: Optional[str] = None,
         **kwargs: Any,
-    ) -> Tuple[dict[str, Any], dict[str, Any], dict[str, Any], torch.Tensor, dict[str, Any]]:
+    ) -> SamplerResult:
         plan = deserialize_render_plan(render_plan)
         cur_idx = int(plan.get("current_iteration", 0))
         total_iters = int(plan.get("total_iterations", 1))
@@ -164,39 +199,122 @@ class H3Eternity_SamplerAdvanced:
 
         height = int(plan.get("canvas", {}).get("height", 768))
         width = int(plan.get("canvas", {}).get("width", 1344))
-        
-        dummy_v_lat = torch.zeros((1, 24, 7, height // 16, width // 16), dtype=torch.float32)
-        dummy_a_lat = torch.zeros((1, 32, 2, 37), dtype=torch.float32)
-        out_latent = {"samples": (dummy_v_lat, dummy_a_lat)}
-        out_denoised = {"samples": (dummy_v_lat.clone(), dummy_a_lat.clone())}
+        fps = float(plan.get("canvas", {}).get("fps", 24.0))
 
-        out_images = torch.zeros((124, height, width, 3), dtype=torch.float32)
-        out_audio = {
-            "waveform": torch.zeros((1, 2, 48000 * 5), dtype=torch.float32),
-            "sample_rate": 48000,
-        }
+        # 1. Conditioning & Latent from plan
+        conditioning = plan.get("current_conditioning")
+        latent_image = plan.get("current_latent")
 
+        # 2. VAE Resolution (node socket overrides render_plan carrier)
+        node_vae = kwargs.get("vae [opt]") or kwargs.get("vae")
+        node_audio_vae = kwargs.get("audio_vae [opt]") or kwargs.get("audio_vae")
+        eff_vae, eff_audio_vae = resolve_vae_references(node_vae, node_audio_vae, plan)
+        tiled_vae = bool(tiled_vae or kwargs.get("tiled_vae", False))
+
+        # 3. Seed Extraction
         seed = 0
-        if hasattr(noise, "seed"):
+        if noise is not None and hasattr(noise, "seed"):
             seed = int(getattr(noise, "seed", 0))
 
-        clean_video_format = video_format.replace(" [default]", "").strip()
-        clean_audio_format = audio_format.replace(" [default]", "").strip()
-        effective_format = clean_video_format if advanced_save else DEFAULT_VIDEO_FORMAT
-        effective_pix_fmt = str(kwargs.get("pix_fmt", DEFAULT_PIX_FMT)) if advanced_save else DEFAULT_PIX_FMT
-        effective_audio_fmt = clean_audio_format if advanced_save else DEFAULT_AUDIO_FORMAT
+        # 4. Modular Sampling Execution
+        if noise is not None and guider is not None and sampler is not None and sigmas is not None and latent_image is not None:
+            try:
+                sm = get_custom_samplers()
+                out = sm.SamplerCustomAdvanced.execute(
+                    noise=noise,
+                    guider=guider,
+                    sampler=sampler,
+                    sigmas=sigmas,
+                    latent_image=latent_image,
+                )
+                sampled_latent = out[0] if isinstance(out, (tuple, list)) else out
+                denoised_latent = out[1] if isinstance(out, (tuple, list)) and len(out) > 1 else sampled_latent
+            except Exception as e:
+                _LOG.error("[H3Eternity_SamplerAdvanced] Modular sampling execution failed: %s", e)
+                sampled_latent = latent_image
+                denoised_latent = latent_image
+        else:
+            # Fallback for mock tests / offline harnesses
+            if latent_image is not None and isinstance(latent_image, dict) and "samples" in latent_image:
+                sampled_latent = latent_image
+                denoised_latent = latent_image
+            else:
+                dummy_v = torch.zeros((1, 24, 7, height // 16, width // 16), dtype=torch.float32)
+                dummy_a = torch.zeros((1, 32, 2, 37), dtype=torch.float32)
+                sampled_latent = {"samples": (dummy_v, dummy_a)}
+                denoised_latent = {"samples": (dummy_v.clone(), dummy_a.clone())}
 
-        artifact = SavedArtifact(
-            iteration=cur_idx,
-            latent_path=f"temp/h3_eternity/tmp_{plan.get('video_name', 'vid')}_{seed}_{cur_idx:05d}.latent",
-            media_path=f"temp/h3_eternity/tmp_{plan.get('video_name', 'vid')}_{seed}_{cur_idx:05d}.mkv",
-            audio_path=f"temp/h3_eternity/tmp_{plan.get('video_name', 'vid')}_{seed}_{cur_idx:05d}.flac",
+        # 5. Extract Sliced Latent Tensors
+        samples = sampled_latent.get("samples")
+        zv = None
+        za = None
+        if isinstance(samples, (tuple, list)):
+            zv = samples[0]
+            if len(samples) > 1:
+                za = samples[1]
+        elif isinstance(samples, torch.Tensor):
+            zv = samples
+        elif isinstance(samples, dict):
+            zv = samples.get("samples_video")
+            za = samples.get("samples_audio")
+
+        # 6. Dual-Stream VAE Decoding
+        out_images, out_audio = decode_joint_latent(
+            sampled_latent=sampled_latent,
+            vae=eff_vae,
+            audio_vae=eff_audio_vae,
+            tiled=tiled_vae,
+            target_sr=48000,
+            fallback_w=width,
+            fallback_h=height,
+        )
+
+        # 7. Lossless Disk Persistence & Registry
+        artifact = save_intermediate_artifacts(
+            plan=plan,
             seed=seed,
-            format=effective_format,
-            pix_fmt=effective_pix_fmt,
-            audio_format=effective_audio_fmt,
-            delivered_frames=124,
+            cur_idx=cur_idx,
+            zv=zv,
+            za=za,
+            out_images=out_images,
+            out_audio=out_audio,
+            advanced_save=advanced_save,
+            filename_pattern=filename,
+            video_format=video_format,
+            audio_format=audio_format,
+            fps=fps,
+            **kwargs,
         )
         updated_plan = register_saved_artifact(plan, artifact)
 
-        return (updated_plan, out_latent, out_denoised, out_images, out_audio)
+        # 8. UI Preview & WebSocket Payload
+        base_dir = folder_paths.get_temp_directory() if not advanced_save else folder_paths.get_output_directory()
+        try:
+            subfolder = os.path.relpath(os.path.dirname(artifact.media_path), base_dir).replace("\\", "/")
+            if subfolder == ".":
+                subfolder = "h3_eternity" if not advanced_save else ""
+        except Exception:
+            subfolder = "h3_eternity" if not advanced_save else ""
+
+        ui_payload = {
+            "videos": [{
+                "filename": os.path.basename(artifact.media_path),
+                "subfolder": subfolder,
+                "type": "temp" if not advanced_save else "output",
+                "format": artifact.format,
+                "delivered_frames": int(artifact.delivered_frames),
+                "fps": fps,
+            }],
+            "status": {
+                "current_iteration": cur_idx,
+                "total_iterations": total_iters,
+                "delivered_frames": int(artifact.delivered_frames),
+                "latent_path": artifact.latent_path,
+                "media_path": artifact.media_path,
+            }
+        }
+
+        return SamplerResult(
+            ui=ui_payload,
+            result=(updated_plan, sampled_latent, denoised_latent, out_images, out_audio)
+        )

@@ -35,12 +35,15 @@ class H3Eternity_Start:
         return {
             "optional": {
                 "render_plan": (RENDER_PLAN_TYPE, {
+                    "rawLink": True,
                     "tooltip": "Loopback render_plan connection from H3 Eternity - Finalize, "
                                "or omitted on initial kickoff."
                 }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
+                "prompt": "PROMPT",
+                "start_index": ("INT", {"default": 0}),
             }
         }
 
@@ -61,18 +64,31 @@ class H3Eternity_Start:
         self,
         render_plan: Optional[dict[str, Any]] = None,
         unique_id: Optional[str] = None,
+        prompt: Optional[dict[str, Any]] = None,
+        start_index: Optional[int] = None,
+        **kwargs: Any,
     ) -> Tuple[dict[str, Any], int]:
+        node_id = str(unique_id or "start_node")
         if render_plan is None:
             # First iteration kickoff
-            node_id = str(unique_id or "start_node")
             plan = create_render_plan(node_id=node_id)
-            current_index = 0
-            _LOG.info("[H3Eternity_Start] Initialized new render_plan at iteration %d", current_index)
+            plan["start_node_id"] = node_id
+            current_index = 0 if start_index is None else int(start_index)
+            plan["current_iteration"] = current_index
+            _LOG.info("[H3Eternity_Start] Initialized new render_plan at iteration %d (node_id=%s)", current_index, node_id)
         else:
             plan = deserialize_render_plan(render_plan)
-            current_index = int(plan.get("current_iteration", 0))
-            _LOG.info("[H3Eternity_Start] Continuing render_plan at iteration %d/%d",
-                      current_index, int(plan.get("total_iterations", 1)))
+            if "start_node_id" not in plan and unique_id:
+                plan["start_node_id"] = node_id
+            if start_index is not None and int(start_index) > 0:
+                current_index = int(start_index)
+                plan["current_iteration"] = current_index
+            else:
+                current_index = int(plan.get("current_iteration", 0))
+            _LOG.info(
+                "[H3Eternity_Start] Continuing render_plan at iteration %d/%d (node_id=%s)",
+                current_index, int(plan.get("total_iterations", 1)), plan.get("start_node_id", node_id)
+            )
 
         return (plan, current_index)
 
@@ -98,7 +114,9 @@ if _HAVE_COMFY_API:
             )
 
         @classmethod
-        def execute(cls, render_plan=None, unique_id=None) -> io.NodeOutput:
+        def execute(cls, render_plan=None, unique_id=None, prompt=None, start_index=None, **kwargs) -> io.NodeOutput:
             instance = cls()
-            out_plan, idx = instance.start(render_plan=render_plan, unique_id=unique_id)
+            out_plan, idx = instance.start(
+                render_plan=render_plan, unique_id=unique_id, prompt=prompt, start_index=start_index, **kwargs
+            )
             return io.NodeOutput(out_plan, idx)

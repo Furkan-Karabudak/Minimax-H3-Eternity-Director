@@ -180,8 +180,7 @@ class MiniMaxH3SeamlessSampler(io.ComfyNode):
                 xw, shapes_w = comfy.utils.pack_latents([vwin, awin])
 
                 layout = h3m.PackedLayout(text_len, nv, H, W, na,
-                                          keyframes=None, refs=payload.get("refs"),
-                                          frame_count=payload.get("frame_count"))
+                                          keyframes=None, refs=payload.get("refs"))
                 off = _globalcoord(gv)
                 if off != 0.0:
                     for a, b, kind in layout.segments:
@@ -216,7 +215,12 @@ class MiniMaxH3SeamlessSampler(io.ComfyNode):
         # Free the DiT before handing the latent downstream, so the VAE decode node has the
         # whole card and does not fall back to CPU (the crash two-phase decode guards against
         # in the chaining path — which does NOT run here, since this node only samples).
-        comfy.model_management.unload_all_models()
+        # Gated by a flag — a full teardown between renders wedges a Thunderbolt eGPU.
+        FREE_MODELS_BEFORE_DECODE = False
+        if FREE_MODELS_BEFORE_DECODE:
+            comfy.model_management.unload_all_models()
+        # soft_empty_cache is eGPU-safe (no re-init) — always reclaim cached VRAM so it
+        # does not creep across renders when the teardown is off.
         comfy.model_management.soft_empty_cache()
         return io.NodeOutput(sampled)
 

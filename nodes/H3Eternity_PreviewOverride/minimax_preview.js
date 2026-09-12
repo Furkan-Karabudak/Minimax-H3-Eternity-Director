@@ -101,7 +101,7 @@ app.registerExtension({
         if (opts.includes(w.value)) continue;
         const fallback = w.options?.default ?? opts[0];
         console.warn(
-          `[MiniMaxDirector] ${NODE_TYPE}: saved value ${JSON.stringify(w.value)} is not a ` +
+          `[H3.E - PreviewOverride] ${NODE_TYPE}: saved value ${JSON.stringify(w.value)} is not a ` +
           `valid '${w.name}' — this workflow was saved against a different widget layout. ` +
           `Falling back to ${JSON.stringify(fallback)}; check the node's settings.`);
         w.value = fallback;

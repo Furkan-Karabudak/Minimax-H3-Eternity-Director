@@ -56,6 +56,23 @@ from ..H3Eternity_SaveVideo.minimax_save_video import (
 _LOG = logging.getLogger("minimax_h3_eternity.sampler_common")
 
 
+def _unpack(out: Any) -> tuple:
+    """Normalise an io.NodeOutput / tuple / list / dict into a plain tuple."""
+    if out is None:
+        return ()
+    args = getattr(out, "args", None)
+    if isinstance(args, (tuple, list)):
+        return tuple(args)
+    result = getattr(out, "result", None)
+    if isinstance(result, (tuple, list)):
+        return tuple(result)
+    if isinstance(out, (tuple, list)):
+        return tuple(out)
+    if isinstance(out, dict) and isinstance(out.get("result"), (tuple, list)):
+        return tuple(out["result"])
+    return (out,)
+
+
 def resolve_vae_references(
     node_vae: Optional[Any],
     node_audio_vae: Optional[Any],
@@ -65,6 +82,40 @@ def resolve_vae_references(
     eff_vae = node_vae if node_vae is not None else plan.get("vae")
     eff_audio_vae = node_audio_vae if node_audio_vae is not None else plan.get("audio_vae")
     return eff_vae, eff_audio_vae
+
+
+def extract_latents_from_samples(sampled_latent: Any) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+    """Robustly extracts (zv, za) tensors from any latent structure:
+    NestedTensor, (zv, za) tuple/list, dict with samples/samples_video/samples_audio, or single Tensor.
+    """
+    if sampled_latent is None:
+        return None, None
+    if isinstance(sampled_latent, dict):
+        samples = sampled_latent.get("samples")
+        if samples is None:
+            return sampled_latent.get("samples_video"), sampled_latent.get("samples_audio")
+    else:
+        samples = sampled_latent
+
+    if getattr(samples, "is_nested", False) or hasattr(samples, "unbind"):
+        try:
+            parts = list(samples.unbind())
+            zv = parts[0] if len(parts) > 0 else None
+            za = parts[1] if len(parts) > 1 else None
+            return zv, za
+        except Exception:
+            pass
+
+    if isinstance(samples, (tuple, list)):
+        zv = samples[0] if len(samples) > 0 else None
+        za = samples[1] if len(samples) > 1 else None
+        return zv, za
+    elif isinstance(samples, torch.Tensor):
+        return samples, None
+    elif isinstance(samples, dict):
+        return samples.get("samples_video"), samples.get("samples_audio")
+
+    return None, None
 
 
 def decode_joint_latent(
@@ -81,24 +132,7 @@ def decode_joint_latent(
     Guarantees isolation of video and audio streams so standard decoders
     do not crash on tuples or NestedTensors.
     """
-    samples = sampled_latent.get("samples")
-    zv = None
-    za = None
-
-    if isinstance(samples, (tuple, list)):
-        zv = samples[0]
-        if len(samples) > 1:
-            za = samples[1]
-    elif getattr(samples, "is_nested", False):
-        parts = list(samples.unbind())
-        zv = parts[0]
-        if len(parts) > 1:
-            za = parts[1]
-    elif isinstance(samples, torch.Tensor):
-        zv = samples
-    elif isinstance(samples, dict):
-        zv = samples.get("samples_video")
-        za = samples.get("samples_audio")
+    zv, za = extract_latents_from_samples(sampled_latent)
 
     # 1. Video VAE Decoding
     if vae is not None and zv is not None:
@@ -111,13 +145,13 @@ def decode_joint_latent(
                         temporal_size=32, temporal_overlap=8
                     )[0]
                 except Exception as tiled_err:
-                    _LOG.warning("[Sampler] Tiled VAE decode failed (%s) - falling back to full decode", tiled_err)
+                    _LOG.warning("[H3.E - Sampler] Tiled VAE decode failed (%s) - falling back to full decode", tiled_err)
                     images = comfy_nodes.VAEDecode().decode(vae, {"samples": zv})[0]
             else:
                 images = comfy_nodes.VAEDecode().decode(vae, {"samples": zv})[0]
             out_images = images.to(torch.float32).cpu()
         except Exception as e:
-            _LOG.error("[Sampler] Video VAE decode error: %s", e)
+            _LOG.error("[H3.E - Sampler] Video VAE decode error: %s", e)
             num_frames = 124
             if zv.ndim >= 3:
                 num_frames = max(1, (zv.shape[2] - 2) // 5 * 17 + 5)
@@ -126,7 +160,7 @@ def decode_joint_latent(
         num_frames = 124
         if zv is not None and zv.ndim >= 3:
             num_frames = max(1, (zv.shape[2] - 2) // 5 * 17 + 5)
-        _LOG.info("[Sampler] No Video VAE provided; emitting placeholder image tensor (%d frames)", num_frames)
+        _LOG.info("[H3.E - Sampler] No Video VAE provided; emitting placeholder image tensor (%d frames)", num_frames)
         out_images = torch.zeros((num_frames, fallback_h, fallback_w, 3), dtype=torch.float32)
 
     # 2. Audio VAE Decoding
@@ -160,7 +194,7 @@ def decode_joint_latent(
             else:
                 out_audio = {"waveform": torch.zeros((1, 2, target_sr * 5), dtype=torch.float32), "sample_rate": target_sr}
         except Exception as e:
-            _LOG.error("[Sampler] Audio VAE decode error: %s", e)
+            _LOG.error("[H3.E - Sampler] Audio VAE decode error: %s", e)
             out_audio = {"waveform": torch.zeros((1, 2, target_sr * 5), dtype=torch.float32), "sample_rate": target_sr}
     else:
         out_audio = {"waveform": torch.zeros((1, 2, target_sr * 5), dtype=torch.float32), "sample_rate": target_sr}
@@ -195,17 +229,25 @@ def execute_sampling_pass(
 
     # 2. Noise & Sampler
     noise = sm.Noise_RandomNoise(int(seed))
-    sampler_obj = comfy.samplers.KSampler(sampler_name)
+    sampler_obj = comfy.samplers.sampler_object(sampler_name)
+    total_steps = int(steps)
+    float_denoise = float(denoise)
+    if float_denoise < 1.0 and float_denoise > 0.0:
+        total_steps = int(int(steps) / float_denoise)
+
     sigmas = comfy.samplers.calculate_sigmas(
-        model.get_model_object("model_sampling"), scheduler, int(steps), denoise=float(denoise)
+        model.get_model_object("model_sampling"), scheduler, total_steps
     )
+    if float_denoise < 1.0 and float_denoise > 0.0:
+        sigmas = sigmas[-(int(steps) + 1):]
 
     # 3. Denoising Call
     out = sm.SamplerCustomAdvanced.execute(
         noise=noise, guider=guider, sampler=sampler_obj, sigmas=sigmas, latent_image=latent_image
     )
-    sampled = out[0] if isinstance(out, (tuple, list)) else out
-    denoised = out[1] if isinstance(out, (tuple, list)) and len(out) > 1 else sampled
+    unpacked = _unpack(out)
+    sampled = unpacked[0] if len(unpacked) > 0 else out
+    denoised = unpacked[1] if len(unpacked) > 1 else sampled
 
     return sampled, denoised
 
@@ -277,7 +319,7 @@ def save_intermediate_artifacts(
             try:
                 safetensors.torch.save_file(latent_tensors, latent_path)
             except Exception as e:
-                _LOG.warning("[Sampler] Safetensors save failed (%s), falling back to torch.save", e)
+                _LOG.warning("[H3.E - Sampler] Safetensors save failed (%s), falling back to torch.save", e)
                 torch.save(latent_tensors, latent_path)
         else:
             torch.save(latent_tensors, latent_path)
@@ -298,14 +340,14 @@ def save_intermediate_artifacts(
         write_audio_to_wav(out_audio, temp_wav, target_sr=48000)
         has_audio = os.path.exists(temp_wav) and os.path.getsize(temp_wav) > 44
     except Exception as e:
-        _LOG.warning("[Sampler] Failed to write temporary WAV for audio: %s", e)
+        _LOG.warning("[H3.E - Sampler] Failed to write temporary WAV for audio: %s", e)
 
     # Encode Audio to FLAC
     if has_audio and ffmpeg_bin:
         try:
             save_external_audio(temp_wav, audio_path, "FLAC", kwargs, ffmpeg_bin, sample_rate=48000)
         except Exception as e:
-            _LOG.warning("[Sampler] Failed to encode standalone FLAC audio: %s", e)
+            _LOG.warning("[H3.E - Sampler] Failed to encode standalone FLAC audio: %s", e)
 
     # Encode Video / MKV
     if effective_format == "video/ffv1-mkv" or not advanced_save:
@@ -336,20 +378,21 @@ def save_intermediate_artifacts(
                 "-g", gop, "-slices", slices, "-slicecrc", slicecrc, "-pix_fmt", pix_fmt,
             ]
             if has_audio:
-                cmd += ["-c:a", "flac", "-sample_fmt", "s32", "-ar", "48000", "-ac", "2", "-shortest"]
+                cmd += ["-c:a", "flac", "-sample_fmt", "s32", "-ar", "48000", "-ac", "2"]
             else:
                 cmd += ["-an"]
 
             cmd.append(media_path)
 
             try:
-                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                for i in range(num_frames):
-                    proc.stdin.write(tensor_to_bytes(out_images[i]))
-                proc.stdin.close()
-                proc.communicate()
+                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                all_bytes = b"".join(tensor_to_bytes(out_images[i]) for i in range(num_frames))
+                _, stderr = proc.communicate(input=all_bytes)
+                if proc.returncode != 0:
+                    err_msg = stderr.decode("utf-8", errors="backslashreplace") if stderr else "Unknown error"
+                    _LOG.error("[H3.E - Sampler] FFmpeg lossless MKV encoding failed (%d): %s", proc.returncode, err_msg)
             except Exception as e:
-                _LOG.error("[Sampler] FFmpeg lossless MKV encoding error: %s", e)
+                _LOG.error("[H3.E - Sampler] FFmpeg lossless MKV encoding error: %s", e)
     else:
         # Custom format via minimax_save_video helpers
         ext = "mp4"
@@ -376,17 +419,18 @@ def save_intermediate_artifacts(
                 cmd += ["-i", temp_wav]
             cmd += video_args
             if has_audio:
-                cmd += audio_args + ["-shortest"]
+                cmd += audio_args
             cmd.append(media_path)
 
             try:
-                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                for i in range(num_frames):
-                    proc.stdin.write(tensor_to_bytes(out_images[i]))
-                proc.stdin.close()
-                proc.communicate()
+                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                all_bytes = b"".join(tensor_to_bytes(out_images[i]) for i in range(num_frames))
+                _, stderr = proc.communicate(input=all_bytes)
+                if proc.returncode != 0:
+                    err_msg = stderr.decode("utf-8", errors="backslashreplace") if stderr else "Unknown error"
+                    _LOG.error("[H3.E - Sampler] FFmpeg custom encoding failed (%d): %s", proc.returncode, err_msg)
             except Exception as e:
-                _LOG.error("[Sampler] FFmpeg custom encoding error: %s", e)
+                _LOG.error("[H3.E - Sampler] FFmpeg custom encoding error: %s", e)
 
     # Clean up temp WAV
     if os.path.exists(temp_wav):

@@ -141,7 +141,7 @@ def extract_audio_from_video(video_path):
         rel = os.path.relpath(output_wav, folder_paths.get_input_directory())
         return rel.replace("\\", "/"), peaks
     except Exception as e:
-        log.warning("[MiniMaxDirector] Server audio extraction failed: %s", e)
+        log.warning("[H3.E - Director] Server audio extraction failed: %s", e)
         return None, None
 
 
@@ -160,7 +160,7 @@ def get_audio_peaks(audio_path):
             return None
         return _peaks_from_int16(np.frombuffer(audio_bytes, dtype=np.int16))
     except Exception as e:
-        log.warning("[MiniMaxDirector] Failed to get audio peaks via PyAV: %s", e)
+        log.warning("[H3.E - Director] Failed to get audio peaks via PyAV: %s", e)
         return None
 
 
@@ -276,7 +276,7 @@ async def minimax_view_video(request):
             pass
         return resp
     except Exception as e:
-        log.warning(f"[MiniMaxDirector] viewvideo transcode error: {e}")
+        log.warning(f"[H3.E - Director] viewvideo transcode error: {e}")
         return web.FileResponse(path=file_path)
 
 
@@ -319,7 +319,7 @@ async def minimax_director_check_file(request):
                         rel = os.path.relpath(path, upload_dir).replace("\\", "/")
                         return web.json_response({"exists": True, "name": rel})
     except Exception as e:
-        log.warning("[MiniMaxDirector] Error listing input directory: %s", e)
+        log.warning("[H3.E - Director] Error listing input directory: %s", e)
 
     return web.json_response({"exists": False})
 
@@ -434,7 +434,7 @@ async def compile_prompt_endpoint(request):
             "warnings": warnings,
         })
     except Exception as e:
-        log.warning("[MiniMaxDirector] compile_prompt failed: %s", e)
+        log.warning("[H3.E - Director] compile_prompt failed: %s", e)
         return web.json_response({"status": "error", "message": str(e)}, status=500)
 
 
@@ -495,15 +495,15 @@ async def probe_video_endpoint(request):
                         base64.b64encode(buffer.getvalue()).decode("ascii")
             except Exception as e:
                 # a thumbnail is a nicety; the clip is still usable without one
-                log.debug("[MiniMaxDirector] probe thumbnail failed for %s: %s", path, e)
+                log.debug("[H3.E - Director] probe thumbnail failed for %s: %s", path, e)
 
-        log.info("[MiniMaxDirector] probed '%s': %s %dx%d, %.2fs @ %.2f fps",
+        log.info("[H3.E - Director] probed '%s': %s %dx%d, %.2fs @ %.2f fps",
                  os.path.basename(path), codec or "unknown", width, height, duration, fps)
         return web.json_response({"status": "success", "duration": round(duration, 3),
                                   "fps": round(fps, 4), "width": width, "height": height,
                                   "codec": codec, "thumb": thumb})
     except Exception as e:
-        log.warning("[MiniMaxDirector] probe_video failed: %s", e)
+        log.warning("[H3.E - Director] probe_video failed: %s", e)
         return web.json_response({"status": "error", "message": str(e)})
 
 
@@ -523,14 +523,14 @@ async def minimax_director_get_audio(request):
         try:
             peaks = get_audio_peaks(file_path)
         except Exception as e:
-            log.warning("[MiniMaxDirector] Failed to get audio peaks: %s", e)
+            log.warning("[H3.E - Director] Failed to get audio peaks: %s", e)
     try:
         peaks = await asyncio.to_thread(_extract_audio_peaks, input_path)
         if peaks is None:
             return web.json_response({"has_audio": False})
         return web.json_response({"has_audio": True, "peaks": peaks})
     except Exception as e:
-        log.warning("[MiniMaxDirector] Error extracting audio: %s", e)
+        log.warning("[H3.E - Director] Error extracting audio: %s", e)
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -551,7 +551,7 @@ async def minimax_director_open_folder(request):
             subprocess.Popen(["xdg-open", target_dir])
         return web.json_response({"status": "ok"})
     except Exception as e:
-        log.warning("[MiniMaxDirector] Error opening folder: %s", e)
+        log.warning("[H3.E - Director] Error opening folder: %s", e)
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -584,7 +584,7 @@ async def minimax_director_upload_chunk(request):
         try:
             audio_file, peaks = await loop.run_in_executor(None, extract_audio_from_video, file_path)
         except Exception as e:
-            log.warning("[MiniMaxDirector] Error in final chunk audio extraction: %s", e)
+            log.warning("[H3.E - Director] Error in final chunk audio extraction: %s", e)
         return web.json_response({
             "name": "%s/%s" % (WORKSPACE_SUBDIR, filename),
             "audio_file": audio_file,
@@ -841,7 +841,7 @@ async def analyze_character_endpoint(request):
             return web.json_response({"status": "error", "message": "No valid base64 images decoded."})
 
         # the key itself is never logged, only whether one is going out
-        log.info("[MiniMaxDirector] Analyzing reference slot %d (%s) via %s (%s, model "
+        log.info("[H3.E - Director] Analyzing reference slot %d (%s) via %s (%s, model "
                  "'%s'%s)...", char_index + 1, kind, provider, base_url, model_name,
                  ", authenticated" if api_key else "")
         try:
@@ -851,11 +851,11 @@ async def analyze_character_endpoint(request):
             return web.json_response({"status": "error", "message": str(e)})
 
         description, retained = plan.split_analysis(generated_text)
-        log.info("[MiniMaxDirector] Analysis complete: %s", generated_text)
+        log.info("[H3.E - Director] Analysis complete: %s", generated_text)
         return web.json_response({"status": "success", "description": description,
                                   "retention_note": retained})
     except Exception as e:
-        log.error("[MiniMaxDirector] Failed to analyze character: %s", e)
+        log.error("[H3.E - Director] Failed to analyze character: %s", e)
         return web.json_response({"status": "error", "message": str(e)}, status=500)
 
 
@@ -893,10 +893,10 @@ async def unload_model(provider, base_url, model, api_key=None):
                                         json={"model": model, "keep_alive": 0},
                                         timeout=10) as response:
                     await response.text()
-            log.info("[MiniMaxDirector] asked Ollama to release '%s'.", model)
+            log.info("[H3.E - Director] asked Ollama to release '%s'.", model)
             return True
         except Exception as e:
-            log.debug("[MiniMaxDirector] could not unload '%s': %s", model, e)
+            log.debug("[H3.E - Director] could not unload '%s': %s", model, e)
             return False
 
     # Anything else: try the llama.cpp router, and say plainly when it is not there rather
@@ -907,21 +907,21 @@ async def unload_model(provider, base_url, model, api_key=None):
                                     json={"model": model}, timeout=10) as response:
                 body = await response.text()
                 if response.status < 400:
-                    log.info("[MiniMaxDirector] asked the llama.cpp router to unload '%s'.",
+                    log.info("[H3.E - Director] asked the llama.cpp router to unload '%s'.",
                              model)
                     return True
                 if response.status in (404, 501):
                     log.info(
-                        "[MiniMaxDirector] %s at %s has no /models/unload, so '%s' stays "
+                        "[H3.E - Director] %s at %s has no /models/unload, so '%s' stays "
                         "loaded while H3 samples. That endpoint only exists when llama-server "
                         "runs in router mode; a plain one can unload itself with "
                         "--sleep-idle-seconds N instead.", provider, base_url, model)
                     return False
-                log.debug("[MiniMaxDirector] /models/unload returned %s: %s",
+                log.debug("[H3.E - Director] /models/unload returned %s: %s",
                           response.status, body[:200])
                 return False
     except Exception as e:
-        log.debug("[MiniMaxDirector] could not reach %s to unload '%s': %s",
+        log.debug("[H3.E - Director] could not reach %s to unload '%s': %s",
                   base_url, model, e)
         return False
 
@@ -974,7 +974,7 @@ def load_image_source(b64_or_url: str, filename: str = None) -> torch.Tensor:
                 if os.path.exists(path):
                     return _pil_to_tensor(Image.open(path))
         except Exception as e:
-            log.debug("[MiniMaxDirector] URL parsing failed for %s: %s", b64_or_url, e)
+            log.debug("[H3.E - Director] URL parsing failed for %s: %s", b64_or_url, e)
 
     if filename:
         path = resolve_input_path(filename)
@@ -986,7 +986,7 @@ def load_image_source(b64_or_url: str, filename: str = None) -> torch.Tensor:
             b64_str = b64_or_url.split(",", 1)[1] if "," in b64_or_url else b64_or_url
             return _pil_to_tensor(Image.open(_io.BytesIO(base64.b64decode(b64_str))))
         except Exception as e:
-            log.debug("[MiniMaxDirector] Base64 decoding failed: %s", e)
+            log.debug("[H3.E - Director] Base64 decoding failed: %s", e)
 
     return BLANK()
 
@@ -1027,7 +1027,7 @@ def load_video_tensor(file_ref: str, trim_start_sec: float, duration_sec: float,
     """
     path = resolve_input_path(file_ref)
     if not path:
-        log.warning("[MiniMaxDirector] Video not found: %s", file_ref)
+        log.warning("[H3.E - Director] Video not found: %s", file_ref)
         return BLANK()
 
     n_out = max(1, int(round(duration_sec * out_fps)))
@@ -1072,7 +1072,7 @@ def load_video_tensor(file_ref: str, trim_start_sec: float, duration_sec: float,
             if frames and idx < n_out:
                 frames.extend([frames[-1]] * (n_out - idx))
     except Exception as e:
-        log.warning("[MiniMaxDirector] Video extract error for %s: %s", file_ref, e)
+        log.warning("[H3.E - Director] Video extract error for %s: %s", file_ref, e)
 
     if not frames:
         return BLANK()
@@ -1106,7 +1106,7 @@ def load_audio_segment(seg: dict, frame_rate: float, file_key: str = "audioFile"
             try:
                 waveform = _decode_audio_stereo(path)
             except Exception as e:
-                log.warning("[MiniMaxDirector] Audio decode failed for %s: %s", seg.get(file_key), e)
+                log.warning("[H3.E - Director] Audio decode failed for %s: %s", seg.get(file_key), e)
     if waveform is None and seg.get("audioB64"):
         try:
             b64 = seg["audioB64"]
@@ -1114,7 +1114,7 @@ def load_audio_segment(seg: dict, frame_rate: float, file_key: str = "audioFile"
                 b64 = b64.split(",", 1)[1]
             waveform = _decode_audio_stereo(_io.BytesIO(base64.b64decode(b64)))
         except Exception as e:
-            log.warning("[MiniMaxDirector] Audio base64 decode failed: %s", e)
+            log.warning("[H3.E - Director] Audio base64 decode failed: %s", e)
     if waveform is None:
         return None
 
@@ -1219,7 +1219,7 @@ def compress_image(tensor: torch.Tensor, crf: int) -> torch.Tensor:
             np.stack(decoded).astype(np.float32) / 255.0)[:n].to(tensor.device, tensor.dtype)
         return out
     except Exception as e:
-        log.warning("[MiniMaxDirector] img_compression encode/decode failed: %s", e)
+        log.warning("[H3.E - Director] img_compression encode/decode failed: %s", e)
         return tensor
 
 
@@ -1308,7 +1308,7 @@ def build_combined_audio(timeline_data_str: str, start_frame: int, duration_fram
             # additive mix so overlapping clips sum, matching the editor's preview
             out[:, dst_a:dst_a + n] += waveform[:, src_a:src_a + n]
         except Exception as e:
-            log.warning("[MiniMaxDirector] Audio process error for segment %s: %s", seg.get("fileName"), e)
+            log.warning("[H3.E - Director] Audio process error for segment %s: %s", seg.get("fileName"), e)
             continue
 
     return {"waveform": out.unsqueeze(0), "sample_rate": AUDIO_SR}

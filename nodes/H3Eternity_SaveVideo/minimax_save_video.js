@@ -573,6 +573,80 @@ function addVideoPreviewWidget(node) {
   };
 }
 
+function syncRenderPlanLockState(node) {
+  if (!node || !node.widgets) return;
+
+  const planInput = node.inputs?.find(inp => inp.name === "render_plan");
+  const isConnected = !!(planInput && planInput.link != null);
+
+  const filenameWidget = node.widgets.find(w => w.name === "filename");
+  const frameRateWidget = node.widgets.find(w => w.name === "frame_rate");
+
+  const targetWidgets = [
+    { w: filenameWidget, lockedLabel: "filename (🔒 Locked to Plan)" },
+    { w: frameRateWidget, lockedLabel: "frame_rate (🔒 Locked to Plan)" }
+  ];
+
+  if (isConnected) {
+    let upstreamPlanName = null;
+    let upstreamFps = 24.0;
+
+    try {
+      if (app.graph && planInput.link != null) {
+        const link = app.graph.links[planInput.link];
+        if (link) {
+          const originNode = app.graph.getNodeById(link.origin_id);
+          if (originNode) {
+            const originVideoName = originNode.widgets?.find(w => w.name === "video_name");
+            if (originVideoName?.value) {
+              upstreamPlanName = originVideoName.value;
+            }
+            const originFps = originNode.widgets?.find(w => w.name === "frame_rate" || w.name === "fps");
+            if (originFps?.value) {
+              upstreamFps = Number(originFps.value) || 24.0;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      // Non-blocking fallback
+    }
+
+    for (const item of targetWidgets) {
+      const widget = item.w;
+      if (!widget) continue;
+
+      if (!widget._h3Locked) {
+        widget._h3Locked = true;
+        widget._origLabel = widget.origLabel || widget.label || widget.name;
+        widget._origDisabled = !!widget.disabled;
+      }
+
+      widget.disabled = true;
+      widget.label = item.lockedLabel;
+
+      if (widget.name === "filename" && upstreamPlanName) {
+        widget.value = upstreamPlanName;
+      } else if (widget.name === "frame_rate" && upstreamFps) {
+        widget.value = upstreamFps;
+      }
+    }
+  } else {
+    for (const item of targetWidgets) {
+      const widget = item.w;
+      if (!widget) continue;
+
+      if (widget._h3Locked) {
+        widget._h3Locked = false;
+        widget.disabled = widget._origDisabled || false;
+        widget.label = widget._origLabel || widget.name;
+      }
+    }
+  }
+
+  node.setDirtyCanvas?.(true, true);
+}
+
 app.registerExtension({
   name: "H3Eternity_SaveVideo",
 
@@ -618,6 +692,7 @@ app.registerExtension({
       updateAudioFormatOptions(this, false);
       updatePixFmtOptions(this, false);
       updateWidgetVisibility(this, true);
+      syncRenderPlanLockState(this);
 
       return r;
     };
@@ -629,7 +704,15 @@ app.registerExtension({
         updateAudioFormatOptions(this, false);
         updatePixFmtOptions(this, false);
         updateWidgetVisibility(this, false);
+        syncRenderPlanLockState(this);
       }, 20);
+      return r;
+    };
+
+    const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+    nodeType.prototype.onConnectionsChange = function(type, index, isConnected, link_info, input_info) {
+      const r = onConnectionsChange ? onConnectionsChange.apply(this, arguments) : undefined;
+      syncRenderPlanLockState(this);
       return r;
     };
 

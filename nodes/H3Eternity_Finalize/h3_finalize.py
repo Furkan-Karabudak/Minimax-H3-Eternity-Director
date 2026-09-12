@@ -121,18 +121,33 @@ class H3Eternity_Finalize:
                 }),
             },
             "optional": {
-                "seam_audio": (["smartseam", "crossfade", "declick", "hard_cut"], {
-                    "default": "smartseam",
-                    "tooltip": "Audio stitching strategy across iteration seams: "
-                               "smartseam (hides seam at quietest RMS point), "
-                               "crossfade (full-overlap equal-power blend), "
-                               "declick (12ms boundary smoothing), "
-                               "hard_cut (abrupt transition for scene changes)."
+                "seam_video": (["smooth_blend", "hard_cut"], {
+                    "default": "smooth_blend",
+                    "tooltip": "Video seam transition: smooth_blend (color-calibrated cosine blend across overlap frames) "
+                               "or hard_cut (knife-edge drop of overlap frames)."
+                }),
+                "harmonize_color": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Harmonize gain and bias across clips to eliminate inter-clip VAE/DiT color drift (<0.01% error)."
                 }),
                 "trim_head_overlap": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Automatically drop duplicate head overlap frames on continuation "
                                "iterations (O frames). Keep True for smooth, stutter-free playback."
+                }),
+                "seam_audio": (["crossfade_end", "instant"], {
+                    "default": "crossfade_end",
+                    "tooltip": "Audio stitching strategy across iteration seams: "
+                               "crossfade_end (smooth micro-fade at video cut boundary), "
+                               "instant (abrupt cut at video cut boundary without smoothing)."
+                }),
+                "seam_audio_fade_ms": ("FLOAT", {
+                    "default": 12.0, "min": 1.0, "max": 200.0, "step": 1.0,
+                    "tooltip": "Transition micro-fade duration in milliseconds at the audio cut boundary (default: 12.0ms)."
+                }),
+                "anti_flashbang": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Eliminate sudden luminance burst / flashbang across iteration seams using smooth auto-exposure matching."
                 }),
             },
             "hidden": {
@@ -149,7 +164,7 @@ class H3Eternity_Finalize:
         "Fully stitched and synchronized AUDIO track across all iterations.",
     )
     FUNCTION = "finalize"
-    CATEGORY = "MiniMax H3 / Eternity"
+    CATEGORY = "H3 Eternity"
     DESCRIPTION = (
         "Controls recursive iteration loopback to Start until all iterations are generated, "
         "then stitches intermediate clips end-to-end into final_images and final_audio."
@@ -184,12 +199,6 @@ class H3Eternity_Finalize:
         target_start_id: Optional[str] = None,
     ) -> Optional[str]:
         """Traces the active render_plan wire backwards to identify the originating H3Eternity_Start node."""
-        if target_start_id:
-            tid_str = str(target_start_id)
-            node_info = dynprompt.get_node(tid_str)
-            if node_info and ("H3Eternity_Start" in str(node_info.get("class_type", ""))):
-                return tid_str
-
         curr = finalize_id
         visited = set()
         while curr and curr not in visited:
@@ -206,13 +215,25 @@ class H3Eternity_Finalize:
                 curr = str(rplan_in[0])
             else:
                 break
+
+        # Fallback to target_start_id only if dynamic wire tracing found nothing
+        if target_start_id:
+            tid_str = str(target_start_id)
+            node_info = dynprompt.get_node(tid_str)
+            if node_info and ("H3Eternity_Start" in str(node_info.get("class_type", ""))):
+                return tid_str
+
         return None
 
     def finalize(
         self,
         render_plan: dict[str, Any],
-        seam_audio: str = "smartseam",
+        seam_video: str = "smooth_blend",
+        harmonize_color: bool = True,
         trim_head_overlap: bool = True,
+        seam_audio: str = "crossfade_end",
+        seam_audio_fade_ms: float = 12.0,
+        anti_flashbang: bool = True,
         unique_id: Optional[str] = None,
         dynprompt: Optional[Any] = None,
         **kwargs: Any,
@@ -221,7 +242,7 @@ class H3Eternity_Finalize:
         cur_idx = int(plan.get("current_iteration", 0))
         total_iters = int(plan.get("total_iterations", 1))
 
-        _LOG.info("[H3Eternity_Finalize] Processing iteration %d/%d", cur_idx, total_iters)
+        _LOG.info("[H3.E - Finalize] Processing iteration %d/%d", cur_idx, total_iters)
 
         height = int(plan.get("canvas", {}).get("height", 768))
         width = int(plan.get("canvas", {}).get("width", 1344))
@@ -237,7 +258,7 @@ class H3Eternity_Finalize:
         if cur_idx < total_iters - 1:
             next_idx = cur_idx + 1
             updated_plan = advance_iteration(plan)
-            _LOG.info("[H3Eternity_Finalize] Advancing to iteration %d/%d", next_idx, total_iters)
+            _LOG.info("[H3.E - Finalize] Advancing to iteration %d/%d", next_idx, total_iters)
 
             # ComfyUI Dynamic GraphBuilder Expansion
             if dynprompt is not None and _HAVE_GRAPH_BUILDER and unique_id:
@@ -281,14 +302,16 @@ class H3Eternity_Finalize:
                         start_clone.set_input("render_plan", serialize_render_plan(updated_plan))
 
                         my_clone = graph.lookup_node("Recurse")
-                        _LOG.info("[H3Eternity_Finalize] Successfully expanded GraphBuilder loop for iteration %d", next_idx)
+                        _LOG.info("[H3.E - Finalize] Successfully expanded GraphBuilder loop for iteration %d", next_idx)
                         return {
                             "result": (my_clone.out(0), my_clone.out(1), my_clone.out(2)),
                             "expand": graph.finalize(),
                         }
+                    else:
+                        _LOG.warning("[H3.E - Finalize] Upstream H3Eternity_Start not found. Returning updated plan.")
                 except Exception as e:
                     _LOG.warning(
-                        "[H3Eternity_Finalize] Dynamic graph expansion failed: %s. "
+                        "[H3.E - Finalize] Dynamic graph expansion failed: %s. "
                         "Returning updated_plan for static runner fallback.", e
                     )
 
@@ -298,16 +321,20 @@ class H3Eternity_Finalize:
         # ---------------------------------------------------------------------
         # BRANCH B: FINAL ITERATION COMPLETE (Assembly & Multi-Clip Stitching)
         # ---------------------------------------------------------------------
-        _LOG.info("[H3Eternity_Finalize] Completed all %d iterations. Executing multi-clip assembly.", total_iters)
+        _LOG.info("[H3.E - Finalize] Completed all %d iterations. Executing multi-clip assembly.", total_iters)
         final_images, final_audio = assemble_multi_clip(
             plan=plan,
-            seam_audio=seam_audio,
+            seam_video=seam_video,
+            harmonize_color=harmonize_color,
             trim_head_overlap=trim_head_overlap,
+            seam_audio=seam_audio,
+            seam_audio_fade_ms=float(kwargs.get("seam_fade_ms", seam_audio_fade_ms)),
             vae=plan.get("vae"),
             audio_vae=plan.get("audio_vae"),
+            anti_flashbang=anti_flashbang,
         )
         plan["completed"] = True
-        _LOG.info("[H3Eternity_Finalize] Assembly complete: %d video frames delivered.", final_images.shape[0])
+        _LOG.info("[H3.E - Finalize] Assembly complete: %d video frames delivered.", final_images.shape[0])
         return (plan, final_images, final_audio)
 
 
@@ -319,14 +346,22 @@ if _HAVE_COMFY_API:
             return io.Schema(
                 node_id="H3Eternity_Finalize",
                 display_name="H3 Eternity - Finalize",
-                category="MiniMax H3 / Eternity",
+                category="H3 Eternity",
                 description=cls.DESCRIPTION,
                 inputs=[
                     io.Custom(RENDER_PLAN_TYPE).Input("render_plan", tooltip="Active render_plan from Sampler."),
-                    io.Combo.Input("seam_audio", options=["smartseam", "crossfade", "declick", "hard_cut"],
-                                   default="smartseam", tooltip="Audio stitching strategy across iteration seams."),
+                    io.Combo.Input("seam_video", options=["smooth_blend", "hard_cut"],
+                                   default="smooth_blend", tooltip="Video seam transition strategy."),
+                    io.Boolean.Input("harmonize_color", default=True,
+                                     tooltip="Harmonize inter-clip color/exposure drift."),
                     io.Boolean.Input("trim_head_overlap", default=True,
-                                     tooltip="Drop duplicate head overlap frames on continuation shots."),
+                                     tooltip="Drop/blend duplicate head overlap frames on continuation shots."),
+                    io.Combo.Input("seam_audio", options=["crossfade_end", "instant"],
+                                   default="crossfade_end", tooltip="Audio stitching strategy across iteration seams."),
+                    io.Float.Input("seam_audio_fade_ms", default=12.0, min=1.0, max=200.0, step=1.0, optional=True,
+                                   tooltip="Transition micro-fade duration in milliseconds at the audio cut boundary (default: 12.0ms)."),
+                    io.Boolean.Input("anti_flashbang", default=True,
+                                     tooltip="Eliminate sudden luminance burst / flashbang across iteration seams using smooth auto-exposure matching."),
                 ],
                 outputs=[
                     io.Custom(RENDER_PLAN_TYPE).Output(display_name="render_plan"),
@@ -339,8 +374,12 @@ if _HAVE_COMFY_API:
         def execute(
             cls,
             render_plan,
-            seam_audio="smartseam",
+            seam_video="smooth_blend",
+            harmonize_color=True,
             trim_head_overlap=True,
+            seam_audio="crossfade_end",
+            seam_audio_fade_ms=12.0,
+            anti_flashbang=True,
             unique_id=None,
             dynprompt=None,
             **kwargs,
@@ -348,8 +387,12 @@ if _HAVE_COMFY_API:
             instance = cls()
             out = instance.finalize(
                 render_plan=render_plan,
-                seam_audio=seam_audio,
+                seam_video=seam_video,
+                harmonize_color=harmonize_color,
                 trim_head_overlap=trim_head_overlap,
+                seam_audio=seam_audio,
+                seam_audio_fade_ms=float(kwargs.get("seam_fade_ms", seam_audio_fade_ms)),
+                anti_flashbang=anti_flashbang,
                 unique_id=unique_id,
                 dynprompt=dynprompt,
                 **kwargs,

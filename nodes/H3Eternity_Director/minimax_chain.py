@@ -108,7 +108,7 @@ class MiniMaxH3DirectorChain(io.ComfyNode):
         return io.Schema(
             node_id="MiniMaxH3DirectorChain_Eternity",
             display_name="MiniMax H3 Director Chain - Eternity Edition",
-            category="MiniMax H3",
+            category="H3 Eternity",
             description=(
                 "Renders a timeline longer than one H3 shot by chaining in-range windows, "
                 "each opening on the previous window's last frame. Reads the same "
@@ -194,7 +194,7 @@ class MiniMaxH3DirectorChain(io.ComfyNode):
 
         window_frames = max(1, int(round(float(window_seconds) * fps)))
         windows = split_windows(max(1, int(duration_frames)), window_frames)
-        log.info("[MiniMaxChain] %d window(s) of ~%.1fs over %.1fs total.",
+        log.info("[H3.E - Director] %d window(s) of ~%.1fs over %.1fs total.",
                  len(windows), window_frames / fps, duration_frames / fps)
 
         # reference_mode is a property of the timeline, so it is the same for every window
@@ -303,7 +303,7 @@ class MiniMaxH3DirectorChain(io.ComfyNode):
                 all_audio.append(audio_chunk)
             prev_last = images[-1:].clone()
 
-            log.info("[MiniMaxChain] window %d/%d done: %d frames (%s)",
+            log.info("[H3.E - Director] window %d/%d done: %d frames (%s)",
                      index + 1, len(windows), images.shape[0], p["mode"])
             pbar.update(1)
 
@@ -315,7 +315,7 @@ class MiniMaxH3DirectorChain(io.ComfyNode):
                 (2, max(1, int(round(out_images.shape[0] / MODEL_FPS * AUDIO_SR)))),
                 dtype=torch.float32)
 
-        log.info("[MiniMaxChain] finished: %d frames (%.2fs) at %dx%d",
+        log.info("[H3.E - Director] finished: %d frames (%.2fs) at %dx%d",
                  out_images.shape[0], out_images.shape[0] / MODEL_FPS, width, height)
 
         return io.NodeOutput(out_images,

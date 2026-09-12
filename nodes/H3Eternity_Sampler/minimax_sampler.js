@@ -504,6 +504,61 @@ function addStatusTrackerWidget(node) {
 
   node._currentIteration = 0;
   node._totalIterations = 1;
+  setTimeout(() => {
+    updateSamplerTotalIterations(node);
+  }, 50);
+}
+
+function updateSamplerTotalIterations(samplerNode) {
+  if (!samplerNode || !app.graph?._nodes) return;
+
+  let directorNode = null;
+  const rplanInput = samplerNode.inputs?.find(i => i.name === "render_plan");
+  if (rplanInput && rplanInput.link != null) {
+    const link = app.graph.links?.[rplanInput.link];
+    if (link) {
+      const originNode = app.graph.getNodeById(link.origin_id);
+      if (originNode && originNode.comfyClass === "H3Eternity_Director") {
+        directorNode = originNode;
+      }
+    }
+  }
+  if (!directorNode) {
+    directorNode = app.graph._nodes.find(n => n.comfyClass === "H3Eternity_Director");
+  }
+
+  if (directorNode) {
+    let cuts = [];
+    const tdWidget = directorNode.widgets?.find(w => w.name === "timeline_data");
+    if (tdWidget && tdWidget.value) {
+      try {
+        const td = typeof tdWidget.value === "string" ? JSON.parse(tdWidget.value) : tdWidget.value;
+        cuts = td.cuts || [];
+      } catch (_) {}
+    }
+    const total = Math.max(1, cuts.length + 1);
+    samplerNode._totalIterations = total;
+    if (samplerNode._statusTracker) {
+      const cur = samplerNode._currentIteration || 0;
+      samplerNode._statusTracker.badge.textContent = `Iteration ${cur + 1} / ${total}`;
+    }
+  }
+}
+
+function findSamplerNode(runningNodeId) {
+  if (!runningNodeId || !app.graph?._nodes) return null;
+  const idStr = String(runningNodeId);
+  let node = app.graph._nodes.find(n => String(n.id) === idStr && SAMPLER_NODE_IDS.has(n.comfyClass));
+  if (node) return node;
+
+  const parts = idStr.split(".");
+  const rootId = parts[parts.length - 1];
+  if (rootId) {
+    node = app.graph._nodes.find(n => String(n.id) === rootId && SAMPLER_NODE_IDS.has(n.comfyClass));
+    if (node) return node;
+  }
+
+  return app.graph._nodes.find(n => SAMPLER_NODE_IDS.has(n.comfyClass)) || null;
 }
 
 // --------------------------------------------------------------------------------------
@@ -771,12 +826,28 @@ app.registerExtension({
   name: "H3Eternity_Sampler",
 
   async setup() {
+    api.addEventListener("execution_start", () => {
+      const samplers = app.graph?._nodes?.filter(n => SAMPLER_NODE_IDS.has(n.comfyClass)) || [];
+      for (const s of samplers) {
+        updateSamplerTotalIterations(s);
+        s._currentIteration = 0;
+        if (s._statusTracker) {
+          const total = s._totalIterations || 1;
+          s._statusTracker.badge.textContent = `Iteration 1 / ${total}`;
+          s._statusTracker.statusLabel.textContent = "Queued / Initializing...";
+          s._statusTracker.iterFill.style.width = "0%";
+          s._statusTracker.iterPctText.textContent = "0 / 1";
+          s._statusTracker.totalFill.style.width = "0%";
+          s._statusTracker.totalPctText.textContent = "0%";
+        }
+      }
+    });
+
     api.addEventListener("progress", (event) => {
       const detail = event?.detail;
       if (!detail || !detail.node) return;
 
-      const runningNodeId = String(detail.node);
-      const targetNode = app.graph?._nodes?.find(n => String(n.id) === runningNodeId && SAMPLER_NODE_IDS.has(n.comfyClass));
+      const targetNode = findSamplerNode(detail.node);
       if (!targetNode || !targetNode._statusTracker) return;
 
       const st = targetNode._statusTracker;
@@ -800,9 +871,25 @@ app.registerExtension({
       const runningNodeId = event?.detail ? String(event.detail) : null;
       if (!runningNodeId) return;
 
-      const targetNode = app.graph?._nodes?.find(n => String(n.id) === runningNodeId && SAMPLER_NODE_IDS.has(n.comfyClass));
+      const targetNode = findSamplerNode(runningNodeId);
       if (targetNode && targetNode._statusTracker) {
         targetNode._statusTracker.statusLabel.textContent = "Denoising in progress...";
+        if (runningNodeId !== String(targetNode.id)) {
+          targetNode._statusTracker.iterFill.style.width = "0%";
+          targetNode._statusTracker.iterPctText.textContent = "0 / 1";
+        }
+      }
+    });
+
+    api.addEventListener("executed", (event) => {
+      const detail = event?.detail;
+      if (!detail || !detail.node) return;
+
+      const targetNode = findSamplerNode(detail.node);
+      if (!targetNode) return;
+
+      if (String(detail.node) !== String(targetNode.id)) {
+        targetNode.onExecuted?.(detail.output);
       }
     });
   },
@@ -816,6 +903,13 @@ app.registerExtension({
 
       addStatusTrackerWidget(this);
       addVideoPreviewWidget(this);
+
+      const origOnConnectionsChange = this.onConnectionsChange;
+      this.onConnectionsChange = function() {
+        const res = origOnConnectionsChange ? origOnConnectionsChange.apply(this, arguments) : undefined;
+        updateSamplerTotalIterations(this);
+        return res;
+      };
 
       const videoFmtWidget = this.widgets?.find(w => w.name === "video_format");
       const audioFmtWidget = this.widgets?.find(w => w.name === "audio_format");
@@ -915,16 +1009,20 @@ app.registerExtension({
       onExecuted?.apply(this, arguments);
 
       if (message?.status && this._statusTracker) {
-        this._currentIteration = message.status.current_iteration || 0;
-        this._totalIterations = message.status.total_iterations || 1;
-        const cur = this._currentIteration;
-        const total = this._totalIterations;
+        const rawStatus = message.status;
+        const statusObj = Array.isArray(rawStatus) ? rawStatus[0] : rawStatus;
+        if (statusObj && typeof statusObj === "object") {
+          this._currentIteration = Number(statusObj.current_iteration) || 0;
+          this._totalIterations = Number(statusObj.total_iterations) || 1;
+          const cur = this._currentIteration;
+          const total = this._totalIterations;
 
-        this._statusTracker.badge.textContent = `Iteration ${cur + 1} / ${total}`;
-        this._statusTracker.statusLabel.textContent = (cur + 1 >= total) ? "Sampling Complete" : "Iteration Done";
-        this._statusTracker.iterFill.style.width = "100%";
-        this._statusTracker.totalFill.style.width = `${Math.round(((cur + 1) / total) * 100)}%`;
-        this._statusTracker.totalPctText.textContent = `${Math.round(((cur + 1) / total) * 100)}%`;
+          this._statusTracker.badge.textContent = `Iteration ${cur + 1} / ${total}`;
+          this._statusTracker.statusLabel.textContent = (cur + 1 >= total) ? "Sampling Complete" : "Iteration Done";
+          this._statusTracker.iterFill.style.width = "100%";
+          this._statusTracker.totalFill.style.width = `${Math.round(((cur + 1) / total) * 100)}%`;
+          this._statusTracker.totalPctText.textContent = `${Math.round(((cur + 1) / total) * 100)}%`;
+        }
       }
 
       const previewData = message?.videos?.[0] || message?.gifs?.[0];
@@ -939,6 +1037,7 @@ app.registerExtension({
     updateSamplerAudioFormatOptions(node, false);
     updateSamplerPixFmtOptions(node, false);
     updateSamplerWidgetVisibility(node, true);
+    updateSamplerTotalIterations(node);
   },
 
   async loadedGraphNode(node) {
@@ -947,6 +1046,7 @@ app.registerExtension({
       updateSamplerAudioFormatOptions(node, false);
       updateSamplerPixFmtOptions(node, false);
       updateSamplerWidgetVisibility(node, false);
-    }, 20);
+      updateSamplerTotalIterations(node);
+    }, 50);
   }
 });

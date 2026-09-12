@@ -86,7 +86,7 @@ class MiniMaxH3SeamlessSampler(io.ComfyNode):
         return io.Schema(
             node_id="H3Eternity_SeamlessSampler",
             display_name="H3 Eternity - Seamless Sampler [experimental]",
-            category="MiniMax H3",
+            category="H3 Eternity",
             description="Temporal MultiDiffusion co-denoising for H3 — seamless long-form video+audio. "
                         "Wire a ReferenceToVideo/ImageToVideo (cond + AV latent) for the whole clip. v0.",
             inputs=[
@@ -127,7 +127,7 @@ class MiniMaxH3SeamlessSampler(io.ComfyNode):
         overlap_lat = max(5, _video_latent_t(_align_frame_count(ov_frames)))
         windows = _plan_windows(tv, win_lat, overlap_lat)
 
-        log.info("[MiniMaxSeamless] full video-latent frames=%d | window=%d lat (%.1fs) | "
+        log.info("[H3.E - SeamlessSampler] full video-latent frames=%d | window=%d lat (%.1fs) | "
                  "overlap≈%d lat | %d windows: %s",
                  tv, win_lat, window_seconds, overlap_lat, len(windows),
                  ", ".join("[%d,%d)" % (s, s + n) for s, n in windows))
@@ -146,7 +146,7 @@ class MiniMaxH3SeamlessSampler(io.ComfyNode):
             ts = args["timestep"]
             c = args["c"]
             if state["first"]:
-                log.info("[MiniMaxSeamless] wrapper first call: input=%s | c keys=%s | "
+                log.info("[H3.E - SeamlessSampler] wrapper first call: input=%s | c keys=%s | "
                          "types: latent_shapes=%s minimax_payload=%s c_crossattn=%s",
                          tuple(input_x.shape), sorted(c.keys()),
                          type(c.get("latent_shapes")).__name__,
@@ -160,7 +160,7 @@ class MiniMaxH3SeamlessSampler(io.ComfyNode):
             Ta = afull.shape[-1]
 
             if state["first"]:
-                log.info("[MiniMaxSeamless] first model call: video=%s audio=%s text_len=%d shapes=%s",
+                log.info("[H3.E - SeamlessSampler] first model call: video=%s audio=%s text_len=%d shapes=%s",
                          tuple(vfull.shape), tuple(afull.shape), text_len, shapes)
                 state["first"] = False
 

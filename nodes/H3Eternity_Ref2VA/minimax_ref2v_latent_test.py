@@ -173,7 +173,7 @@ class MiniMaxH3ReferenceToVideo_test(io.ComfyNode):
             node_id="H3Eternity_Ref2VA",
             description="<Picture i> / <Video k> / <Audio j> reference conditioning with direct Latent & Pixel inputs for MiniMax H3.",
             display_name="H3 Eternity - Ref2VA",
-            category="model/conditioning/minimax",
+            category="H3 Eternity",
             inputs=[
                 io.Clip.Input("clip"),
                 io.Vae.Input("vae", optional=True, tooltip="Optional VAE for fallback pixel-to-latent encoding when latent inputs are not provided."),

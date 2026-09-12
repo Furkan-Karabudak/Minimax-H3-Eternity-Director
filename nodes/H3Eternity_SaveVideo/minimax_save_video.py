@@ -12,14 +12,30 @@ import json
 import shutil
 import datetime
 import tempfile
+import colorsys
 import subprocess
 from string import Template
 from typing import List, Tuple, Dict, Any, Optional
 
 import numpy as np
 import torch
-from PIL import Image, ExifTags
+from PIL import Image, ExifTags, ImageDraw, ImageFont
 from PIL.PngImagePlugin import PngInfo
+
+try:
+    from ..H3Eternity_Director.render_plan import (
+        RENDER_PLAN_TYPE,
+        deserialize_render_plan,
+        serialize_render_plan,
+    )
+except (ImportError, ValueError):
+    RENDER_PLAN_TYPE = "RENDER_PLAN"
+    def deserialize_render_plan(plan):
+        if isinstance(plan, str):
+            return json.loads(plan)
+        return plan or {}
+    def serialize_render_plan(plan):
+        return json.dumps(plan) if isinstance(plan, dict) else plan
 
 try:
     import folder_paths
@@ -527,6 +543,145 @@ def tensor_to_bytes(tensor: torch.Tensor) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# Shot Overlay & Mutual Blend Inspection Helpers
+# ---------------------------------------------------------------------------
+
+def compute_blend_hue_color(t: float) -> Tuple[int, int, int]:
+    """Computes HSV hue-shifted RGB color for blend transition.
+
+    Interpolates smoothly along the hue arc from Orange (#FF9147, Hue ~24.13°)
+    to Green (#47FF47, Hue 120.0°) with constant saturation (0.7216) and full brightness (1.0).
+    """
+    t_clamped = max(0.0, min(1.0, float(t)))
+    h_start = 0.06702898550724638  # 24.13 deg (Orange #FF9147)
+    h_end = 0.3333333333333333     # 120.0 deg (Green #47FF47)
+    h = h_start + t_clamped * (h_end - h_start)
+    s = 0.7215686274509804
+    v = 1.0
+    r, g, b = colorsys.hsv_to_rgb(h, s, v)
+    return (int(round(r * 255.0)), int(round(g * 255.0)), int(round(b * 255.0)))
+
+
+def _get_overlay_font(font_size: int):
+    """Discovers a robust TrueType font supporting unicode numerals and bullet."""
+    font_candidates = [
+        "C:/Windows/Fonts/arialbd.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/segoeuib.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ]
+    for candidate in font_candidates:
+        if os.path.isfile(candidate):
+            try:
+                return ImageFont.truetype(candidate, font_size)
+            except Exception:
+                pass
+    try:
+        return ImageFont.truetype("arial.ttf", font_size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def build_timeline_map_from_plan(
+    plan_dict: Optional[Dict[str, Any]],
+    total_frames: int,
+) -> List[Tuple[str, str, Tuple[int, int, int]]]:
+    """Constructs frame-by-frame lookup map containing (seg_type, text, fill_rgb).
+
+    Extracts chronological shot ranges and mutual blend windows from
+    plan_dict["stitched_timeline"] (produced by H3Eternity_Finalize).
+    """
+    if total_frames <= 0:
+        return []
+
+    default_shot = "1"
+    if isinstance(plan_dict, dict) and "current_iteration" in plan_dict:
+        try:
+            default_shot = str(int(plan_dict["current_iteration"]) + 1)
+        except Exception:
+            pass
+
+    timeline_map: List[Optional[Tuple[str, str, Tuple[int, int, int]]]] = [None] * total_frames
+
+    if isinstance(plan_dict, dict):
+        stitched = plan_dict.get("stitched_timeline", {})
+        segments = stitched.get("segments", [])
+
+        if segments:
+            for seg in segments:
+                seg_type = seg.get("type")
+                st = max(0, min(int(seg.get("start_frame", 0)), total_frames))
+                en = max(st, min(int(seg.get("end_frame", total_frames)), total_frames))
+
+                if seg_type == "shot":
+                    shot_num = str(seg.get("shot_number", default_shot))
+                    for f in range(st, en):
+                        timeline_map[f] = ("shot", shot_num, (255, 255, 255))
+                elif seg_type == "blend":
+                    span = en - st
+                    for f in range(st, en):
+                        t = (f - st) / float(span - 1) if span > 1 else 0.5
+                        color = compute_blend_hue_color(t)
+                        timeline_map[f] = ("blend", "\u2022", color)
+
+    # Fill unmapped frames or gaps
+    last_known = ("shot", default_shot, (255, 255, 255))
+    for f in range(total_frames):
+        if timeline_map[f] is not None:
+            last_known = timeline_map[f]
+        else:
+            timeline_map[f] = last_known
+
+    return timeline_map
+
+
+def get_frame_overlay_info(
+    frame_idx: int,
+    timeline_map: Optional[List[Tuple[str, str, Tuple[int, int, int]]]],
+) -> Tuple[str, str, Tuple[int, int, int]]:
+    """Returns (seg_type, text, fill_rgb) for a given frame index."""
+    if timeline_map and 0 <= frame_idx < len(timeline_map):
+        return timeline_map[frame_idx]
+    return ("shot", "1", (255, 255, 255))
+
+
+def render_shot_overlay_frame(
+    frame_tensor: torch.Tensor,
+    overlay_info: Tuple[str, str, Tuple[int, int, int]],
+    font: Any,
+    width: int,
+    height: int,
+    has_alpha: bool = False,
+) -> bytes:
+    """Renders shot numeral or mutual blend bullet onto frame tensor and returns uint8 bytes."""
+    np_frame = (frame_tensor.detach().cpu().numpy() * 255.0 + 0.5).clip(0, 255).astype(np.uint8)
+    mode = "RGBA" if has_alpha else "RGB"
+    img = Image.fromarray(np_frame, mode=mode)
+    draw = ImageDraw.Draw(img)
+
+    seg_type, text, fill_color = overlay_info
+
+    font_size = max(28, int(height * 0.055))
+    stroke_width = max(2, int(font_size * 0.08))
+    margin_x = max(16, int(width * 0.025))
+    margin_y = max(16, int(height * 0.025))
+
+    draw.text(
+        (margin_x, margin_y),
+        text,
+        font=font,
+        fill=fill_color,
+        stroke_width=stroke_width,
+        stroke_fill=(0, 0, 0),
+    )
+
+    return img.tobytes()
+
+
+# ---------------------------------------------------------------------------
 # Node Implementation
 # ---------------------------------------------------------------------------
 
@@ -542,17 +697,22 @@ class H3_Eternity_Save_Video:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "images": ("IMAGE",),
                 "frame_rate": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0, "step": 1.0}),
                 "loop_count": ("INT", {"default": 0, "min": 0, "max": 100, "step": 1}),
                 "filename": ("STRING", {"default": "h3_video"}),
                 "video_format": (VIDEO_FORMATS, {"default": "video/h264-mp4"}),
                 "audio_format": (ALL_AUDIO_FORMATS, {"default": "AAC"}),
                 "pingpong": ("BOOLEAN", {"default": False}),
+                "save_shot_overlay": ("BOOLEAN", {"default": False, "tooltip": "Save a secondary video overlaying active shot numbers (1, 2, ...) and mutual blend indicator (•) with dynamic hue shift."}),
                 "save_metadata_image": ("BOOLEAN", {"default": True, "tooltip": "Save first frame as PNG with workflow metadata embedded."}),
                 "show_advanced": ("BOOLEAN", {"default": False, "tooltip": "Show advanced video & audio codec options in UI."}),
             },
             "optional": {
+                "render_plan": (RENDER_PLAN_TYPE, {
+                    "tooltip": "Optional render_plan carrier. When connected, automatically locks "
+                               "filename and frame_rate to the active timeline project."
+                }),
+                "images": ("IMAGE",),
                 "audio": ("AUDIO",),
                 # Video Advanced Settings
                 "crf": ("INT", {"default": 19, "min": 0, "max": 63, "step": 1}),
@@ -598,7 +758,7 @@ class H3_Eternity_Save_Video:
     RETURN_TYPES = ("VHS_FILENAMES",)
     RETURN_NAMES = ("Filenames",)
     OUTPUT_NODE = True
-    CATEGORY = "MiniMax H3"
+    CATEGORY = "H3 Eternity"
     FUNCTION = "save_video"
 
     @classmethod
@@ -607,17 +767,19 @@ class H3_Eternity_Save_Video:
 
     def save_video(
         self,
-        images: torch.Tensor,
+        render_plan: Optional[Dict[str, Any]] = None,
+        images: Optional[torch.Tensor] = None,
+        audio: Optional[Dict[str, Any]] = None,
         frame_rate: float = 24.0,
         loop_count: int = 0,
         filename: str = "h3_video",
         video_format: str = "video/h264-mp4",
         audio_format: str = "AAC",
         pingpong: bool = False,
+        save_shot_overlay: bool = False,
         save_metadata_image: bool = True,
         show_advanced: bool = False,
         audio_sample_rate: str = "48000 (recommended)",
-        audio: Optional[Dict[str, Any]] = None,
         prompt: Optional[Dict[str, Any]] = None,
         extra_pnginfo: Optional[Dict[str, Any]] = None,
         unique_id: Optional[str] = None,
@@ -625,6 +787,23 @@ class H3_Eternity_Save_Video:
     ):
         if images is None or len(images) == 0:
             return {"ui": {"gifs": []}, "result": ((False, []),)}
+
+        # Resolve render_plan if provided
+        plan_dict = None
+        if render_plan is not None:
+            try:
+                plan_dict = deserialize_render_plan(render_plan)
+                plan_name = plan_dict.get("video_name")
+                if plan_name:
+                    filename = plan_name
+                plan_fps = plan_dict.get("canvas", {}).get("fps")
+                if plan_fps is not None and float(plan_fps) > 0:
+                    frame_rate = float(plan_fps)
+            except Exception as e:
+                import logging
+                logging.getLogger("minimax_h3_eternity.save_video").warning(
+                    "[H3.E - SaveVideo] Failed to deserialize render_plan: %s", e
+                )
 
         num_frames = images.shape[0]
         height, width = images.shape[1], images.shape[2]
@@ -655,6 +834,11 @@ class H3_Eternity_Save_Video:
             for k, v in extra_pnginfo.items():
                 metadata.add_text(k, json.dumps(v))
                 video_metadata[k] = v
+        if plan_dict is not None:
+            serialized_plan = serialize_render_plan(plan_dict)
+            plan_str = serialized_plan if isinstance(serialized_plan, str) else json.dumps(serialized_plan)
+            metadata.add_text("render_plan", plan_str)
+            video_metadata["render_plan"] = plan_str
         metadata.add_text("CreationTime", datetime.datetime.now().isoformat(" ")[:19])
 
         first_image_file = f"{final_base}.png"
@@ -673,7 +857,7 @@ class H3_Eternity_Save_Video:
         is_embedded_audio = (has_audio and not is_external_audio and clean_audio_format != "None")
 
         if has_audio and clean_audio_format != "None":
-            temp_dir = folder_paths.get_temp_directory()
+            temp_dir = folder_paths.get_temp_directory() or tempfile.gettempdir()
             os.makedirs(temp_dir, exist_ok=True)
             temp_wav_path = os.path.join(temp_dir, f"temp_audio_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.wav")
             write_audio_to_wav(audio, temp_wav_path, target_sr=target_sr)
@@ -681,7 +865,11 @@ class H3_Eternity_Save_Video:
         # -------------------------------------------------------------------
         # 3. Video / Animation / Sequence Generation
         # -------------------------------------------------------------------
-        pbar = ProgressBar(num_frames)
+        total_frames_to_save = num_frames
+        if pingpong and num_frames > 2:
+            total_frames_to_save = num_frames + (num_frames - 2)
+        total_pbar_steps = total_frames_to_save * (2 if save_shot_overlay else 1)
+        pbar = ProgressBar(total_pbar_steps)
 
         # Frame sequence generator supporting pingpong
         def get_frame_generator():
@@ -691,16 +879,29 @@ class H3_Eternity_Save_Video:
             for idx in indices:
                 yield images[idx]
 
+        def get_frame_and_index_generator():
+            indices = list(range(num_frames))
+            if pingpong and num_frames > 2:
+                indices = indices + list(range(num_frames - 2, 0, -1))
+            for idx in indices:
+                yield idx, images[idx]
+
         target_video_file = f"{final_base}.{ext}" if "%" not in ext else f"{final_base}_{ext}"
         target_video_path = os.path.join(target_dir, target_video_file)
+
+        overlay_video_file = f"{final_base}_shots.{ext}" if "%" not in ext else f"{final_base}_shots_{ext}"
+        overlay_video_path = os.path.join(target_dir, overlay_video_file)
+
+        timeline_map = build_timeline_map_from_plan(plan_dict, num_frames) if save_shot_overlay else None
+        overlay_font = _get_overlay_font(max(28, int(height * 0.055))) if save_shot_overlay else None
 
         ffmpeg_bin = get_ffmpeg_path()
 
         try:
             if video_format == "animation/gif":
-                # Pillow GIF
+                # Pillow GIF - Clean Video
                 frames = [Image.fromarray((f.detach().cpu().numpy() * 255.0 + 0.5).clip(0, 255).astype(np.uint8)) for f in get_frame_generator()]
-                for _ in range(num_frames):
+                for _ in range(total_frames_to_save):
                     pbar.update(1)
                 frames[0].save(
                     target_video_path,
@@ -714,10 +915,44 @@ class H3_Eternity_Save_Video:
                 )
                 output_files.append(target_video_path)
 
+                # Pillow GIF - Inspection Overlay Video
+                if save_shot_overlay and overlay_font is not None:
+                    font_size = max(28, int(height * 0.055))
+                    stroke_w = max(2, int(font_size * 0.08))
+                    margin_x = max(16, int(width * 0.025))
+                    margin_y = max(16, int(height * 0.025))
+                    overlay_frames = []
+                    for f_idx, f_tensor in get_frame_and_index_generator():
+                        np_f = (f_tensor.detach().cpu().numpy() * 255.0 + 0.5).clip(0, 255).astype(np.uint8)
+                        f_img = Image.fromarray(np_f, mode="RGBA" if has_alpha else "RGB")
+                        f_draw = ImageDraw.Draw(f_img)
+                        seg_type, text, fill_color = get_frame_overlay_info(f_idx, timeline_map)
+                        f_draw.text(
+                            (margin_x, margin_y),
+                            text,
+                            font=overlay_font,
+                            fill=fill_color,
+                            stroke_width=stroke_w,
+                            stroke_fill=(0, 0, 0),
+                        )
+                        overlay_frames.append(f_img)
+                        pbar.update(1)
+                    overlay_frames[0].save(
+                        overlay_video_path,
+                        format="GIF",
+                        save_all=True,
+                        append_images=overlay_frames[1:],
+                        duration=round(1000.0 / frame_rate),
+                        loop=loop_count,
+                        disposal=2,
+                        compress_level=4,
+                    )
+                    output_files.append(overlay_video_path)
+
             elif video_format == "animation/webp":
-                # Pillow WebP
+                # Pillow WebP - Clean Video
                 frames = [Image.fromarray((f.detach().cpu().numpy() * 255.0 + 0.5).clip(0, 255).astype(np.uint8)) for f in get_frame_generator()]
-                for _ in range(num_frames):
+                for _ in range(total_frames_to_save):
                     pbar.update(1)
                 exif = Image.Exif()
                 exif[ExifTags.IFD.Exif] = {36867: datetime.datetime.now().isoformat(" ")[:19]}
@@ -733,6 +968,42 @@ class H3_Eternity_Save_Video:
                 )
                 output_files.append(target_video_path)
 
+                # Pillow WebP - Inspection Overlay Video
+                if save_shot_overlay and overlay_font is not None:
+                    font_size = max(28, int(height * 0.055))
+                    stroke_w = max(2, int(font_size * 0.08))
+                    margin_x = max(16, int(width * 0.025))
+                    margin_y = max(16, int(height * 0.025))
+                    overlay_frames = []
+                    for f_idx, f_tensor in get_frame_and_index_generator():
+                        np_f = (f_tensor.detach().cpu().numpy() * 255.0 + 0.5).clip(0, 255).astype(np.uint8)
+                        f_img = Image.fromarray(np_f, mode="RGBA" if has_alpha else "RGB")
+                        f_draw = ImageDraw.Draw(f_img)
+                        seg_type, text, fill_color = get_frame_overlay_info(f_idx, timeline_map)
+                        f_draw.text(
+                            (margin_x, margin_y),
+                            text,
+                            font=overlay_font,
+                            fill=fill_color,
+                            stroke_width=stroke_w,
+                            stroke_fill=(0, 0, 0),
+                        )
+                        overlay_frames.append(f_img)
+                        pbar.update(1)
+                    overlay_exif = Image.Exif()
+                    overlay_exif[ExifTags.IFD.Exif] = {36867: datetime.datetime.now().isoformat(" ")[:19]}
+                    overlay_frames[0].save(
+                        overlay_video_path,
+                        format="WEBP",
+                        save_all=True,
+                        append_images=overlay_frames[1:],
+                        duration=round(1000.0 / frame_rate),
+                        loop=loop_count,
+                        lossless=kwargs.get("lossless", True),
+                        exif=overlay_exif,
+                    )
+                    output_files.append(overlay_video_path)
+
             else:
                 # FFmpeg-based generation (Videos, MKV, MOV, WebM, PNG Sequences, FFmpeg-GIF)
                 if ffmpeg_bin is None:
@@ -741,6 +1012,7 @@ class H3_Eternity_Save_Video:
                 video_args, fake_trc = build_video_ffmpeg_args(video_format, kwargs, has_alpha)
                 audio_args = build_audio_ffmpeg_args(clean_audio_format, kwargs, sample_rate=target_sr) if is_embedded_audio else ["-an"]
 
+                # 3A. Clean Primary Video
                 cmd = [
                     ffmpeg_bin,
                     "-y",
@@ -793,6 +1065,69 @@ class H3_Eternity_Save_Video:
                     output_files.append(first_seq_file)
                 else:
                     output_files.append(target_video_path)
+
+                # 3B. Inspection Shot Overlay Video (Secondary)
+                if save_shot_overlay and overlay_font is not None:
+                    overlay_cmd = [
+                        ffmpeg_bin,
+                        "-y",
+                        "-f", "rawvideo",
+                        "-pix_fmt", "rgba" if has_alpha else "rgb24",
+                        "-s", f"{width}x{height}",
+                        "-r", str(frame_rate),
+                        "-i", "-",  # Video from stdin pipe:0
+                    ]
+
+                    if is_embedded_audio and temp_wav_path and os.path.exists(temp_wav_path):
+                        overlay_cmd += ["-i", temp_wav_path]
+
+                    overlay_cmd += video_args
+                    if is_embedded_audio:
+                        overlay_cmd += audio_args + ["-shortest"]
+
+                    overlay_cmd.append(overlay_video_path)
+
+                    overlay_proc = subprocess.Popen(
+                        overlay_cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+
+                    try:
+                        for f_idx, frame_tensor in get_frame_and_index_generator():
+                            overlay_info = get_frame_overlay_info(f_idx, timeline_map)
+                            overlaid_bytes = render_shot_overlay_frame(
+                                frame_tensor,
+                                overlay_info,
+                                overlay_font,
+                                width=width,
+                                height=height,
+                                has_alpha=has_alpha,
+                            )
+                            overlay_proc.stdin.write(overlaid_bytes)
+                            pbar.update(1)
+                        overlay_proc.stdin.close()
+                    except (BrokenPipeError, OSError) as pipe_err:
+                        try:
+                            overlay_proc.stdin.close()
+                        except Exception:
+                            pass
+                        _, stderr = overlay_proc.communicate()
+                        err_msg = stderr.decode("utf-8", errors="backslashreplace") if stderr else str(pipe_err)
+                        raise RuntimeError(f"FFmpeg overlay encoding failed with code {overlay_proc.returncode or 1}:\n{err_msg}")
+
+                    _, stderr = overlay_proc.communicate()
+
+                    if overlay_proc.returncode != 0:
+                        err_msg = stderr.decode("utf-8", errors="backslashreplace") if stderr else "Unknown error"
+                        raise RuntimeError(f"FFmpeg overlay process failed with code {overlay_proc.returncode}:\n{err_msg}")
+
+                    if "image_sequence" in video_format:
+                        first_seq_file = os.path.join(target_dir, f"{final_base}_shots_00001.png")
+                        output_files.append(first_seq_file)
+                    else:
+                        output_files.append(overlay_video_path)
 
             # -------------------------------------------------------------------
             # 4. External Audio Saving (if applicable)
@@ -853,10 +1188,15 @@ class H3_Eternity_Save_Video:
                 "fullpath": primary_output_file,
             }
 
+        videos_ui = [{"filename": primary_output_filename, "subfolder": subfolder, "type": "output", "format": video_format}]
+        if save_shot_overlay and "image_sequence" not in video_format and not video_format.startswith("animation/"):
+            overlay_output_filename = os.path.basename(overlay_video_path)
+            videos_ui.append({"filename": overlay_output_filename, "subfolder": subfolder, "type": "output", "format": video_format})
+
         return {
             "ui": {
                 "gifs": [preview],
-                "videos": [{"filename": primary_output_filename, "subfolder": subfolder, "type": "output", "format": video_format}],
+                "videos": videos_ui,
             },
             "result": ((True, output_files),),
         }

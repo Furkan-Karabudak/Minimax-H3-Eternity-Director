@@ -32,7 +32,7 @@ class MiniMaxH3SaveLastFrame(io.ComfyNode):
         return io.Schema(
             node_id="H3Eternity_SaveLastFrame",
             display_name="H3 Eternity - Save Last Frame",
-            category="MiniMax H3",
+            category="H3 Eternity",
             description=(
                 "Saves the LAST frame of an image batch as a PNG, whatever the length, and "
                 "passes the whole batch through unchanged. Put it straight after VAEDecode. "
@@ -70,7 +70,7 @@ class MiniMaxH3SaveLastFrame(io.ComfyNode):
         # frame that was never there.
         count = int(images.shape[0]) if getattr(images, "shape", None) is not None else 0
         if count < 1:
-            log.warning("[MiniMaxSaveLastFrame] the batch is empty — nothing to save.")
+            log.warning("[H3.E - SaveLastFrame] the batch is empty — nothing to save.")
             return io.NodeOutput(images)
 
         # Slice, do not index: images[-1] would drop the batch dimension and the saver
@@ -79,7 +79,7 @@ class MiniMaxH3SaveLastFrame(io.ComfyNode):
         saved = ui.ImageSaveHelper.get_save_images_ui(last, filename_prefix=filename_prefix,
                                                       cls=cls)
         names = ", ".join(r["filename"] for r in saved.results)
-        log.info("[MiniMaxSaveLastFrame] frame %d of %d (%dx%d) -> %s",
+        log.info("[H3.E - SaveLastFrame] frame %d of %d (%dx%d) -> %s",
                  count, count, int(images.shape[2]), int(images.shape[1]), names)
 
         # `images`, not `last` — the batch goes on whole.

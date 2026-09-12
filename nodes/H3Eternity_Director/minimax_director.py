@@ -47,13 +47,20 @@ from .render_plan import (
     create_render_plan,
     deserialize_render_plan,
     compile_iterations_from_cuts,
+    resolve_video_name,
 )
 from .hybrid_stitch import (
     build_empty_av_latent,
+    build_frozen_continuation_latent,
     extract_continuation_payload,
     attach_hybrid_conditioning,
 )
-from .patch_layout import apply_patch as apply_layout_patch
+from .patch_layout import (
+    apply_patch as apply_layout_patch,
+    create_h3_temporal_offset_wrapper,
+    h3_temporal_offset_wrapper,
+    TEMPORAL_ROPE_OPTION,
+)
 from .patch_payload import apply_patch as apply_payload_patch
 
 AUDIO_SR = media.AUDIO_SR
@@ -272,7 +279,7 @@ def pick_model(model_fl2va, model_ref2va, ref_mode_on):
     if wanted is not None:
         return wanted
     if other is not None:
-        log.warning("[MiniMaxDirector] The toolbar is on '%s' but no %s model is connected — "
+        log.warning("[H3.E - Director] The toolbar is on '%s' but no %s model is connected — "
                     "using the other one. Load minimax_h3_%s_* for correct results.",
                     "Refs ON" if ref_mode_on else "Refs OFF", label, label)
         return other
@@ -313,7 +320,7 @@ def _decode_video(vae, latent, tiled=False):
                 temporal_size=32, temporal_overlap=8)[0]
             return images.to(torch.float32).cpu()
         except Exception as e:
-            log.warning("[MiniMaxDirector] tiled VAE decode failed (%s) — full decode instead.", e)
+            log.warning("[H3.E - Director] tiled VAE decode failed (%s) — full decode instead.", e)
     images = comfy_nodes.VAEDecode().decode(vae, latent)[0]
     return images.to(torch.float32).cpu()
 
@@ -343,7 +350,7 @@ def _decode_anchor_frame(vae, latent, tail_latent_frames=4):
         images = comfy_nodes.VAEDecode().decode(vae, sliced)[0]
         return images[-1:].to(torch.float32).cpu()
     except Exception as e:
-        log.warning("[MiniMaxDirector] cheap anchor decode failed (%s) — full decode for anchor.", e)
+        log.warning("[H3.E - Director] cheap anchor decode failed (%s) — full decode for anchor.", e)
         return _decode_video(vae, latent)[-1:]
 
 
@@ -710,12 +717,14 @@ def _plan_co_windows(tv, win_lat, overlap_lat):
 class MiniMaxH3Director(io.ComfyNode):
     """Timeline editor -> MiniMax H3 storyboard conditioning + joint AV latent."""
 
+    CATEGORY = "H3 Eternity"
+
     @classmethod
     def define_schema(cls):
         return io.Schema(
             node_id="H3Eternity_Director",
             display_name="H3 Eternity - Director",
-            category="MiniMax H3",
+            category="H3 Eternity",
             description=(
                 "Visual timeline for MiniMax H3. Segments become a storyboard prompt with "
                 "[0s-1.5s] shot markers, timeline images become first/last keyframes (fl2va) "
@@ -727,6 +736,29 @@ class MiniMaxH3Director(io.ComfyNode):
             inputs=[
                 io.Custom(RENDER_PLAN_TYPE).Input("render_plan", optional=True,
                                 tooltip="Active render_plan from H3 Eternity - Start or previous node."),
+                io.String.Input("video_name", default="vid_${date:yyyy-MM-dd}_${date:hh-mm-ss}", optional=True,
+                                tooltip="Video project name template. Tokens like ${date:yyyy-MM-dd} and ${date:hh-mm-ss} "
+                                        "are evaluated and locked to this node instance. Locked if specified upstream in H3 Eternity - Start."),
+                io.Int.Input("eternity_seed", default=0, min=0, max=0xffffffffffffffff, optional=True,
+                             tooltip="Master seed for deterministic pseudo-random iteration seeds across recursive continuation runs."),
+                io.Combo.Input("temporal_rope_mode",
+                               options=["dynamic_spread_natural", "dynamic_spread_full", "timeline_sync", "wrap", "static"],
+                               default="dynamic_spread_natural", optional=True,
+                               tooltip="3D-RoPE temporal position strategy across iterations (12s ceiling)."),
+                io.Combo.Input("audio_anchor_mode",
+                               options=["in_latent_freeze + ref", "in_latent_freeze", "golden_experience", "ref", "overlap", "off"],
+                               default="in_latent_freeze + ref", optional=True,
+                               tooltip="Audio continuation mode: 'in_latent_freeze + ref' physically freezes audio overlap and attaches an unanchored acoustic style reference for voice timbre; 'in_latent_freeze' physically freezes audio overlap with zero reference tokens; 'golden_experience' uses unanchored acoustic style reference outside timeline without cross-modal camera interference; 'ref' uses unanchored acoustic style reference; 'overlap' pins to timeline overlap window; 'off' disables continuation audio."),
+                io.Int.Input("audio_ref_duration", default=22, min=5, max=300, step=1, optional=True,
+                             tooltip="Length of historical audio to extract as unanchored acoustic style reference in frames (only active when audio_anchor_mode is 'in_latent_freeze + ref')."),
+                io.Combo.Input("continuation_mode",
+                               options=["in_latent_freeze", "hybrid_keyframes", "golden_experience"],
+                               default="in_latent_freeze", optional=True,
+                               tooltip="Continuation engine: 'in_latent_freeze' physically embeds and freezes previous video & audio latents; 'hybrid_keyframes' uses DiT latent keyframe conditioning; 'golden_experience' decouples video/audio overlaps with hybrid keyframes and unanchored acoustic reference."),
+                io.Combo.Input("video_overlap_duration", options=[1, 5, 22, 39], default=5, optional=True,
+                               tooltip="Global video overlap duration in frames overriding all markers when golden_experience is active (options: 1, 5, 22, 39; default 5)."),
+                io.Int.Input("audio_overlap_duration", default=22, min=1, max=300, step=1, optional=True,
+                             tooltip="Global audio reference duration in frames overriding all markers when golden_experience is active (default 22)."),
                 io.Model.Input("model", display_name="model (t2v/i2v)", optional=True, lazy=True,
                                tooltip="The fl2va weights (minimax_h3_fl2va_*), used when the "
                                        "toolbar is on 'Refs OFF'. Connect both models and the "
@@ -876,7 +908,11 @@ class MiniMaxH3Director(io.ComfyNode):
                 use_custom_audio=False, inpaint_audio=True, use_custom_motion=True,
                 override_audio=False, ref_image_size="match",
                 shift_video=12.0, shift_audio=3.0, ref_images=None, ref_image_notes="",
-                render_plan=None,
+                render_plan=None, video_name="vid_${date:yyyy-MM-dd}_${date:hh-mm-ss}",
+                eternity_seed=0, temporal_rope_mode="dynamic_spread_natural",
+                audio_anchor_mode="in_latent_freeze + ref", audio_ref_duration=22,
+                continuation_mode="in_latent_freeze",
+                video_overlap_duration=5, audio_overlap_duration=22,
                 start=None, end=None, duration=None,
                 width=None, height=None, **kwargs) -> io.NodeOutput:
 
@@ -895,22 +931,58 @@ class MiniMaxH3Director(io.ComfyNode):
         node_id = str(kwargs.get("unique_id", "director"))
         box_w, box_h = resolve_size(custom_width, custom_height, width, height)
 
+        vn_template = (video_name or "vid_${date:yyyy-MM-dd}_${date:hh-mm-ss}").strip()
+        eff_seed = int(eternity_seed or 0)
+        eff_rope_mode = str(temporal_rope_mode or "dynamic_spread_natural")
+        eff_audio_mode = str(audio_anchor_mode or "in_latent_freeze + ref")
+        eff_audio_ref_dur = int(audio_ref_duration or 22)
+        eff_continuation_mode = str(continuation_mode or "in_latent_freeze")
+        eff_video_overlap = int(video_overlap_duration or 5)
+        eff_audio_overlap = int(audio_overlap_duration or 22)
+
+        override_v = eff_video_overlap if eff_continuation_mode == "golden_experience" else None
+        override_a = eff_audio_overlap if eff_audio_mode == "golden_experience" else None
+        if eff_audio_mode == "golden_experience":
+            eff_audio_ref_dur = eff_audio_overlap
+
         if render_plan is None:
             rplan = create_render_plan(
                 node_id=node_id,
+                video_name_template=vn_template,
                 width=int(box_w or DEFAULT_W),
                 height=int(box_h or DEFAULT_H),
                 fps=fps,
                 total_frames=total_timeline_frames,
                 cuts=cuts_data,
+                temporal_rope_mode=eff_rope_mode,
+                eternity_seed=eff_seed,
+                audio_anchor_mode=eff_audio_mode,
+                audio_ref_duration=eff_audio_ref_dur,
+                continuation_mode=eff_continuation_mode,
+                video_overlap_duration=eff_video_overlap,
+                audio_overlap_duration=eff_audio_overlap,
             )
         else:
             rplan = deserialize_render_plan(render_plan)
+            # If start node provided a custom video_name, keep it; otherwise Director sets/resolves it
+            if not rplan.get("custom_video_name_from_start"):
+                rplan["video_name"] = resolve_video_name(vn_template, node_id=node_id)
             rplan["cuts"] = cuts_data
+            rplan["temporal_rope_mode"] = eff_rope_mode
+            rplan["eternity_seed"] = eff_seed
+            rplan["audio_anchor_mode"] = eff_audio_mode
+            rplan["audio_ref_duration"] = eff_audio_ref_dur
+            rplan["continuation_mode"] = eff_continuation_mode
+            rplan["video_overlap_duration"] = eff_video_overlap
+            rplan["audio_overlap_duration"] = eff_audio_overlap
             rplan["iterations"] = compile_iterations_from_cuts(
                 total_frames=total_timeline_frames,
                 cuts=cuts_data,
                 fps=fps,
+                temporal_rope_mode=eff_rope_mode,
+                eternity_seed=eff_seed,
+                override_video_overlap=override_v,
+                override_audio_overlap=override_a,
             )
             rplan["total_iterations"] = len(rplan["iterations"])
 
@@ -925,8 +997,11 @@ class MiniMaxH3Director(io.ComfyNode):
             win_start = int(active_iter["start_frame"])
             iter_duration = int(active_iter["duration_frames"])
             overlap_lead = int(active_iter.get("overlap_lead_frames", 0))
-            is_chain = bool(active_iter.get("is_chain_cut", False))
-            is_continuation = (cur_idx > 0)
+            is_chain = bool(active_iter.get("is_chain_cut", active_iter.get("is_hard_cut", False)))
+            is_continuation = (cur_idx > 0) and not is_chain
+            rplan["current_seed"] = int(active_iter.get("seed", 0))
+            rplan["current_rope_offset"] = float(active_iter.get("rope_offset", 0.0))
+            rplan["current_temporal_offset_seconds"] = float(active_iter.get("temporal_offset_seconds", 0.0))
         else:
             win_start, iter_duration = resolve_window(
                 tdata, fps, start_frame, duration_frames, start, end, duration)
@@ -949,13 +1024,23 @@ class MiniMaxH3Director(io.ComfyNode):
         if is_continuation:
             saved_artifacts = rplan.get("saved_artifacts", [])
             if saved_artifacts:
-                prev_artifact = saved_artifacts[-1]
+                audio_anchor_mode = str(rplan.get("audio_anchor_mode", "in_latent_freeze + ref"))
+                audio_ref_duration = int(rplan.get("audio_ref_duration", 22))
+                continuation_ref_mode = str(rplan.get("continuation_ref_mode", "latent_only"))
+                eff_continuation_mode = str(rplan.get("continuation_mode", "in_latent_freeze"))
+                
                 minimax_keyframes, minimax_audio_ref, semantic_ref_frames = extract_continuation_payload(
-                    previous_artifact=prev_artifact,
+                    previous_artifact=saved_artifacts,
                     overlap_frames=overlap_lead,
+                    audio_overlap_frames=overlap_lead,
                     canvas_w=box_w or DEFAULT_W,
                     canvas_h=box_h or DEFAULT_H,
                     fps=fps,
+                    audio_anchor_mode=audio_anchor_mode,
+                    continuation_ref_mode=continuation_ref_mode,
+                    seed=cur_idx,
+                    continuation_mode=eff_continuation_mode,
+                    audio_ref_duration=audio_ref_duration,
                 )
 
         # 5. Plan iteration timeline prompt & events
@@ -990,7 +1075,7 @@ class MiniMaxH3Director(io.ComfyNode):
             if not retake["base_frames"] or tail_index < retake["base_frames"]:
                 last_src = _grab_base_frame(retake["video"], tail_index, fps)
             if first_src is None and last_src is None:
-                log.warning("[MiniMaxDirector] Retake: could not read anchor frames from '%s'", retake["video"])
+                log.warning("[H3.E - Director] Retake: could not read anchor frames from '%s'", retake["video"])
         else:
             for ev in p["events"]:
                 if ev["role"] == plan.ROLE_FIRST:
@@ -1082,21 +1167,55 @@ class MiniMaxH3Director(io.ComfyNode):
         conditioning, _ = _unpack(out)[:2]
 
         # 9. Attach Path B Keyframes & Audio Ref if continuing
-        if is_continuation and minimax_keyframes:
-            conditioning = attach_hybrid_conditioning(
-                conditioning=conditioning,
-                minimax_keyframes=minimax_keyframes,
-                minimax_audio_ref=minimax_audio_ref,
-                duration_frames=length,
-            )
+        eff_continuation_mode = str(rplan.get("continuation_mode", "in_latent_freeze"))
+        if is_continuation:
+            if eff_continuation_mode in ("hybrid_keyframes", "golden_experience") and (minimax_keyframes or minimax_audio_ref):
+                conditioning = attach_hybrid_conditioning(
+                    conditioning=conditioning,
+                    minimax_keyframes=minimax_keyframes,
+                    minimax_audio_ref=minimax_audio_ref,
+                    duration_frames=length,
+                )
+            elif eff_continuation_mode == "in_latent_freeze" and minimax_audio_ref is not None:
+                conditioning = attach_hybrid_conditioning(
+                    conditioning=conditioning,
+                    minimax_keyframes=[],
+                    minimax_audio_ref=minimax_audio_ref,
+                    duration_frames=length,
+                )
 
-        # 10. Allocate clean empty AV latent for sampling
-        latent = build_empty_av_latent(duration_frames=length, width=width, height=height)
+        # 10. Allocate AV latent for sampling (frozen continuation vs empty)
+        if is_continuation and eff_continuation_mode == "in_latent_freeze":
+            saved_artifacts = rplan.get("saved_artifacts", [])
+            latent = build_frozen_continuation_latent(
+                previous_artifact=saved_artifacts,
+                duration_frames=length,
+                overlap_frames=overlap_lead,
+                audio_overlap_frames=overlap_lead,
+                width=width,
+                height=height,
+                fps=fps,
+                audio_anchor_mode=eff_audio_mode,
+            )
+        else:
+            latent = build_empty_av_latent(duration_frames=length, width=width, height=height)
 
         chosen_model = pick_model(model, model_ref2va, p["ref_mode_on"])
         patched_model = _unpack(mm.MiniMaxH3SigmaShift.execute(
             model=chosen_model, shift_video=float(shift_video),
             shift_audio=float(shift_audio)))[0]
+
+        # 11. Apply 3D-RoPE Temporal Offset wrapper if active for this iteration
+        current_rope_offset = float(rplan.get("current_rope_offset", 0.0))
+        if current_rope_offset > 0.0 and hasattr(patched_model, "clone"):
+            patched_model = patched_model.clone()
+            t_opts = patched_model.model_options.setdefault("transformer_options", {})
+            t_opts[TEMPORAL_ROPE_OPTION] = current_rope_offset
+            if hasattr(patched_model, "set_model_unet_function_wrapper"):
+                patched_model.set_model_unet_function_wrapper(create_h3_temporal_offset_wrapper(current_rope_offset))
+            log.info("[H3.E - Director] Applied 3D-RoPE temporal offset: %.2f units (%.2fs, mode=%s)",
+                     current_rope_offset, float(rplan.get("current_temporal_offset_seconds", 0.0)),
+                     rplan.get("temporal_rope_mode", "dynamic_spread_natural"))
 
         audio_out = media.build_combined_audio(
             timeline_data, win_start,

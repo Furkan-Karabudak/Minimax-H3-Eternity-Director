@@ -22,6 +22,8 @@ RENDER_PLAN_VERSION = "1.0.0"
 
 # H3 Frame lattice invariants
 VALID_OVERLAPS = (1, 5, 22, 39)
+VALID_CONTINUATION_MODES = ("in_latent_freeze", "hybrid_keyframes", "golden_experience")
+VALID_AUDIO_ANCHOR_MODES = ("in_latent_freeze + ref", "in_latent_freeze", "golden_experience", "ref", "overlap", "before", "off")
 DEFAULT_OVERLAP = 22
 DEFAULT_VIDEO_NAME_TEMPLATE = "vid_${date:yyyy-MM-dd}_${date:hh-mm-ss}"
 DEFAULT_VIDEO_FORMAT = "video/ffv1-mkv"
@@ -109,6 +111,7 @@ class CutMarker:
     time_seconds: float
     frame_index: int
     overlap_frames: int = DEFAULT_OVERLAP
+    audio_overlap_frames: int = DEFAULT_OVERLAP
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -117,15 +120,34 @@ class CutMarker:
     def from_dict(cls, data: dict[str, Any]) -> CutMarker:
         raw_type = str(data.get("type", data.get("cut_type", "soft"))).lower()
         norm_type = "chain" if raw_type in ("chain", "hard") else "soft"
-        frame = data.get("frame_index", data.get("frame", data.get("cut_frame", 0)))
-        overlap = data.get("overlap_frames", data.get("overlap_duration", data.get("overlap", DEFAULT_OVERLAP)))
+        frame = int(data.get("frame_index", data.get("frame", data.get("cut_frame", 0))))
+        overlap = int(data.get("overlap_frames", data.get("overlap_duration", data.get("overlap", DEFAULT_OVERLAP))))
+        
+        # Audio overlap is unified with video overlap frames
+        audio_overlap = overlap
+
         return cls(
             id=str(data.get("id", "")),
             type=norm_type,
             time_seconds=float(data.get("time_seconds", 0.0)),
-            frame_index=int(frame),
-            overlap_frames=int(overlap),
+            frame_index=frame,
+            overlap_frames=overlap,
+            audio_overlap_frames=audio_overlap,
         )
+
+
+def generate_iteration_seeds(master_seed: int, count: int) -> list[int]:
+    """Generates `count` deterministic 64-bit pseudo-random seeds using SplitMix64."""
+    state = int(master_seed or 0) & 0xFFFFFFFFFFFFFFFF
+    seeds = []
+    for _ in range(count):
+        state = (state + 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF
+        z = state
+        z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+        z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
+        z = (z ^ (z >> 31)) & 0xFFFFFFFFFFFFFFFF
+        seeds.append(z)
+    return seeds
 
 
 @dataclass
@@ -139,8 +161,12 @@ class IterationDefinition:
     overlap_lead_frames: int
     delivered_frames: int
     prompt: str
+    audio_overlap_lead_frames: int = DEFAULT_OVERLAP
     is_chain_cut: bool = False
     is_hard_cut: bool = False
+    seed: int = 0
+    temporal_offset_seconds: float = 0.0
+    rope_offset: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -148,17 +174,22 @@ class IterationDefinition:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> IterationDefinition:
         is_chain = bool(data.get("is_chain_cut", data.get("is_hard_cut", False)))
+        overlap_lead = int(data.get("overlap_lead_frames", 0))
         return cls(
             index=int(data.get("index", 0)),
             type=str(data.get("type", "initial")),
             start_frame=int(data.get("start_frame", 0)),
             end_frame=int(data.get("end_frame", 0)),
             duration_frames=int(data.get("duration_frames", 0)),
-            overlap_lead_frames=int(data.get("overlap_lead_frames", 0)),
+            overlap_lead_frames=overlap_lead,
             delivered_frames=int(data.get("delivered_frames", 0)),
             prompt=str(data.get("prompt", "")),
+            audio_overlap_lead_frames=int(data.get("audio_overlap_lead_frames", overlap_lead)),
             is_chain_cut=is_chain,
             is_hard_cut=is_chain,
+            seed=int(data.get("seed", 0)),
+            temporal_offset_seconds=float(data.get("temporal_offset_seconds", 0.0)),
+            rope_offset=float(data.get("rope_offset", 0.0)),
         )
 
 
@@ -198,11 +229,15 @@ def compile_iterations_from_cuts(
     cuts: Optional[list[dict[str, Any] | CutMarker]] = None,
     fps: float = 24.0,
     default_prompt: str = "",
+    temporal_rope_mode: str = "dynamic_spread_natural",
+    eternity_seed: int = 0,
+    override_video_overlap: Optional[int] = None,
+    override_audio_overlap: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     """Compiles a list of IterationDefinition dicts from timeline total frames and cut markers.
-    
-    Iteration 0: 0 -> cut[0].frame_index (or total_frames if no cuts)
-    Iteration i (i >= 1): (cut[i-1].frame_index - cut[i-1].overlap_frames) -> (cut[i].frame_index or total_frames)
+
+    Calculates deterministic seeds (SplitMix64) and 3D-RoPE temporal offsets (12.0s ceiling)
+    for each iteration. Supports overriding video and audio overlaps globally (e.g. for golden_experience).
     """
     sorted_cuts: list[CutMarker] = []
     if cuts:
@@ -212,10 +247,10 @@ def compile_iterations_from_cuts(
                 sorted_cuts.append(cm)
         sorted_cuts.sort(key=lambda x: x.frame_index)
 
-    iterations: list[dict[str, Any]] = []
+    raw_iterations: list[IterationDefinition] = []
 
     if not sorted_cuts:
-        iterations.append(
+        raw_iterations.append(
             IterationDefinition(
                 index=0,
                 type="initial",
@@ -227,60 +262,120 @@ def compile_iterations_from_cuts(
                 prompt=default_prompt,
                 is_chain_cut=False,
                 is_hard_cut=False,
-            ).to_dict()
+            )
         )
-        return iterations
-
-    # First iteration: 0 -> sorted_cuts[0].frame_index
-    first_end = sorted_cuts[0].frame_index
-    iterations.append(
-        IterationDefinition(
-            index=0,
-            type="initial",
-            start_frame=0,
-            end_frame=first_end,
-            duration_frames=first_end,
-            overlap_lead_frames=0,
-            delivered_frames=first_end,
-            prompt=default_prompt,
-            is_chain_cut=False,
-            is_hard_cut=False,
-        ).to_dict()
-    )
-
-    # Subsequent iterations
-    for i, cut in enumerate(sorted_cuts):
-        iter_idx = i + 1
-        overlap = cut.overlap_frames
-        start_f = max(0, cut.frame_index - overlap)
-        
-        if iter_idx < len(sorted_cuts):
-            next_cut = sorted_cuts[iter_idx]
-            end_f = next_cut.frame_index
-        else:
-            end_f = total_frames
-
-        dur_f = end_f - start_f
-        deliv_f = end_f - cut.frame_index
-        is_chain = (cut.type.lower() in ("chain", "hard"))
-        cut_type_str = "chain_iteration_cut" if is_chain else "soft_iteration_cut"
-
-        iterations.append(
+    else:
+        # First iteration: 0 -> sorted_cuts[0].frame_index
+        first_end = sorted_cuts[0].frame_index
+        raw_iterations.append(
             IterationDefinition(
-                index=iter_idx,
-                type=cut_type_str,
-                start_frame=start_f,
-                end_frame=end_f,
-                duration_frames=dur_f,
-                overlap_lead_frames=overlap,
-                delivered_frames=deliv_f,
+                index=0,
+                type="initial",
+                start_frame=0,
+                end_frame=first_end,
+                duration_frames=first_end,
+                overlap_lead_frames=0,
+                delivered_frames=first_end,
                 prompt=default_prompt,
-                is_chain_cut=is_chain,
-                is_hard_cut=is_chain,
-            ).to_dict()
+                is_chain_cut=False,
+                is_hard_cut=False,
+            )
         )
 
-    return iterations
+        # Subsequent iterations
+        for i, cut in enumerate(sorted_cuts):
+            iter_idx = i + 1
+            overlap = int(override_video_overlap) if override_video_overlap is not None else cut.overlap_frames
+            start_f = max(0, cut.frame_index - overlap)
+            audio_overlap = int(override_audio_overlap) if override_audio_overlap is not None else cut.overlap_frames
+
+            if iter_idx < len(sorted_cuts):
+                next_cut = sorted_cuts[iter_idx]
+                end_f = next_cut.frame_index
+            else:
+                end_f = total_frames
+
+            dur_f = end_f - start_f
+            deliv_f = end_f - cut.frame_index
+            is_chain = (cut.type.lower() in ("chain", "hard"))
+            cut_type_str = "chain_iteration_cut" if is_chain else "soft_iteration_cut"
+
+            raw_iterations.append(
+                IterationDefinition(
+                    index=iter_idx,
+                    type=cut_type_str,
+                    start_frame=start_f,
+                    end_frame=end_f,
+                    duration_frames=dur_f,
+                    overlap_lead_frames=overlap,
+                    delivered_frames=deliv_f,
+                    prompt=default_prompt,
+                    audio_overlap_lead_frames=audio_overlap,
+                    is_chain_cut=is_chain,
+                    is_hard_cut=is_chain,
+                )
+            )
+
+    # Calculate deterministic SplitMix64 seeds per iteration
+    num_iters = len(raw_iterations)
+    seeds = generate_iteration_seeds(eternity_seed, num_iters)
+
+    # 3D-RoPE Temporal Coordinate Calculations (12.0s Ceiling)
+    MAX_ROPE_SEC = 12.0
+    ROPE_HZ = 40.0
+
+    dur_secs = [it.duration_frames / fps for it in raw_iterations]
+    phys_starts = [it.start_frame / fps for it in raw_iterations]
+    total_phys_end = (raw_iterations[-1].end_frame / fps) if raw_iterations else 0.0
+
+    t_offsets: list[float] = [0.0] * num_iters
+
+    if temporal_rope_mode == "static":
+        t_offsets = [0.0] * num_iters
+    elif temporal_rope_mode == "dynamic_spread_full":
+        # Spans exactly 12.0s with uniform gap/overlap g across all transitions
+        if num_iters <= 1:
+            t_offsets = [0.0]
+        else:
+            sum_d = sum(dur_secs)
+            g = (MAX_ROPE_SEC - sum_d) / float(num_iters - 1)
+            cur_t = 0.0
+            t_offsets[0] = 0.0
+            for k in range(num_iters - 1):
+                cur_t = max(0.0, cur_t + dur_secs[k] + g)
+                t_offsets[k + 1] = cur_t
+    elif temporal_rope_mode == "dynamic_spread_natural":
+        # If natural end <= 12s, use exact natural timeline;
+        # if natural end > 12s, smoothly compress using uniform inter-iteration overlap to end at 12s
+        if total_phys_end <= MAX_ROPE_SEC or num_iters <= 1:
+            t_offsets = [round(ps, 4) for ps in phys_starts]
+        else:
+            sum_d = sum(dur_secs)
+            g = (MAX_ROPE_SEC - sum_d) / float(num_iters - 1)
+            cur_t = 0.0
+            t_offsets[0] = 0.0
+            for k in range(num_iters - 1):
+                cur_t = max(0.0, cur_t + dur_secs[k] + g)
+                t_offsets[k + 1] = cur_t
+    elif temporal_rope_mode == "timeline_sync":
+        # 1:1 natural time, clamped at 12.0s ceiling
+        t_offsets = [min(ps, max(0.0, MAX_ROPE_SEC - dur_secs[k])) for k, ps in enumerate(phys_starts)]
+    elif temporal_rope_mode == "wrap":
+        # Modulo 12.0s wrap
+        t_offsets = [round(ps % MAX_ROPE_SEC, 4) for ps in phys_starts]
+    else:
+        # Default fallback to physical start
+        t_offsets = [round(ps, 4) for ps in phys_starts]
+
+    compiled_list: list[dict[str, Any]] = []
+    for k in range(num_iters):
+        it = raw_iterations[k]
+        it.seed = seeds[k]
+        it.temporal_offset_seconds = max(0.0, round(t_offsets[k], 4))
+        it.rope_offset = round(it.temporal_offset_seconds * ROPE_HZ, 4)
+        compiled_list.append(it.to_dict())
+
+    return compiled_list
 
 
 def create_render_plan(
@@ -292,6 +387,13 @@ def create_render_plan(
     total_frames: int = 124,
     cuts: Optional[list[dict[str, Any] | CutMarker]] = None,
     iterations: Optional[list[dict[str, Any] | IterationDefinition]] = None,
+    temporal_rope_mode: str = "dynamic_spread_natural",
+    eternity_seed: int = 0,
+    audio_anchor_mode: str = "in_latent_freeze + ref",
+    audio_ref_duration: int = 22,
+    continuation_mode: str = "in_latent_freeze",
+    video_overlap_duration: int = 5,
+    audio_overlap_duration: int = 22,
 ) -> dict[str, Any]:
     """Create a new, initialized render_plan dictionary."""
     node_id_str = str(node_id)
@@ -317,9 +419,21 @@ def create_render_plan(
             elif isinstance(it, dict):
                 iters_list.append(it)
     else:
-        iters_list = compile_iterations_from_cuts(total_frames, cuts_list, fps=fps)
+        override_v = int(video_overlap_duration) if continuation_mode == "golden_experience" else None
+        override_a = int(audio_overlap_duration) if audio_anchor_mode == "golden_experience" else None
+        iters_list = compile_iterations_from_cuts(
+            total_frames, cuts_list, fps=fps,
+            temporal_rope_mode=temporal_rope_mode,
+            eternity_seed=eternity_seed,
+            override_video_overlap=override_v,
+            override_audio_overlap=override_a,
+        )
 
     total_iters = len(iters_list) if iters_list else 1
+
+    first_seed = iters_list[0].get("seed", eternity_seed) if iters_list else eternity_seed
+    first_rope = iters_list[0].get("rope_offset", 0.0) if iters_list else 0.0
+    first_sec = iters_list[0].get("temporal_offset_seconds", 0.0) if iters_list else 0.0
 
     return {
         "version": RENDER_PLAN_VERSION,
@@ -336,6 +450,17 @@ def create_render_plan(
         },
         "cuts": cuts_list,
         "iterations": iters_list,
+        "temporal_rope_mode": temporal_rope_mode,
+        "eternity_seed": int(eternity_seed),
+        "current_seed": int(first_seed),
+        "current_rope_offset": float(first_rope),
+        "current_temporal_offset_seconds": float(first_sec),
+        "audio_anchor_mode": str(audio_anchor_mode),
+        "audio_ref_duration": int(audio_ref_duration),
+        "continuation_mode": str(continuation_mode),
+        "video_overlap_duration": int(video_overlap_duration),
+        "audio_overlap_duration": int(audio_overlap_duration),
+        "continuation_ref_mode": "latent_only",
         "current_conditioning": None,
         "current_latent": None,
         "saved_artifacts": [],
@@ -353,8 +478,13 @@ def serialize_render_plan(plan: dict[str, Any]) -> dict[str, Any]:
     return copy.deepcopy(clean)
 
 
-def deserialize_render_plan(data: dict[str, Any]) -> dict[str, Any]:
-    """Restore and validate a render_plan dictionary."""
+def deserialize_render_plan(data: Union[dict[str, Any], str]) -> dict[str, Any]:
+    """Restore and validate a render_plan dictionary or JSON string."""
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception as e:
+            raise ValueError(f"Failed to parse render_plan JSON string: {e}") from e
     if not isinstance(data, dict):
         raise ValueError(f"render_plan must be a dictionary, got {type(data)}")
     
@@ -387,6 +517,12 @@ def deserialize_render_plan(data: dict[str, Any]) -> dict[str, Any]:
     plan.setdefault("canvas", {"width": 1344, "height": 768, "fps": 24.0})
     plan.setdefault("cuts", [])
     plan.setdefault("iterations", [])
+    plan.setdefault("audio_anchor_mode", "in_latent_freeze + ref")
+    plan.setdefault("audio_ref_duration", 22)
+    plan.setdefault("continuation_mode", "in_latent_freeze")
+    plan.setdefault("video_overlap_duration", 5)
+    plan.setdefault("audio_overlap_duration", 22)
+    plan.setdefault("continuation_ref_mode", "latent_only")
     plan.setdefault("current_conditioning", None)
     plan.setdefault("current_latent", None)
     plan.setdefault("saved_artifacts", [])
@@ -423,11 +559,31 @@ def validate_render_plan(plan: dict[str, Any]) -> None:
     for it in iterations:
         dur = int(it.get("duration_frames", 0))
         if dur > 0 and dur % 17 != 5:
-            _LOG.warning(f"Iteration duration {dur} does not strictly satisfy 17k+5 lattice rule.")
+            _LOG.warning(f"[H3.E - Director] Iteration duration {dur} does not strictly satisfy 17k+5 lattice rule.")
 
         overlap = int(it.get("overlap_lead_frames", 0))
         if overlap > 0 and overlap not in VALID_OVERLAPS:
             raise ValueError(f"overlap_lead_frames ({overlap}) must be one of {VALID_OVERLAPS}")
+
+    continuation_mode = plan.get("continuation_mode", "in_latent_freeze")
+    if continuation_mode not in VALID_CONTINUATION_MODES:
+        raise ValueError(f"continuation_mode must be one of {VALID_CONTINUATION_MODES}, got '{continuation_mode}'")
+
+    audio_anchor_mode = plan.get("audio_anchor_mode", "in_latent_freeze + ref")
+    if audio_anchor_mode not in VALID_AUDIO_ANCHOR_MODES:
+        raise ValueError(f"audio_anchor_mode must be one of {VALID_AUDIO_ANCHOR_MODES}, got '{audio_anchor_mode}'")
+
+    audio_ref_dur = int(plan.get("audio_ref_duration", 22))
+    if audio_ref_dur < 1:
+        raise ValueError(f"audio_ref_duration must be >= 1, got {audio_ref_dur}")
+
+    video_ov_dur = int(plan.get("video_overlap_duration", 5))
+    if video_ov_dur not in VALID_OVERLAPS:
+        raise ValueError(f"video_overlap_duration ({video_ov_dur}) must be one of {VALID_OVERLAPS}")
+
+    audio_ov_dur = int(plan.get("audio_overlap_duration", 22))
+    if audio_ov_dur < 1:
+        raise ValueError(f"audio_overlap_duration must be >= 1, got {audio_ov_dur}")
 
 
 def get_current_iteration(plan: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -440,13 +596,18 @@ def get_current_iteration(plan: dict[str, Any]) -> Optional[dict[str, Any]]:
 
 
 def advance_iteration(plan: dict[str, Any]) -> dict[str, Any]:
-    """Advance current_iteration by 1, updating completion state."""
+    """Advance current_iteration by 1, updating completion state and active iteration properties."""
     new_plan = copy.copy(plan)
     cur = int(new_plan.get("current_iteration", 0))
     total = int(new_plan.get("total_iterations", 1))
 
     next_idx = cur + 1
     new_plan["current_iteration"] = next_idx
+    iterations = new_plan.get("iterations", [])
+    if 0 <= next_idx < len(iterations):
+        new_plan["current_seed"] = int(iterations[next_idx].get("seed", 0))
+        new_plan["current_rope_offset"] = float(iterations[next_idx].get("rope_offset", 0.0))
+        new_plan["current_temporal_offset_seconds"] = float(iterations[next_idx].get("temporal_offset_seconds", 0.0))
     if next_idx >= total:
         new_plan["completed"] = True
     return new_plan

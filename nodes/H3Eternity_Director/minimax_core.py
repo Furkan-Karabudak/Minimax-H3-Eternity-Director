@@ -58,7 +58,7 @@ def extra(module_name, probe_attr=None):
         mod = _find_in_sys_modules(module_name, probe_attr)
         if mod is None:
             mod = _load_from_file(module_name)
-            log.info("[MiniMaxDirector] Loaded comfy_extras/%s from file (not in sys.modules yet).",
+            log.info("[H3.E - Director] Loaded comfy_extras/%s from file (not in sys.modules yet).",
                      module_name)
         _CACHE[module_name] = mod
     return _CACHE[module_name]

@@ -365,7 +365,7 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
         return io.Schema(
             node_id="H3Eternity_EnhancePrompt",
             display_name="H3 Eternity - Enhance Prompt",
-            category="MiniMax H3",
+            category="H3 Eternity",
             description=(
                 "Turns a one-line idea plus reference images into a MiniMax-H3 prompt, "
                 "using a local vision model (Ollama / LM Studio / OpenAI-compatible). "
@@ -473,7 +473,7 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
                       on_error="passthrough", api_key_env="") -> io.NodeOutput:
         tensors = _collect(images)
         if len(tensors) > MAX_IMAGES:
-            log.warning("[MiniMaxEnhance] %d images connected, MiniMax H3 takes at most %d — "
+            log.warning("[H3.E - EnhancePrompt] %d images connected, MiniMax H3 takes at most %d — "
                         "dropping the rest.", len(tensors), MAX_IMAGES)
             tensors = tensors[:MAX_IMAGES]
 
@@ -485,7 +485,7 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
             flat = flat[:MAX_IMAGES]
             sizes = {tuple(t.shape[1:3]) for t in flat}
             if len(sizes) > 1:
-                log.warning("[MiniMaxEnhance] reference images have different sizes %s — "
+                log.warning("[H3.E - EnhancePrompt] reference images have different sizes %s — "
                             "scaling them to the first one.", sorted(sizes))
             batched = extra("nodes_post_processing", "batch_images").batch_images(flat)
 
@@ -506,7 +506,7 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
                  "and write nothing after them.")
 
         b64 = _tensor_to_b64(batched, int(max_image_size), 88) if batched is not None else []
-        log.info("[MiniMaxEnhance] %s via %s (%s, model '%s'%s), %d image(s)...",
+        log.info("[H3.E - EnhancePrompt] %s via %s (%s, model '%s'%s), %d image(s)...",
                  "storyboard" if preset == PRESET_STORYBOARD else "global",
                  provider, url, model_name, ", authenticated" if api_key else "", len(b64))
 
@@ -538,7 +538,7 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
             has_audio = re.search(r"^\s*(?:audio|sound|sfx)\s*:", prompt, re.I | re.M)
             has_music = re.search(r"^\s*(?:music|score)\s*:", prompt, re.I | re.M)
             if not (has_audio and has_music):
-                log.info("[MiniMaxEnhance] no %s line — asking for the sound lines separately.",
+                log.info("[H3.E - EnhancePrompt] no %s line — asking for the sound lines separately.",
                          "Audio/Music" if not (has_audio or has_music)
                          else ("Music" if has_audio else "Audio"))
                 try:
@@ -550,7 +550,7 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
                     if re.search(r"^\s*(?:audio|sound|sfx)\s*:", merged, re.I | re.M):
                         prompt = merged
                 except media.VLMError as e:
-                    log.warning("[MiniMaxEnhance] sound lines unavailable: %s", e)
+                    log.warning("[H3.E - EnhancePrompt] sound lines unavailable: %s", e)
         except Exception as e:
             # Deliberately broad: 'passthrough' promises the run survives, and the thing
             # that took a run down in practice was aiohttp rejecting a URL without a
@@ -559,7 +559,7 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
                 if isinstance(e, media.VLMError):
                     raise ValueError("MiniMax H3 Enhance Prompt: %s" % e)
                 raise
-            log.warning("[MiniMaxEnhance] %s — passing your text through unchanged.", e,
+            log.warning("[H3.E - EnhancePrompt] %s — passing your text through unchanged.", e,
                         exc_info=not isinstance(e, media.VLMError))
             prompt = (idea or "").strip()
         finally:
@@ -568,7 +568,7 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
             if unload_after:
                 await media.unload_model(provider, url, model_name, api_key)
 
-        log.info("[MiniMaxEnhance] %d chars:\n%s", len(prompt), prompt)
+        log.info("[H3.E - EnhancePrompt] %d chars:\n%s", len(prompt), prompt)
         return io.NodeOutput(prompt, batched, float(duration_seconds))
 
 

@@ -48,6 +48,7 @@ from .sampler_common import (
     decode_joint_latent,
     execute_sampling_pass,
     save_intermediate_artifacts,
+    extract_latents_from_samples,
 )
 
 _LOG = logging.getLogger("minimax_h3_eternity.sampler")
@@ -103,10 +104,6 @@ class H3Eternity_Sampler:
                 }),
                 "model": ("MODEL", {
                     "tooltip": "Model from H3 Eternity Director."
-                }),
-                "seed": ("INT", {
-                    "default": 0, "min": 0, "max": 0xffffffffffffffff,
-                    "tooltip": "Random noise seed for the current iteration."
                 }),
                 "steps": ("INT", {
                     "default": 20, "min": 1, "max": 10000,
@@ -206,7 +203,7 @@ class H3Eternity_Sampler:
     )
     FUNCTION = "sample"
     OUTPUT_NODE = True
-    CATEGORY = "MiniMax H3 / Eternity"
+    CATEGORY = "H3 Eternity"
     DESCRIPTION = (
         "Samples the active iteration defined in render_plan, auto-saves intermediate "
         ".latent and lossless media files, and outputs decoded frames and audio."
@@ -220,7 +217,6 @@ class H3Eternity_Sampler:
         self,
         render_plan: dict[str, Any],
         model: Any,
-        seed: int,
         steps: int,
         cfg: float,
         sampler_name: str,
@@ -233,13 +229,15 @@ class H3Eternity_Sampler:
         audio_format: str = f"{DEFAULT_AUDIO_FORMAT} [default]",
         unique_id: Optional[str] = None,
         **kwargs: Any,
-    ) -> SamplerResult:
+    ):
         plan = deserialize_render_plan(render_plan)
         cur_idx = int(plan.get("current_iteration", 0))
         total_iters = int(plan.get("total_iterations", 1))
 
-        _LOG.info("[H3Eternity_Sampler] Sampling iteration %d/%d (seed=%d, steps=%d, cfg=%.2f)",
-                  cur_idx, total_iters, seed, steps, cfg)
+        eff_seed = int(plan.get("current_seed", kwargs.pop("seed", 0)))
+
+        _LOG.info("[H3.E - Sampler] Sampling iteration %d/%d (seed=%d, steps=%d, cfg=%.2f)",
+                  cur_idx, total_iters, eff_seed, steps, cfg)
 
         height = int(plan.get("canvas", {}).get("height", 768))
         width = int(plan.get("canvas", {}).get("width", 1344))
@@ -262,7 +260,7 @@ class H3Eternity_Sampler:
                     model=model,
                     conditioning=conditioning,
                     latent_image=latent_image,
-                    seed=seed,
+                    seed=eff_seed,
                     steps=steps,
                     cfg=cfg,
                     sampler_name=sampler_name,
@@ -270,7 +268,7 @@ class H3Eternity_Sampler:
                     denoise=denoise,
                 )
             except Exception as e:
-                _LOG.error("[H3Eternity_Sampler] Diffusion sampling execution failed: %s", e)
+                _LOG.error("[H3.E - Sampler] Diffusion sampling execution failed: %s", e)
                 sampled_latent = latent_image
         else:
             # Fallback for mock tests / offline harnesses
@@ -282,18 +280,7 @@ class H3Eternity_Sampler:
                 sampled_latent = {"samples": (dummy_v, dummy_a)}
 
         # 4. Extract Sliced Latent Tensors
-        samples = sampled_latent.get("samples")
-        zv = None
-        za = None
-        if isinstance(samples, (tuple, list)):
-            zv = samples[0]
-            if len(samples) > 1:
-                za = samples[1]
-        elif isinstance(samples, torch.Tensor):
-            zv = samples
-        elif isinstance(samples, dict):
-            zv = samples.get("samples_video")
-            za = samples.get("samples_audio")
+        zv, za = extract_latents_from_samples(sampled_latent)
 
         # 5. Dual-Stream VAE Decoding
         out_images, out_audio = decode_joint_latent(
@@ -309,7 +296,7 @@ class H3Eternity_Sampler:
         # 6. Lossless Disk Persistence & Registry
         artifact = save_intermediate_artifacts(
             plan=plan,
-            seed=seed,
+            seed=eff_seed,
             cur_idx=cur_idx,
             zv=zv,
             za=za,
@@ -342,13 +329,13 @@ class H3Eternity_Sampler:
                 "delivered_frames": int(artifact.delivered_frames),
                 "fps": fps,
             }],
-            "status": {
+            "status": [{
                 "current_iteration": cur_idx,
                 "total_iterations": total_iters,
                 "delivered_frames": int(artifact.delivered_frames),
                 "latent_path": artifact.latent_path,
                 "media_path": artifact.media_path,
-            }
+            }]
         }
 
         return SamplerResult(

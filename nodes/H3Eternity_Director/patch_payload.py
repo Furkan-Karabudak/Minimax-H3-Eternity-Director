@@ -87,15 +87,16 @@ def _patched_extra_conds(self, **kwargs):
     cond = out.get("minimax_payload", None)
     payload = getattr(cond, "cond", None) if cond is not None else None
     if not isinstance(payload, dict):
-        _LOG.warning("h3_motion_context: could not reach the H3 payload, "
+        _LOG.warning("[H3.E - Director] could not reach the H3 payload, "
                      "keyframe latents may have been overwritten by refs")
         return out
 
     kf_video = [kf["latent"] for kf in keyframes if "latent" in kf]
     ref_video = [r["latent"] for r in refs if "latent" in r]
     payload["cond_video_latents"] = kf_video + ref_video
-    payload["cond_audio_latents"] = [r["audio_latent"] for r in refs
-                                     if r.get("audio_latent") is not None]
+    kf_audio = [kf["audio_latent"] for kf in keyframes if "audio_latent" in kf]
+    ref_audio = [r["audio_latent"] for r in refs if r.get("audio_latent") is not None]
+    payload["cond_audio_latents"] = kf_audio + ref_audio
     # only write frame_count when we actually have one. This wrapper fires
     # for ANY graph combining keyframes and refs, not just ours; a graph
     # that reaches here without minimax_frame_count may have a valid value
@@ -155,13 +156,13 @@ def apply_patch():
         return True
     cls = getattr(model_base, "MiniMaxH3", None)
     if cls is None or not hasattr(cls, "extra_conds"):
-        _LOG.warning("h3_motion_context: MiniMaxH3.extra_conds not found, "
+        _LOG.warning("[H3.E - Director] MiniMaxH3.extra_conds not found, "
                      "keyframes and refs cannot be combined")
         return False
     who = _already_patched(cls)
     if who == "foreign":
         _LOG.warning(
-            "h3_motion_context: another pack has already patched "
+            "[H3.E - Director] another pack has already patched "
             "MiniMaxH3.extra_conds (it now comes from %r). Both packs are "
             "solving the same keyframe/ref collision and they cannot both "
             "own it, so this one is refusing. Disable one of them and "
@@ -173,15 +174,15 @@ def apply_patch():
         # calling pack's nodes check is_applied() before they will run
         _applied = True
         if who == "same":
-            _LOG.info("h3_motion_context: keyframe/ref coexistence already "
+            _LOG.info("[H3.E - Director] keyframe/ref coexistence already "
                       "enabled by another pack, standing down")
         elif who == "h3_multishot":
             _LOG.info(
-                "h3_motion_context: H3-Multishot's compatible AV-bank "
+                "[H3.E - Director] H3-Multishot's compatible AV-bank "
                 "payload merge is active; standing down without stacking")
         else:
             _LOG.warning(
-                "h3_motion_context: the H3 payload patch is already "
+                "[H3.E - Director] the H3 payload patch is already "
                 "installed by a DIFFERENT copy of this code (another "
                 "version, or a fork). Standing down. If you have more than "
                 "one H3 Motion Context folder in custom_nodes, keep one and "
@@ -190,7 +191,7 @@ def apply_patch():
     _orig_extra_conds = cls.extra_conds
     cls.extra_conds = _patched_extra_conds
     _applied = True
-    _LOG.info("h3_motion_context: keyframe/ref coexistence enabled")
+    _LOG.info("[H3.E - Director] keyframe/ref coexistence enabled")
     return True
 
 

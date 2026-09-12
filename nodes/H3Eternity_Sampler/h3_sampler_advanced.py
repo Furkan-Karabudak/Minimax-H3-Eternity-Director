@@ -32,6 +32,8 @@ from .sampler_common import (
     resolve_vae_references,
     decode_joint_latent,
     save_intermediate_artifacts,
+    extract_latents_from_samples,
+    _unpack,
 )
 
 _LOG = logging.getLogger("minimax_h3_eternity.sampler_advanced")
@@ -166,7 +168,7 @@ class H3Eternity_SamplerAdvanced:
     )
     FUNCTION = "sample_advanced"
     OUTPUT_NODE = True
-    CATEGORY = "MiniMax H3 / Eternity"
+    CATEGORY = "H3 Eternity"
     DESCRIPTION = (
         "Samples the active iteration using custom noise/guider/sampler/sigmas, auto-saves "
         "intermediate .latent and lossless media files, and outputs decoded frames and audio."
@@ -195,7 +197,7 @@ class H3Eternity_SamplerAdvanced:
         cur_idx = int(plan.get("current_iteration", 0))
         total_iters = int(plan.get("total_iterations", 1))
 
-        _LOG.info("[H3Eternity_SamplerAdvanced] Sampling iteration %d/%d", cur_idx, total_iters)
+        _LOG.info("[H3.E - SamplerAdvanced] Sampling iteration %d/%d", cur_idx, total_iters)
 
         height = int(plan.get("canvas", {}).get("height", 768))
         width = int(plan.get("canvas", {}).get("width", 1344))
@@ -212,9 +214,14 @@ class H3Eternity_SamplerAdvanced:
         tiled_vae = bool(tiled_vae or kwargs.get("tiled_vae", False))
 
         # 3. Seed Extraction
-        seed = 0
-        if noise is not None and hasattr(noise, "seed"):
+        seed = int(plan.get("current_seed", 0))
+        if seed == 0 and noise is not None and hasattr(noise, "seed"):
             seed = int(getattr(noise, "seed", 0))
+        elif seed != 0 and noise is not None and hasattr(noise, "seed"):
+            try:
+                noise.seed = seed
+            except Exception:
+                pass
 
         # 4. Modular Sampling Execution
         if noise is not None and guider is not None and sampler is not None and sigmas is not None and latent_image is not None:
@@ -227,10 +234,11 @@ class H3Eternity_SamplerAdvanced:
                     sigmas=sigmas,
                     latent_image=latent_image,
                 )
-                sampled_latent = out[0] if isinstance(out, (tuple, list)) else out
-                denoised_latent = out[1] if isinstance(out, (tuple, list)) and len(out) > 1 else sampled_latent
+                unpacked = _unpack(out)
+                sampled_latent = unpacked[0] if len(unpacked) > 0 else out
+                denoised_latent = unpacked[1] if len(unpacked) > 1 else sampled_latent
             except Exception as e:
-                _LOG.error("[H3Eternity_SamplerAdvanced] Modular sampling execution failed: %s", e)
+                _LOG.error("[H3.E - SamplerAdvanced] Modular sampling execution failed: %s", e)
                 sampled_latent = latent_image
                 denoised_latent = latent_image
         else:
@@ -245,18 +253,7 @@ class H3Eternity_SamplerAdvanced:
                 denoised_latent = {"samples": (dummy_v.clone(), dummy_a.clone())}
 
         # 5. Extract Sliced Latent Tensors
-        samples = sampled_latent.get("samples")
-        zv = None
-        za = None
-        if isinstance(samples, (tuple, list)):
-            zv = samples[0]
-            if len(samples) > 1:
-                za = samples[1]
-        elif isinstance(samples, torch.Tensor):
-            zv = samples
-        elif isinstance(samples, dict):
-            zv = samples.get("samples_video")
-            za = samples.get("samples_audio")
+        zv, za = extract_latents_from_samples(sampled_latent)
 
         # 6. Dual-Stream VAE Decoding
         out_images, out_audio = decode_joint_latent(
@@ -305,13 +302,13 @@ class H3Eternity_SamplerAdvanced:
                 "delivered_frames": int(artifact.delivered_frames),
                 "fps": fps,
             }],
-            "status": {
+            "status": [{
                 "current_iteration": cur_idx,
                 "total_iterations": total_iters,
                 "delivered_frames": int(artifact.delivered_frames),
                 "latent_path": artifact.latent_path,
                 "media_path": artifact.media_path,
-            }
+            }]
         }
 
         return SamplerResult(

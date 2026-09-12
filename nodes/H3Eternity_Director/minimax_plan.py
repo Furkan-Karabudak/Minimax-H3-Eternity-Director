@@ -205,7 +205,7 @@ def parse_timeline(timeline_data):
     try:
         return json.loads(timeline_data) if timeline_data else {}
     except Exception as e:
-        log.error("[MiniMaxDirector] timeline_data parse error: %s", e)
+        log.error("[H3.E - Director] timeline_data parse error: %s", e)
         return {}
 
 
@@ -1480,7 +1480,7 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
         for label, box, found in (("overall_soundscape", soundscape, found_audio),
                                   ("non_diegetic_music", music, found_music)):
             if (box or "").strip() and found:
-                log.info("[MiniMaxDirector] %s came from the timeline box, so the %s line "
+                log.info("[H3.E - Director] %s came from the timeline box, so the %s line "
                          "in the prompt text was dropped.", label,
                          "Audio:" if label == "overall_soundscape" else "Music:")
         soundscape = (soundscape or "").strip() or found_audio
@@ -1681,8 +1681,36 @@ def plan_iteration_timeline(
     Returns:
         Planned iteration dictionary with iteration prompt and metadata.
     """
+    active_tdata = tdata
+    if is_continuation and overlap_frames > 0 and isinstance(tdata, dict):
+        boundary = start_frame + overlap_frames
+        raw_segs = tdata.get("segments", []) or []
+        filtered_segs = [
+            s for s in raw_segs
+            if (float(s.get("start", 0)) + float(s.get("length", 1))) > boundary
+        ]
+        if filtered_segs:
+            active_tdata = dict(tdata)
+            active_tdata["segments"] = filtered_segs
+
+            if "motionSegments" in tdata and tdata["motionSegments"]:
+                filtered_motion = [
+                    s for s in tdata["motionSegments"]
+                    if (float(s.get("start", 0)) + float(s.get("length", 1))) > boundary
+                ]
+                if filtered_motion:
+                    active_tdata["motionSegments"] = filtered_motion
+
+            if "audioSegments" in tdata and tdata["audioSegments"]:
+                filtered_audio = [
+                    s for s in tdata["audioSegments"]
+                    if (float(s.get("start", 0)) + float(s.get("length", 1))) > boundary
+                ]
+                if filtered_audio:
+                    active_tdata["audioSegments"] = filtered_audio
+
     p = plan_timeline(
-        tdata=tdata,
+        tdata=active_tdata,
         win_start=start_frame,
         duration_frames=duration_frames,
         fps=fps,

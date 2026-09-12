@@ -148,7 +148,7 @@ def _encode_animated_webp(frames, fps, quality):
                        duration=max(1, int(round(1000 / max(1, fps)))), loop=0,
                        quality=quality, method=0)
     except Exception as e:
-        log.warning("[MiniMaxDirector] animated WebP encode failed: %s", e)
+        log.warning("[H3.E - PreviewOverride] animated WebP encode failed: %s", e)
         return None
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
@@ -264,7 +264,7 @@ class _OuterSampleWrapper:
             try:
                 to_rgb = _RGBFactors(latent_format)
             except Exception as e:
-                log.warning("[MiniMaxDirector] preview unavailable: %s", e)
+                log.warning("[H3.E - PreviewOverride] preview unavailable: %s", e)
 
         vhs = _VHSStreamer(self.preview_fps) if self.target in (TARGET_SAMPLER, TARGET_BOTH) else None
         to_node = self.target in (TARGET_NODE, TARGET_BOTH)
@@ -279,7 +279,7 @@ class _OuterSampleWrapper:
         original_cb = callback
         state = {"warned": False, "sent": 0, "cost": 0.0, "finished": 0.0, "anim": 0.0,
                  "throttle_logged": False, "cap_logged": False}
-        log.info("[MiniMaxDirector] preview: %s, target=%s, <=%d frames @%d fps, max %dpx.",
+        log.info("[H3.E - PreviewOverride] preview: %s, target=%s, <=%d frames @%d fps, max %dpx.",
                  self.decode_mode, self.target, self.preview_frames, self.preview_fps,
                  self.max_resolution)
 
@@ -314,7 +314,7 @@ class _OuterSampleWrapper:
                         if not state["cap_logged"] and self.playback == PLAYBACK_TRUE \
                                 and rate < self.preview_fps - 0.05:
                             state["cap_logged"] = True
-                            log.info("[MiniMaxDirector] preview plays at %.1f fps, not %.0f: "
+                            log.info("[H3.E - PreviewOverride] preview plays at %.1f fps, not %.0f: "
                                      "%d frame(s) spread over the shot's %.2fs so it lasts as "
                                      "long as the finished clip. %s Switch playback to '%s' to "
                                      "play them at %.0f fps instead — the motion reads normally, "
@@ -340,7 +340,7 @@ class _OuterSampleWrapper:
                         if self.max_overhead > 0 and state["cost"] > 1.0 \
                                 and not state["throttle_logged"]:
                             state["throttle_logged"] = True
-                            log.info("[MiniMaxDirector] a preview costs %.1fs; holding it to "
+                            log.info("[H3.E - PreviewOverride] a preview costs %.1fs; holding it to "
                                      "%d%% of the render, so previews will be spaced ~%.0fs "
                                      "apart. Lower preview_frames or max_resolution for more "
                                      "of them.", state["cost"], self.max_overhead,
@@ -349,7 +349,7 @@ class _OuterSampleWrapper:
                     # never take the generation down over a preview
                     if not state["warned"]:
                         state["warned"] = True
-                        log.warning("[MiniMaxDirector] preview failed, continuing without "
+                        log.warning("[H3.E - PreviewOverride] preview failed, continuing without "
                                     "it: %r", e, exc_info=True)
             if original_cb is not None:
                 original_cb(step, x0, x, total_steps)
@@ -359,7 +359,7 @@ class _OuterSampleWrapper:
                            disable_pbar, seed, **kwargs)
         finally:
             latent_preview.LatentPreviewer.decode_latent_to_preview_image = original_decode
-        log.info("[MiniMaxDirector] preview rendered %d frames.", state["sent"])
+        log.info("[H3.E - PreviewOverride] preview rendered %d frames.", state["sent"])
         return out
 
 
@@ -369,7 +369,7 @@ class MiniMaxH3PreviewOverride(io.ComfyNode):
         return io.Schema(
             node_id="H3Eternity_PreviewOverride",
             display_name="H3 Eternity - Preview Override",
-            category="MiniMax H3",
+            category="H3 Eternity",
             description=(
                 "Live preview of the whole shot while it denoises, shown on this node. "
                 "Core previews only ever draw the first latent frame; MiniMax H3's packed "
@@ -464,7 +464,7 @@ class MiniMaxH3PreviewOverride(io.ComfyNode):
         if wrapper not in registered and hasattr(m, "add_wrapper_with_key"):
             # a build that still reads the patcher-side dict; checking first avoids
             # registering twice and firing the preview for every step twice over
-            log.info("[MiniMaxDirector] using ModelPatcher-side wrapper registration.")
+            log.info("[H3.E - PreviewOverride] using ModelPatcher-side wrapper registration.")
             m.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.OUTER_SAMPLE,
                                    "h3_eternity_preview", wrapper)
         return io.NodeOutput(m)

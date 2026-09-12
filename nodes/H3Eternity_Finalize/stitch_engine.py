@@ -77,10 +77,10 @@ def load_iteration_frames(
                         frames.append(rgb_frame)
             if frames:
                 tensor_frames = torch.from_numpy(np.stack(frames, axis=0)).to(torch.float32) / 255.0
-                _LOG.info("[StitchEngine] Loaded %d frames from media %s", tensor_frames.shape[0], media_path)
+                _LOG.info("[H3.E - Finalize] Loaded %d frames from media %s", tensor_frames.shape[0], media_path)
                 return tensor_frames
         except Exception as e:
-            _LOG.warning("[StitchEngine] Failed to decode MKV frames from '%s': %s", media_path, e)
+            _LOG.warning("[H3.E - Finalize] Failed to decode MKV frames from '%s': %s", media_path, e)
 
     # Priority 2: Safetensors Latent + VAE Decode Fallback
     if latent_path and os.path.isfile(latent_path) and vae is not None:
@@ -90,7 +90,7 @@ def load_iteration_frames(
                 try:
                     tensors = safetensors.torch.load_file(latent_path)
                 except Exception as e:
-                    _LOG.warning("[StitchEngine] safetensors.load_file failed: %s, trying torch.load", e)
+                    _LOG.warning("[H3.E - Finalize] safetensors.load_file failed: %s, trying torch.load", e)
             if tensors is None:
                 try:
                     tensors = torch.load(latent_path, map_location="cpu", weights_only=True)
@@ -100,7 +100,7 @@ def load_iteration_frames(
             if isinstance(tensors, dict) and "samples_video" in tensors:
                 zv = tensors["samples_video"]
                 if zv.ndim == 5:
-                    _LOG.info("[StitchEngine] Fallback VAE decoding raw latent for iteration %d...", iter_idx)
+                    _LOG.info("[H3.E - Finalize] Fallback VAE decoding raw latent for iteration %d...", iter_idx)
                     try:
                         import nodes as comfy_nodes
                         vae_decoder = comfy_nodes.VAEDecode()
@@ -116,12 +116,12 @@ def load_iteration_frames(
                                 decoded = decoded[0].permute(1, 2, 3, 0)
                             return decoded.to(torch.float32).cpu()
         except Exception as e:
-            _LOG.error("[StitchEngine] Fallback VAE decode failed for '%s': %s", latent_path, e)
+            _LOG.error("[H3.E - Finalize] Fallback VAE decode failed for '%s': %s", latent_path, e)
 
     # Priority 3: Synthetic Blank Tensor Fallback (for testing / offline harness)
     delivered = int(art_dict.get("delivered_frames", 124))
     _LOG.warning(
-        "[StitchEngine] Video artifact could not be loaded for iteration %d "
+        "[H3.E - Finalize] Video artifact could not be loaded for iteration %d "
         "(media: '%s', latent: '%s'). Returning synthetic blank frames.",
         iter_idx, media_path, latent_path
     )
@@ -165,10 +165,10 @@ def load_iteration_audio(
                             blocks.append(torch.from_numpy(out.to_ndarray()))
                 if blocks:
                     audio_tensor = torch.cat(blocks, dim=1).to(torch.float32)
-                    _LOG.info("[StitchEngine] Loaded %d audio samples from %s", audio_tensor.shape[1], path_candidate)
+                    _LOG.info("[H3.E - Finalize] Loaded %d audio samples from %s", audio_tensor.shape[1], path_candidate)
                     return audio_tensor
             except Exception as e:
-                _LOG.warning("[StitchEngine] Failed to decode audio from '%s': %s", path_candidate, e)
+                _LOG.warning("[H3.E - Finalize] Failed to decode audio from '%s': %s", path_candidate, e)
 
     # Priority 2: Safetensors samples_audio + Audio VAE Decode Fallback
     if latent_path and os.path.isfile(latent_path) and audio_vae is not None:
@@ -187,7 +187,7 @@ def load_iteration_audio(
 
             if isinstance(tensors, dict) and "samples_audio" in tensors:
                 za = tensors["samples_audio"]
-                _LOG.info("[StitchEngine] Fallback Audio VAE decoding for iteration %d...", iter_idx)
+                _LOG.info("[H3.E - Finalize] Fallback Audio VAE decoding for iteration %d...", iter_idx)
                 try:
                     from ..H3Eternity_Director.minimax_core import audio_nodes as get_audio_nodes
                     an = get_audio_nodes()
@@ -199,9 +199,9 @@ def load_iteration_audio(
                                 wf = wf[0]
                             return wf.to(torch.float32).cpu()
                 except Exception as e:
-                    _LOG.warning("[StitchEngine] Audio VAE decoding error: %s", e)
+                    _LOG.warning("[H3.E - Finalize] Audio VAE decoding error: %s", e)
         except Exception as e:
-            _LOG.warning("[StitchEngine] Failed to load audio latent from '%s': %s", latent_path, e)
+            _LOG.warning("[H3.E - Finalize] Failed to load audio latent from '%s': %s", latent_path, e)
 
     return None
 
@@ -226,15 +226,173 @@ def trim_head_overlap(frames: torch.Tensor, overlap_frames: int) -> torch.Tensor
     total_frames = frames.shape[0]
     if total_frames <= overlap_frames:
         _LOG.warning(
-            "[StitchEngine] Iteration clip length (%d) is <= overlap_frames (%d). "
+            "[H3.E - Finalize] Iteration clip length (%d) is <= overlap_frames (%d). "
             "Preserving final frame to avoid empty tensor.",
             total_frames, overlap_frames
         )
         return frames[-1:]
 
     trimmed = frames[overlap_frames:]
-    _LOG.info("[StitchEngine] Trimmed %d head frames (remaining: %d frames)", overlap_frames, trimmed.shape[0])
+    _LOG.info("[H3.E - Finalize] Trimmed %d head frames (remaining: %d frames)", overlap_frames, trimmed.shape[0])
     return trimmed
+
+
+def harmonize_and_blend_video_overlap(
+    chunk_a: torch.Tensor,
+    chunk_b: torch.Tensor,
+    overlap_frames: int,
+    harmonize_color: bool = True,
+    smooth_blend: bool = True,
+    anti_flashbang: bool = True,
+) -> torch.Tensor:
+    """Stitches two video clips across their mutual overlap window.
+
+    Eliminates inter-clip flicker and color popping by:
+    1. Estimating per-channel color statistics (mean and std) across mutual overlap frames.
+    2. Calibrating chunk_b (gain and bias) to match chunk_a's color moment.
+    3. Blending the mutual overlap frames with an equal-power cosine curve.
+
+    Total delivered frames: Na + Nb - overlap_frames (exact 0 ms A/V match).
+
+    Args:
+        chunk_a: Preceding video tensor [Na, H, W, 3] in float32 [0.0, 1.0].
+        chunk_b: Subsequent video tensor [Nb, H, W, 3] in float32 [0.0, 1.0].
+        overlap_frames: Mutual temporal overlap frame count (1, 5, 22, 39).
+        harmonize_color: Whether to normalize chunk_b color to chunk_a.
+        smooth_blend: Whether to apply cosine cross-dissolve across overlap frames.
+        anti_flashbang: Whether to suppress impulse luminance spikes across boundary.
+
+    Returns:
+        Assembled video tensor [Na + Nb - overlap_frames, H, W, 3].
+    """
+    if chunk_a is None or chunk_a.shape[0] == 0:
+        return chunk_b if chunk_b is not None else torch.zeros((0, 768, 1344, 3), dtype=torch.float32)
+    if chunk_b is None or chunk_b.shape[0] == 0:
+        return chunk_a
+
+    overlap_frames = max(0, min(overlap_frames, chunk_a.shape[0], chunk_b.shape[0]))
+    if overlap_frames == 0:
+        return torch.cat([chunk_a, chunk_b], dim=0)
+
+    tail_a = chunk_a[-overlap_frames:]
+    head_b = chunk_b[:overlap_frames]
+
+    # 1. Color Harmonization
+    if harmonize_color:
+        mean_a = tail_a.mean(dim=(0, 1, 2), keepdim=True)
+        std_a = tail_a.std(dim=(0, 1, 2), keepdim=True)
+        mean_b = head_b.mean(dim=(0, 1, 2), keepdim=True)
+        std_b = head_b.std(dim=(0, 1, 2), keepdim=True)
+
+        gain = torch.clamp(std_a / (std_b + 1e-6), min=0.8, max=1.25)
+        bias = torch.clamp(mean_a - gain * mean_b, min=-0.2, max=0.2)
+
+        calibrated_b = torch.clamp(chunk_b * gain + bias, 0.0, 1.0)
+        head_b = calibrated_b[:overlap_frames]
+        tail_b = calibrated_b[overlap_frames:]
+        _LOG.info(
+            "[H3.E - Finalize] Color harmonized iteration seam: gain=[%.3f, %.3f, %.3f], bias=[%.3f, %.3f, %.3f]",
+            float(gain[0, 0, 0, 0]), float(gain[0, 0, 0, 1]), float(gain[0, 0, 0, 2]),
+            float(bias[0, 0, 0, 0]), float(bias[0, 0, 0, 1]), float(bias[0, 0, 0, 2]),
+        )
+    else:
+        tail_b = chunk_b[overlap_frames:]
+
+    # 2. Anti-Flashbang Overlap Boundary Equalization
+    if anti_flashbang and overlap_frames > 1:
+        lum_head = 0.299 * head_b[:, :, :, 0].mean(dim=(1, 2)) + \
+                   0.587 * head_b[:, :, :, 1].mean(dim=(1, 2)) + \
+                   0.114 * head_b[:, :, :, 2].mean(dim=(1, 2))
+        last_i = overlap_frames - 1
+        if last_i >= 1 and tail_b.shape[0] > 0:
+            lum_next = 0.299 * tail_b[0, :, :, 0].mean() + \
+                       0.587 * tail_b[0, :, :, 1].mean() + \
+                       0.114 * tail_b[0, :, :, 2].mean()
+            med = torch.median(torch.stack([lum_head[last_i - 1], lum_head[last_i], lum_next]))
+            jump = torch.abs(lum_head[last_i] - med)
+            if jump > 0.035:
+                target = 0.5 * (lum_head[last_i - 1] + lum_next)
+                gain = torch.clamp(target / (lum_head[last_i] + 1e-6), 0.70, 1.30)
+                head_b[last_i] = torch.clamp(head_b[last_i] * gain, 0.0, 1.0)
+                _LOG.info("[H3.E - Finalize] Anti-Flashbang equalized head_b boundary frame (jump=%.4f, gain=%.4f)", float(jump), float(gain))
+
+    # 3. Smooth Overlap Blending
+    if smooth_blend and overlap_frames > 1:
+        t = torch.linspace(0.0, math.pi, overlap_frames, dtype=chunk_a.dtype, device=chunk_a.device)
+        w = ((1.0 - torch.cos(t)) / 2.0).view(overlap_frames, 1, 1, 1)
+        blended = (1.0 - w) * tail_a + w * head_b
+    elif smooth_blend and overlap_frames == 1:
+        blended = 0.5 * tail_a + 0.5 * head_b
+    else:
+        blended = tail_a
+
+    lead_a = chunk_a[:-overlap_frames] if chunk_a.shape[0] > overlap_frames else chunk_a[:0]
+    assembled = torch.cat([lead_a, blended, tail_b], dim=0)
+    _LOG.info("[H3.E - Finalize] Blended %d overlap frames into assembled video (total: %d frames)",
+              overlap_frames, assembled.shape[0])
+    return assembled
+
+
+def apply_seam_anti_flashbang(
+    video: torch.Tensor,
+    seam_indices: List[int],
+    radius: int = 4,
+    threshold: float = 0.035,
+) -> torch.Tensor:
+    """Eliminates sudden single-frame luminance bursts (flashbangs) and smooths auto-exposure across seams.
+
+    Args:
+        video: Assembled video tensor of shape [N, H, W, 3] in float32 [0.0, 1.0].
+        seam_indices: List of cut/blend boundary frame indices.
+        radius: Number of frames around each seam to inspect and equalize.
+        threshold: Luminance spike threshold (default 0.035, ~9/255 pixel levels).
+
+    Returns:
+        Exposure-equalized video tensor.
+    """
+    if video is None or video.shape[0] < 3 or not seam_indices:
+        return video
+
+    total_frames = video.shape[0]
+    lum = 0.299 * video[:, :, :, 0].mean(dim=(1, 2)) + \
+          0.587 * video[:, :, :, 1].mean(dim=(1, 2)) + \
+          0.114 * video[:, :, :, 2].mean(dim=(1, 2))
+
+    for seam_idx in seam_indices:
+        start_idx = max(1, seam_idx - radius)
+        end_idx = min(total_frames - 1, seam_idx + radius + 1)
+
+        # 1. Detect and suppress isolated impulse flashbang spikes
+        for i in range(start_idx, end_idx):
+            med = torch.median(lum[i - 1:i + 2])
+            jump = torch.abs(lum[i] - med)
+            if jump > threshold:
+                target = 0.5 * (lum[i - 1] + lum[i + 1])
+                gain = torch.clamp(target / (lum[i] + 1e-6), 0.10, 3.0)
+                video[i] = torch.clamp(video[i] * gain, 0.0, 1.0)
+                _LOG.info(
+                    "[H3.E - Finalize] Anti-Flashbang suppressed luminance spike at frame %d: jump=%.4f, gain=%.4f",
+                    i, float(jump), float(gain)
+                )
+                lum[i] = target
+
+        # 2. Smooth auto-exposure transition across seam if step discontinuity exists
+        if radius >= 2 and 0 < seam_idx < total_frames:
+            pre_lum = lum[max(0, seam_idx - radius):seam_idx].mean()
+            post_lum = lum[seam_idx:min(total_frames, seam_idx + radius)].mean()
+            step_diff = post_lum - pre_lum
+            if torch.abs(step_diff) > threshold:
+                span = end_idx - start_idx
+                if span > 1:
+                    t = torch.linspace(0.0, 1.0, span, dtype=video.dtype, device=video.device)
+                    fade_w = 0.5 * (1.0 + torch.cos(math.pi * t))
+                    for idx_offset, k in enumerate(range(start_idx, end_idx)):
+                        target_level = pre_lum * fade_w[idx_offset] + post_lum * (1.0 - fade_w[idx_offset])
+                        g = torch.clamp(target_level / (lum[k] + 1e-6), 0.85, 1.18)
+                        video[k] = torch.clamp(video[k] * g, 0.0, 1.0)
+                        lum[k] = target_level
+
+    return video
 
 
 # -----------------------------------------------------------------------------
@@ -270,7 +428,8 @@ def splice_audio_seam(
     chunk_a: torch.Tensor,
     chunk_b: torch.Tensor,
     overlap_samples: int,
-    strategy: str = "smartseam",
+    strategy: str = "crossfade_end",
+    fade_ms: float = 12.0,
 ) -> torch.Tensor:
     """Splices two sequential audio clips across their mutual overlap window.
 
@@ -278,7 +437,9 @@ def splice_audio_seam(
         chunk_a: Preceding audio chunk [2, Na].
         chunk_b: Subsequent audio chunk [2, Nb].
         overlap_samples: Number of overlapping audio samples (O * 2000 at 48 kHz / 24 FPS).
-        strategy: 'smartseam' | 'crossfade' | 'declick' | 'hard_cut'.
+        strategy: 'crossfade_end' (boundary micro-fade) | 'instant' (abrupt cut at boundary).
+                  Legacy aliases 'smartseam', 'declick', 'crossfade', 'hard_cut' are also supported.
+        fade_ms: Transition micro-fade duration in milliseconds (default 12.0 ms).
 
     Returns:
         Spliced audio tensor [2, Na + Nb - overlap_samples].
@@ -289,26 +450,9 @@ def splice_audio_seam(
         return chunk_a
 
     overlap_samples = max(0, min(overlap_samples, chunk_a.shape[1], chunk_b.shape[1]))
-    if overlap_samples == 0 or strategy == "hard_cut":
-        # Direct hard cut: drop exactly overlap_samples from chunk_b
+    if overlap_samples == 0 or strategy in ("instant", "hard_cut"):
+        # Direct instant cut at video cut boundary: chunk_a plays until boundary, chunk_b starts at boundary
         return torch.cat([chunk_a, chunk_b[:, overlap_samples:]], dim=1)
-
-    if strategy == "declick":
-        # Within the overlap span, apply a short 12ms (576 samples) equal-power ramp
-        # at the transition point so total length remains exactly Na + Nb - overlap_samples.
-        part_a = chunk_a[:, -overlap_samples:]
-        part_b = chunk_b[:, :overlap_samples]
-        fade_len = min(576, overlap_samples)
-        if fade_len <= 1:
-            return torch.cat([chunk_a, chunk_b[:, overlap_samples:]], dim=1)
-
-        t = torch.linspace(0.0, math.pi / 2.0, fade_len, dtype=chunk_a.dtype, device=chunk_a.device)
-        blended = torch.cos(t).unsqueeze(0) * part_a[:, :fade_len] + torch.sin(t).unsqueeze(0) * part_b[:, :fade_len]
-
-        lead_a = chunk_a[:, :-overlap_samples] if chunk_a.shape[1] > overlap_samples else chunk_a[:, :0]
-        tail_b = chunk_b[:, overlap_samples:] if chunk_b.shape[1] > overlap_samples else chunk_b[:, :0]
-        overlap_stitched = torch.cat([blended, part_b[:, fade_len:]], dim=1)
-        return torch.cat([lead_a, overlap_stitched, tail_b], dim=1)
 
     if strategy == "crossfade":
         # Full overlap equal-power blend across the entire overlap span
@@ -321,54 +465,23 @@ def splice_audio_seam(
         blended = torch.cos(t).unsqueeze(0) * part_a + torch.sin(t).unsqueeze(0) * part_b
         return torch.cat([lead_a, blended, tail_b], dim=1)
 
-    # Default: 'smartseam' (Adaptive Quietest-RMS Placement)
-    # The overlap region is chunk_a[:, -overlap_samples:] and chunk_b[:, :overlap_samples]
-    part_a = chunk_a[:, -overlap_samples:]
-    part_b = chunk_b[:, :overlap_samples]
+    # Boundary-Exact Micro-Fade ('declick' and 'smartseam')
+    # Video cut occurs at the END of overlap (chunk_a plays in full, chunk_b drops overlap_samples).
+    # Audio matches video cut to the microsecond: chunk_a plays until cut, chunk_b starts at cut.
+    # At the seam boundary, apply an equal-power micro-fade of length fade_len (default 12ms = 576 samples at 48kHz).
+    fade_len = max(1, min(int(round(AUDIO_SR * (float(fade_ms) / 1000.0))), overlap_samples, chunk_a.shape[1], chunk_b.shape[1]))
+    if fade_len <= 1:
+        return torch.cat([chunk_a, chunk_b[:, overlap_samples:]], dim=1)
 
-    # Energy envelope over 20ms sliding window (W = 960 samples at 48 kHz)
-    w_size = min(960, overlap_samples)
-    if w_size < 16 or overlap_samples < w_size:
-        # Overlap window too small for windowed RMS search -> fallback to crossfade
-        t = torch.linspace(0.0, math.pi / 2.0, overlap_samples, dtype=chunk_a.dtype, device=chunk_a.device)
-        blended = torch.cos(t).unsqueeze(0) * part_a + torch.sin(t).unsqueeze(0) * part_b
-        lead_a = chunk_a[:, :-overlap_samples]
-        tail_b = chunk_b[:, overlap_samples:]
-        return torch.cat([lead_a, blended, tail_b], dim=1)
+    part_a = chunk_a[:, -fade_len:]
+    part_b = chunk_b[:, overlap_samples - fade_len : overlap_samples]
 
-    sq_energy = 0.5 * (part_a.pow(2).mean(dim=0) + part_b.pow(2).mean(dim=0))
-    # 1D conv moving average
-    kernel = torch.ones(1, 1, w_size, dtype=sq_energy.dtype, device=sq_energy.device) / float(w_size)
-    env = F.conv1d(sq_energy.unsqueeze(0).unsqueeze(0), kernel).squeeze()
+    t = torch.linspace(0.0, math.pi / 2.0, fade_len, dtype=chunk_a.dtype, device=chunk_a.device)
+    blended = torch.cos(t).unsqueeze(0) * part_a + torch.sin(t).unsqueeze(0) * part_b
 
-    # Quietest point s0
-    min_idx = int(torch.argmin(env).item())
-    s0 = min_idx + w_size // 2
-
-    # Center a short crossfade of length fade_len <= w_size at s0
-    fade_len = min(w_size, 960)
-    half_fade = fade_len // 2
-    f_start = max(0, s0 - half_fade)
-    f_end = min(overlap_samples, f_start + fade_len)
-    actual_fade = f_end - f_start
-
-    t = torch.linspace(0.0, math.pi / 2.0, actual_fade, dtype=chunk_a.dtype, device=chunk_a.device)
-    blended_slice = (
-        torch.cos(t).unsqueeze(0) * part_a[:, f_start:f_end] +
-        torch.sin(t).unsqueeze(0) * part_b[:, f_start:f_end]
-    )
-
-    # Reconstructed overlap zone:
-    # [0 : f_start] from part_a, [f_start : f_end] blended, [f_end : overlap_samples] from part_b
-    overlap_stitched = torch.cat([
-        part_a[:, :f_start],
-        blended_slice,
-        part_b[:, f_end:],
-    ], dim=1)
-
-    lead_a = chunk_a[:, :-overlap_samples] if chunk_a.shape[1] > overlap_samples else chunk_a[:, :0]
+    lead_a = chunk_a[:, :-fade_len] if chunk_a.shape[1] > fade_len else chunk_a[:, :0]
     tail_b = chunk_b[:, overlap_samples:] if chunk_b.shape[1] > overlap_samples else chunk_b[:, :0]
-    return torch.cat([lead_a, overlap_stitched, tail_b], dim=1)
+    return torch.cat([lead_a, blended, tail_b], dim=1)
 
 
 # -----------------------------------------------------------------------------
@@ -393,11 +506,11 @@ def lock_audio_duration(
         return audio_waveform
 
     if current_samples > target_samples:
-        _LOG.info("[StitchEngine] Clamping audio duration (%d -> %d samples)", current_samples, target_samples)
+        _LOG.info("[H3.E - Finalize] Clamping audio duration (%d -> %d samples)", current_samples, target_samples)
         return audio_waveform[:, :target_samples]
     else:
         pad_amt = target_samples - current_samples
-        _LOG.info("[StitchEngine] Padding audio duration with silence (%d -> %d samples)", current_samples, target_samples)
+        _LOG.info("[H3.E - Finalize] Padding audio duration with silence (%d -> %d samples)", current_samples, target_samples)
         return F.pad(audio_waveform, (0, pad_amt))
 
 
@@ -407,17 +520,28 @@ def lock_audio_duration(
 
 def assemble_multi_clip(
     plan: dict[str, Any],
-    seam_audio: str = "smartseam",
+    seam_video: str = "smooth_blend",
+    harmonize_color: bool = True,
     trim_head_overlap: bool = True,
+    seam_audio: str = "crossfade_end",
+    seam_audio_fade_ms: float = 12.0,
     vae: Optional[Any] = None,
     audio_vae: Optional[Any] = None,
+    anti_flashbang: bool = True,
+    **kwargs: Any,
 ) -> Tuple[torch.Tensor, dict[str, Any]]:
     """Stitches all saved iteration clips into unified final_images and final_audio.
 
     Args:
         plan: Active render_plan dictionary containing canvas, iterations, and saved_artifacts.
-        seam_audio: Audio stitching algorithm: 'smartseam', 'crossfade', 'declick', 'hard_cut'.
-        trim_head_overlap: Whether to drop duplicate head overlap frames on continuation shots.
+        seam_video: Video transition strategy: 'smooth_blend' (color-harmonized cosine cross-dissolve)
+                    or 'hard_cut' (knife-edge drop of overlap frames).
+        harmonize_color: Whether to normalize gain and bias across clips to eliminate VAE color shift.
+        trim_head_overlap: Whether to drop/blend duplicate head overlap frames on continuation shots.
+        seam_audio: Audio stitching algorithm: 'crossfade_end', 'instant' (or legacy aliases).
+        seam_audio_fade_ms: Transition micro-fade duration in milliseconds (default: 12.0ms).
+                    or 'hard_cut' (knife-edge drop of overlap frames).
+        harmonize_color: Whether to normalize gain and bias across clips to eliminate VAE color shift.
         vae: Video VAE for fallback latent decoding if media is missing.
         audio_vae: Audio VAE for fallback latent decoding.
 
@@ -428,6 +552,7 @@ def assemble_multi_clip(
     fps = float(canvas.get("fps", VIDEO_FPS))
     width = int(canvas.get("width", 1344))
     height = int(canvas.get("height", 768))
+    eff_fade_ms = float(kwargs.get("seam_fade_ms", seam_audio_fade_ms))
 
     saved_artifacts = list(plan.get("saved_artifacts", []))
     iterations = list(plan.get("iterations", []))
@@ -436,7 +561,7 @@ def assemble_multi_clip(
     saved_artifacts.sort(key=lambda a: int(a.get("iteration", 0)))
 
     if not saved_artifacts:
-        _LOG.warning("[StitchEngine] No saved artifacts found in render_plan. Returning blank sequence.")
+        _LOG.warning("[H3.E - Finalize] No saved artifacts found in render_plan. Returning blank sequence.")
         empty_images = torch.zeros((1, height, width, 3), dtype=torch.float32)
         empty_audio = {
             "waveform": torch.zeros((1, 2, AUDIO_SR), dtype=torch.float32),
@@ -448,54 +573,205 @@ def assemble_multi_clip(
     eff_vae = vae or plan.get("vae")
     eff_audio_vae = audio_vae or plan.get("audio_vae")
 
-    video_chunks: List[torch.Tensor] = []
-    audio_chunks: List[Tuple[Optional[torch.Tensor], int]] = []  # (waveform, overlap_lead_frames)
+    accum_video: Optional[torch.Tensor] = None
+    chain_root_iter_idx: int = 0
+    chain_root_mean: Optional[torch.Tensor] = None
+    chain_root_std: Optional[torch.Tensor] = None
+    audio_chunks: List[Tuple[Optional[torch.Tensor], int, int]] = []  # (waveform, overlap_lead_frames, raw_frame_count)
+    timeline_segments: List[Dict[str, Any]] = []
 
     for i, art in enumerate(saved_artifacts):
-        iter_idx = int(art.get("iteration", i))
+        iter_idx = int(art.get("iteration", art.get("iteration_index", i)))
+        shot_num = iter_idx + 1
 
-        # Determine overlap lead frames for this iteration
+        # Determine overlap lead frames and whether this is a hard scene cut
         overlap_frames = 0
-        if i > 0 and trim_head_overlap:
-            if iter_idx < len(iterations):
+        audio_overlap_frames = 0
+        is_hard = False
+        if iter_idx < len(iterations):
+            is_hard = bool(iterations[iter_idx].get("is_hard_cut", iterations[iter_idx].get("is_chain_cut", False)))
+            if i > 0 and trim_head_overlap:
                 overlap_frames = int(iterations[iter_idx].get("overlap_lead_frames", DEFAULT_OVERLAP))
-            else:
+        else:
+            is_hard = bool(art.get("is_hard_cut", art.get("is_chain_cut", False)))
+            if i > 0 and trim_head_overlap:
                 overlap_frames = int(art.get("overlap_lead_frames", DEFAULT_OVERLAP))
-            if overlap_frames not in VALID_OVERLAPS:
-                overlap_frames = DEFAULT_OVERLAP
+
+        if overlap_frames > 0 and overlap_frames not in VALID_OVERLAPS:
+            overlap_frames = DEFAULT_OVERLAP
+        audio_overlap_frames = 0 if is_hard else overlap_frames
 
         # 1. Load Video Frames
         raw_frames = load_iteration_frames(art, vae=eff_vae, target_fps=fps, fallback_h=height, fallback_w=width)
-        trimmed_frames = trim_head_overlap_fn(raw_frames, overlap_frames) if i > 0 else raw_frames
-        video_chunks.append(trimmed_frames)
+
+        if accum_video is None:
+            accum_video = raw_frames
+            n_raw = raw_frames.shape[0] if raw_frames is not None else 0
+            timeline_segments.append({
+                "type": "shot",
+                "iteration": iter_idx,
+                "shot_number": shot_num,
+                "start_frame": 0,
+                "end_frame": n_raw,
+            })
+            if raw_frames is not None and raw_frames.shape[0] > 0:
+                chain_root_iter_idx = iter_idx
+                root_anchor = raw_frames[0:1]
+                chain_root_mean = root_anchor.mean(dim=(0, 1, 2), keepdim=True)
+                chain_root_std = root_anchor.std(dim=(0, 1, 2), keepdim=True)
+                _LOG.info(
+                    "[H3.E - Finalize] Initialized Chain Root color anchor at Iteration %d (first frame baseline: mean=[%.3f, %.3f, %.3f], std=[%.3f, %.3f, %.3f])",
+                    chain_root_iter_idx,
+                    float(chain_root_mean[0, 0, 0, 0]), float(chain_root_mean[0, 0, 0, 1]), float(chain_root_mean[0, 0, 0, 2]),
+                    float(chain_root_std[0, 0, 0, 0]), float(chain_root_std[0, 0, 0, 1]), float(chain_root_std[0, 0, 0, 2]),
+                )
+        elif is_hard:
+            # Chain cut / Hard cut starts a new scene chain; reset color anchor to this clip's first frame
+            n_prev = accum_video.shape[0] if accum_video is not None else 0
+            if raw_frames is not None and raw_frames.shape[0] > 0:
+                chain_root_iter_idx = iter_idx
+                root_anchor = raw_frames[0:1]
+                chain_root_mean = root_anchor.mean(dim=(0, 1, 2), keepdim=True)
+                chain_root_std = root_anchor.std(dim=(0, 1, 2), keepdim=True)
+                _LOG.info(
+                    "[H3.E - Finalize] Chain cut detected at Iteration %d. Reset Chain Root color anchor (new baseline: mean=[%.3f, %.3f, %.3f], std=[%.3f, %.3f, %.3f])",
+                    chain_root_iter_idx,
+                    float(chain_root_mean[0, 0, 0, 0]), float(chain_root_mean[0, 0, 0, 1]), float(chain_root_mean[0, 0, 0, 2]),
+                    float(chain_root_std[0, 0, 0, 0]), float(chain_root_std[0, 0, 0, 1]), float(chain_root_std[0, 0, 0, 2]),
+                )
+            accum_video = torch.cat([accum_video, raw_frames], dim=0)
+            n_raw = raw_frames.shape[0] if raw_frames is not None else 0
+            timeline_segments.append({
+                "type": "shot",
+                "iteration": iter_idx,
+                "shot_number": shot_num,
+                "start_frame": n_prev,
+                "end_frame": n_prev + n_raw,
+            })
+        else:
+            # Soft continuation: calibrate raw_frames against the current Chain Root's first frame
+            if harmonize_color and chain_root_mean is not None and chain_root_std is not None and raw_frames.shape[0] > 0:
+                cur_anchor = raw_frames[0:1]
+                cur_mean = cur_anchor.mean(dim=(0, 1, 2), keepdim=True)
+                cur_std = cur_anchor.std(dim=(0, 1, 2), keepdim=True)
+                g = torch.clamp(chain_root_std / (cur_std + 1e-6), min=0.85, max=1.18)
+                b = torch.clamp(chain_root_mean - g * cur_mean, min=-0.15, max=0.15)
+                raw_frames = torch.clamp(raw_frames * g + b, 0.0, 1.0)
+                _LOG.info(
+                    "[H3.E - Finalize] Chain Root (iter %d) Color Anchor calibrated Iteration %d: gain=[%.3f, %.3f, %.3f], bias=[%.3f, %.3f, %.3f]",
+                    chain_root_iter_idx, iter_idx,
+                    float(g[0, 0, 0, 0]), float(g[0, 0, 0, 1]), float(g[0, 0, 0, 2]),
+                    float(b[0, 0, 0, 0]), float(b[0, 0, 0, 1]), float(b[0, 0, 0, 2]),
+                )
+
+            n_prev = accum_video.shape[0] if accum_video is not None else 0
+            if not trim_head_overlap or overlap_frames <= 0:
+                accum_video = torch.cat([accum_video, raw_frames], dim=0)
+                n_raw = raw_frames.shape[0] if raw_frames is not None else 0
+                timeline_segments.append({
+                    "type": "shot",
+                    "iteration": iter_idx,
+                    "shot_number": shot_num,
+                    "start_frame": n_prev,
+                    "end_frame": n_prev + n_raw,
+                })
+            elif seam_video == "hard_cut":
+                trimmed = trim_head_overlap_fn(raw_frames, overlap_frames)
+                accum_video = torch.cat([accum_video, trimmed], dim=0)
+                n_trim = trimmed.shape[0] if trimmed is not None else 0
+                timeline_segments.append({
+                    "type": "shot",
+                    "iteration": iter_idx,
+                    "shot_number": shot_num,
+                    "start_frame": n_prev,
+                    "end_frame": n_prev + n_trim,
+                })
+            else:
+                # Smooth cosine blending across mutual overlap window (without secondary localized bias)
+                effective_overlap = min(overlap_frames, n_prev, raw_frames.shape[0] if raw_frames is not None else 0)
+                if timeline_segments and timeline_segments[-1]["type"] == "shot":
+                    prev_seg = timeline_segments[-1]
+                    prev_shot = prev_seg["shot_number"]
+                    prev_seg["end_frame"] = max(prev_seg["start_frame"], n_prev - effective_overlap)
+                else:
+                    prev_shot = shot_num - 1
+
+                blend_start = max(0, n_prev - effective_overlap)
+                blend_end = n_prev
+                if effective_overlap > 0:
+                    timeline_segments.append({
+                        "type": "blend",
+                        "from_iteration": iter_idx - 1,
+                        "to_iteration": iter_idx,
+                        "from_shot": prev_shot,
+                        "to_shot": shot_num,
+                        "start_frame": blend_start,
+                        "end_frame": blend_end,
+                        "overlap_frames": effective_overlap,
+                    })
+
+                accum_video = harmonize_and_blend_video_overlap(
+                    chunk_a=accum_video,
+                    chunk_b=raw_frames,
+                    overlap_frames=overlap_frames,
+                    harmonize_color=False,  # Already calibrated to Chain Root!
+                    smooth_blend=True,
+                    anti_flashbang=anti_flashbang,
+                )
+                n_new_total = accum_video.shape[0] if accum_video is not None else blend_end
+                timeline_segments.append({
+                    "type": "shot",
+                    "iteration": iter_idx,
+                    "shot_number": shot_num,
+                    "start_frame": blend_end,
+                    "end_frame": n_new_total,
+                })
 
         # 2. Load Audio Waveform
         raw_audio = load_iteration_audio(art, audio_vae=eff_audio_vae, target_sr=AUDIO_SR)
-        audio_chunks.append((raw_audio, overlap_frames))
+        audio_chunks.append((raw_audio, audio_overlap_frames, raw_frames.shape[0]))
 
-    # Concatenate Video
-    final_images = torch.cat(video_chunks, dim=0)
+    final_images = accum_video if accum_video is not None else torch.zeros((1, height, width, 3), dtype=torch.float32)
     total_frames = final_images.shape[0]
-    _LOG.info("[StitchEngine] Multi-clip video assembled: %d total frames (%s)", total_frames, final_images.shape)
+
+    # 3. Anti-Flashbang Seam Smoothing & Auto-Exposure Transition
+    if anti_flashbang and final_images.shape[0] > 3:
+        seam_pts: List[int] = []
+        for seg in timeline_segments:
+            st = int(seg.get("start_frame", 0))
+            if 0 < st < total_frames and st not in seam_pts:
+                seam_pts.append(st)
+            ed = int(seg.get("end_frame", 0))
+            if 0 < ed < total_frames and ed not in seam_pts:
+                seam_pts.append(ed)
+        if seam_pts:
+            final_images = apply_seam_anti_flashbang(final_images, seam_pts)
+
+    if isinstance(plan, dict):
+        plan["stitched_timeline"] = {
+            "total_frames": total_frames,
+            "segments": timeline_segments,
+        }
+    _LOG.info("[H3.E - Finalize] Multi-clip video assembled: %d total frames (%s)", total_frames, final_images.shape)
 
     # Concatenate & Splice Audio
     accum_audio: Optional[torch.Tensor] = None
-    for i, (chunk, overlap_frames) in enumerate(audio_chunks):
+    for i, (chunk, audio_overlap_f, raw_frame_count) in enumerate(audio_chunks):
         if chunk is None:
             # Generate silence for missing audio chunk matching video frame length
-            chunk_frames = video_chunks[i].shape[0] + (overlap_frames if i > 0 else 0)
-            chunk_samples = int(round((float(chunk_frames) / fps) * float(AUDIO_SR)))
+            chunk_samples = int(round((float(raw_frame_count) / fps) * float(AUDIO_SR)))
             chunk = torch.zeros((2, chunk_samples), dtype=torch.float32)
 
         if accum_audio is None:
             accum_audio = chunk
         else:
-            overlap_samples = int(round((float(overlap_frames) / fps) * float(AUDIO_SR)))
+            overlap_samples = int(round((float(audio_overlap_f) / fps) * float(AUDIO_SR)))
             accum_audio = splice_audio_seam(
                 chunk_a=accum_audio,
                 chunk_b=chunk,
                 overlap_samples=overlap_samples,
                 strategy=seam_audio,
+                fade_ms=eff_fade_ms,
             )
 
     if accum_audio is None or accum_audio.shape[1] == 0:

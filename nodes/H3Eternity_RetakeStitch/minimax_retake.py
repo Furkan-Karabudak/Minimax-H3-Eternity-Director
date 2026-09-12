@@ -47,7 +47,7 @@ def _audio_slice(path, start_sec, dur_sec):
     try:
         waveform = media._decode_audio_stereo(path)
     except Exception as e:
-        log.warning("[MiniMaxRetake] could not read audio from %s: %s", path, e)
+        log.warning("[H3.E - RetakeStitch] could not read audio from %s: %s", path, e)
         waveform = None
     if waveform is None:
         return _silence(dur_sec)
@@ -91,7 +91,7 @@ class MiniMaxH3RetakeStitch(io.ComfyNode):
         return io.Schema(
             node_id="H3Eternity_RetakeStitch",
             display_name="H3 Eternity - Retake Stitch",
-            category="MiniMax H3",
+            category="H3 Eternity",
             description=(
                 "Splices a Retake Mode result back into its base video: base head + the "
                 "generated range + base tail, video and audio, all on H3's 24 fps grid. "
@@ -128,7 +128,7 @@ class MiniMaxH3RetakeStitch(io.ComfyNode):
             # for a node that simply had nothing to do. Leaving it wired while you work
             # normally has to be harmless; it only splices when the Director actually ran
             # a retake.
-            log.info("[MiniMaxRetake] no retake in this run (the Director was not in Retake "
+            log.info("[H3.E - RetakeStitch] no retake in this run (the Director was not in Retake "
                      "Mode, or no base video was marked) — passing the %d frame(s) through "
                      "unchanged.", int(images.shape[0]))
             passthrough_audio = audio or {
@@ -188,7 +188,7 @@ class MiniMaxH3RetakeStitch(io.ComfyNode):
             fixed.append(chunk[:, :want])
         out_audio = torch.cat(fixed, dim=1)
 
-        log.info("[MiniMaxRetake] stitched %d + %d + %d frames (%.2fs) around the retake at %.2fs",
+        log.info("[H3.E - RetakeStitch] stitched %d + %d + %d frames (%.2fs) around the retake at %.2fs",
                  parts[0].shape[0] if head_sec > 1e-3 else 0, gen.shape[0],
                  parts[-1].shape[0] if tail_sec > 1e-3 else 0,
                  out_images.shape[0] / MODEL_FPS, head_sec)

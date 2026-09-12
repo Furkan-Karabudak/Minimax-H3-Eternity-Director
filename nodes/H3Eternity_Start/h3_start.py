@@ -39,6 +39,11 @@ class H3Eternity_Start:
                     "tooltip": "Loopback render_plan connection from H3 Eternity - Finalize, "
                                "or omitted on initial kickoff."
                 }),
+                "video_name": ("STRING", {
+                    "default": "",
+                    "tooltip": "Optional global project video name. If set, overrides and locks "
+                               "the Director node's video_name.",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -54,7 +59,7 @@ class H3Eternity_Start:
         "Current iteration index (0, 1, 2, ...).",
     )
     FUNCTION = "start"
-    CATEGORY = "MiniMax H3 / Eternity"
+    CATEGORY = "H3 Eternity"
     DESCRIPTION = (
         "Starts or resumes an H3 Eternity iteration loop. Emits the active render_plan "
         "and current iteration index for Director and downstream Samplers."
@@ -63,6 +68,7 @@ class H3Eternity_Start:
     def start(
         self,
         render_plan: Optional[dict[str, Any]] = None,
+        video_name: str = "",
         unique_id: Optional[str] = None,
         prompt: Optional[dict[str, Any]] = None,
         start_index: Optional[int] = None,
@@ -71,11 +77,19 @@ class H3Eternity_Start:
         node_id = str(unique_id or "start_node")
         if render_plan is None:
             # First iteration kickoff
-            plan = create_render_plan(node_id=node_id)
+            custom_vn = (video_name or "").strip()
+            if custom_vn:
+                plan = create_render_plan(node_id=node_id, video_name_template=custom_vn)
+                plan["custom_video_name_from_start"] = True
+                plan["start_video_name"] = custom_vn
+            else:
+                plan = create_render_plan(node_id=node_id)
+                plan["custom_video_name_from_start"] = False
+                plan["start_video_name"] = ""
             plan["start_node_id"] = node_id
             current_index = 0 if start_index is None else int(start_index)
             plan["current_iteration"] = current_index
-            _LOG.info("[H3Eternity_Start] Initialized new render_plan at iteration %d (node_id=%s)", current_index, node_id)
+            _LOG.info("[H3.E - Start] Initialized new render_plan at iteration %d (node_id=%s, video_name=%s)", current_index, node_id, plan.get("video_name"))
         else:
             plan = deserialize_render_plan(render_plan)
             if "start_node_id" not in plan and unique_id:
@@ -86,7 +100,7 @@ class H3Eternity_Start:
             else:
                 current_index = int(plan.get("current_iteration", 0))
             _LOG.info(
-                "[H3Eternity_Start] Continuing render_plan at iteration %d/%d (node_id=%s)",
+                "[H3.E - Start] Continuing render_plan at iteration %d/%d (node_id=%s)",
                 current_index, int(plan.get("total_iterations", 1)), plan.get("start_node_id", node_id)
             )
 
@@ -101,11 +115,13 @@ if _HAVE_COMFY_API:
             return io.Schema(
                 node_id="H3Eternity_Start",
                 display_name="H3 Eternity - Start",
-                category="MiniMax H3 / Eternity",
+                category="H3 Eternity",
                 description=cls.DESCRIPTION,
                 inputs=[
                     io.Custom(RENDER_PLAN_TYPE).Input("render_plan", optional=True,
                                     tooltip="Loopback render_plan connection from H3 Eternity - Finalize."),
+                    io.String.Input("video_name", default="", optional=True,
+                                    tooltip="Optional global project video name. If set, overrides and locks the Director node's video_name."),
                 ],
                 outputs=[
                     io.Custom(RENDER_PLAN_TYPE).Output(display_name="render_plan"),
@@ -114,9 +130,9 @@ if _HAVE_COMFY_API:
             )
 
         @classmethod
-        def execute(cls, render_plan=None, unique_id=None, prompt=None, start_index=None, **kwargs) -> io.NodeOutput:
+        def execute(cls, render_plan=None, video_name="", unique_id=None, prompt=None, start_index=None, **kwargs) -> io.NodeOutput:
             instance = cls()
             out_plan, idx = instance.start(
-                render_plan=render_plan, unique_id=unique_id, prompt=prompt, start_index=start_index, **kwargs
+                render_plan=render_plan, video_name=video_name, unique_id=unique_id, prompt=prompt, start_index=start_index, **kwargs
             )
             return io.NodeOutput(out_plan, idx)

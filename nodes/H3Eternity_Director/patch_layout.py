@@ -96,7 +96,7 @@ def _target_origin(layout):
     a, b, kind = layout.segments[-1]
     if kind != "video" or b <= a:
         raise RuntimeError(
-            "h3_motion_context: expected the target video rows to be the "
+            "[H3.E - Director] expected the target video rows to be the "
             "last layout segment, found %r spanning %d rows. Upstream "
             "layout change; refusing to rewrite positions." % (kind, b - a))
     return float(layout.position_ids[a, 0])
@@ -114,7 +114,7 @@ def _native_keyframe_segments(layout, keyframes):
             expected.append((index, "cond_audio"))
     if len(actual) != len(expected):
         raise RuntimeError(
-            "h3_motion_context: %d native guides should emit %d conditioning "
+            "[H3.E - Director] %d native guides should emit %d conditioning "
             "segments, the layout has %d. ComfyUI's H3 guide layout changed; "
             "refusing to realign it." %
             (len(keyframes or []), len(expected), len(actual)))
@@ -122,7 +122,7 @@ def _native_keyframe_segments(layout, keyframes):
     for (index, wanted), (a, b, found) in zip(expected, actual):
         if found != wanted or b <= a:
             raise RuntimeError(
-                "h3_motion_context: native guide %d should emit a non-empty "
+                "[H3.E - Director] native guide %d should emit a non-empty "
                 "%s segment, found %s spanning %d rows." %
                 (index, wanted, found, b - a))
         mapped.append((index, a, b, found))
@@ -172,7 +172,7 @@ def _expected_ref_segments(blk):
             return ("ref_audio", "ref_img")
         return ("ref_img",)
     raise RuntimeError(
-        "h3_motion_context: unknown reference kind %r; cannot tell which "
+        "[H3.E - Director] unknown reference kind %r; cannot tell which "
         "layout rows belong to it." % (kind,))
 
 
@@ -199,7 +199,7 @@ def _ref_segment_map(layout, refs):
             for k in _expected_ref_segments(blk)]
     if len(want) != len(ref_segs):
         raise RuntimeError(
-            "h3_motion_context: %d reference blocks should have produced %d "
+            "[H3.E - Director] %d reference blocks should have produced %d "
             "layout segments, the layout has %d. Upstream layout change; "
             "refusing to move rows." % (len(refs or []), len(want),
                                         len(ref_segs)))
@@ -207,7 +207,7 @@ def _ref_segment_map(layout, refs):
     for (i, kind), (a, b, got) in zip(want, ref_segs):
         if got != kind:
             raise RuntimeError(
-                "h3_motion_context: reference block %d (%r) should have "
+                "[H3.E - Director] reference block %d (%r) should have "
                 "emitted a %s segment, the layout has %s. Upstream layout "
                 "change; refusing to move rows."
                 % (i, refs[i].get("kind"), kind, got))
@@ -247,13 +247,13 @@ def _fixup(layout, text_len, latent_t, frame_count, keyframes, refs=None):
         # anchors relative to ours and to the target. Nothing produces
         # this today; refuse loudly in case something ever does.
         raise RuntimeError(
-            "h3_motion_context: stock and motion-context keyframes mixed in "
+            "[H3.E - Director] stock and motion-context keyframes mixed in "
             "one graph alongside a ref; their coordinates would disagree. "
             "Give every keyframe a %s entry or remove the refs." % MC_KEY)
     cond_spans = [(a, b) for a, b, kind in layout.segments if kind == "cond"]
     if len(cond_spans) != len(keyframes):
         raise RuntimeError(
-            "h3_motion_context: expected %d cond segments, layout has %d. "
+            "[H3.E - Director] expected %d cond segments, layout has %d. "
             "Refusing to rewrite positions."
             % (len(keyframes), len(cond_spans)))
     for (a, b), kf in zip(cond_spans, keyframes):
@@ -295,7 +295,7 @@ def _fixup_audio(layout, text_len, refs):
               if r.get(MC_AUDIO_KEY) is not None]
     if len(marked) != 1:
         raise RuntimeError(
-            "h3_motion_context: audio timeline placement needs exactly one "
+            "[H3.E - Director] audio timeline placement needs exactly one "
             "reference marked with %s; the layout has %d references and %d "
             "marked. If this appeared during startup, check for more than "
             "one H3 Motion Context folder in custom_nodes."
@@ -304,7 +304,7 @@ def _fixup_audio(layout, text_len, refs):
     blk = refs[idx]
     if blk.get("kind") != "audio":
         raise RuntimeError(
-            "h3_motion_context: %s set on a %r ref; only audio refs can be "
+            "[H3.E - Director] %s set on a %r ref; only audio refs can be "
             "moved onto the timeline." % (MC_AUDIO_KEY, blk.get("kind")))
     rt = int(blk.get("ref_audio_t", 0))
     if rt <= 0:
@@ -313,7 +313,7 @@ def _fixup_audio(layout, text_len, refs):
     seg = _ref_segment_map(layout, refs).get(idx, {}).get("ref_audio")
     if seg is None:
         raise RuntimeError(
-            "h3_motion_context: the marked audio reference produced no "
+            "[H3.E - Director] the marked audio reference produced no "
             "ref_audio segment. Upstream layout change; refusing to move "
             "rows.")
     a, b = seg
@@ -322,7 +322,7 @@ def _fixup_audio(layout, text_len, refs):
         # rather than a tolerance: if this ever changes, the intra-block
         # structure a translation is preserving has changed with it.
         raise RuntimeError(
-            "h3_motion_context: the marked audio reference has %d rows for "
+            "[H3.E - Director] the marked audio reference has %d rows for "
             "%d latent steps, expected %d (stereo, channel-major). Upstream "
             "layout change; refusing to move rows." % (b - a, rt, 2 * rt))
 
@@ -694,7 +694,7 @@ def apply_patch():
     who = _already_patched()
     if who == "foreign":
         _LOG.warning(
-            "h3_motion_context: another pack has already patched H3's "
+            "[H3.E - Director] another pack has already patched H3's "
             "layout (PackedLayout.__init__ now comes from %r). Several "
             "ComfyUI packs lift the same first/last keyframe restriction "
             "independently and they cannot both own it, so this one is "
@@ -711,15 +711,15 @@ def apply_patch():
         if who == "same":
             if native_api:
                 _LOG.info(
-                    "h3_motion_context: native guide alignment already "
+                    "[H3.E - Director] native guide alignment already "
                     "enabled by another pack, standing down")
             else:
                 _LOG.info(
-                    "h3_motion_context: interior keyframe anchors already "
+                    "[H3.E - Director] interior keyframe anchors already "
                     "enabled by another pack, standing down")
         else:
             _LOG.warning(
-                "h3_motion_context: the H3 layout patch is already installed "
+                "[H3.E - Director] the H3 layout patch is already installed "
                 "by a DIFFERENT copy of this code (another version, or a "
                 "fork). Standing down; that copy decides what the patch "
                 "supports, so features added since it may be unavailable. "
@@ -730,14 +730,14 @@ def apply_patch():
     if who == "solattn":
         if native_api:
             _LOG.info(
-                "h3_motion_context: composing native guide alignment with "
+                "[H3.E - Director] composing native guide alignment with "
                 "SolAttn's H3 Morton layout observer")
         else:
             _LOG.info(
-                "h3_motion_context: composing with SolAttn's H3 Morton layout "
+                "[H3.E - Director] composing with SolAttn's H3 Morton layout "
                 "observer; interior anchors and Morton ordering remain enabled")
     if not hasattr(mm, "PackedLayout") or not hasattr(mm, "FRAME_RESCALE"):
-        _LOG.warning("h3_motion_context: MiniMax H3 model module missing expected "
+        _LOG.warning("[H3.E - Director] MiniMax H3 model module missing expected "
                      "attributes, patch not applied")
         return False
     _orig_init = mm.PackedLayout.__init__
@@ -748,10 +748,10 @@ def apply_patch():
             _self_test()
     except Exception as exc:
         _orig_init = None
-        _LOG.warning("h3_motion_context: self-test failed (%s), patch not "
+        _LOG.warning("[H3.E - Director] self-test failed (%s), patch not "
                      "applied. Continuation guide placement unavailable.", exc)
         _LOG.warning(
-            "h3_motion_context: if you have more than one H3 Motion Context "
+            "[H3.E - Director] if you have more than one H3 Motion Context "
             "folder in custom_nodes (a fork, a backup, a manual clone "
             "alongside a Manager install), that is the usual cause: each "
             "copy self-tests against whichever one loaded first. Keep one "
@@ -765,10 +765,10 @@ def apply_patch():
     _native_active = native_api
     if native_api:
         _LOG.info(
-            "h3_motion_context: native H3 guides detected; Ref2VA timeline "
+            "[H3.E - Director] native H3 guides detected; Ref2VA timeline "
             "alignment enabled")
     else:
-        _LOG.info("h3_motion_context: interior keyframe anchors enabled")
+        _LOG.info("[H3.E - Director] interior keyframe anchors enabled")
     return True
 
 
@@ -779,3 +779,119 @@ def is_applied():
 def native_guides_active():
     """True after activation against ComfyUI's native Add Guide API."""
     return _applied and _native_active
+
+
+# -----------------------------------------------------------------------------
+# 3D-RoPE Temporal Coordinate Shifting Engine
+# -----------------------------------------------------------------------------
+
+TEMPORAL_ROPE_OPTION = "h3_eternity_temporal_offset"
+_SHIFTED_ROPE_KINDS = frozenset({"cond", "cond_audio", "ref_audio", "audio", "video"})
+
+
+def apply_h3_temporal_offset(layout, offset: float):
+    """Copy an H3 PackedLayout and shift temporal media rows only."""
+    import copy
+    offset = float(offset)
+    shifted = copy.copy(layout)
+    if hasattr(shifted, "_h3_eternity_temporal_offsets"):
+        delattr(shifted, "_h3_eternity_temporal_offsets")
+    position_ids = layout.position_ids.clone()
+    if offset:
+        for start, stop, kind in layout.segments:
+            if kind in _SHIFTED_ROPE_KINDS:
+                position_ids[start:stop, 0] += offset
+    shifted.position_ids = position_ids
+    return shifted
+
+
+def _cached_shifted_layout(layout, offset: float):
+    cache = getattr(layout, "_h3_eternity_temporal_offsets", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        setattr(layout, "_h3_eternity_temporal_offsets", cache)
+    key = float(offset)
+    shifted = cache.get(key)
+    if shifted is None:
+        shifted = apply_h3_temporal_offset(layout, key)
+        cache[key] = shifted
+    return shifted
+
+
+def create_h3_temporal_offset_wrapper(target_offset: float = 0.0):
+    """Factory creating an unet function wrapper with a captured default offset."""
+    def h3_temporal_offset_wrapper(apply_model, args, *extra_args, **kwargs):
+        # 1. ComfyUI standard unet wrapper: wrapper(apply_model, {"input": x, "timestep": t, "c": c, ...})
+        if isinstance(args, dict) and "input" in args and "timestep" in args:
+            input_x = args["input"]
+            timestep = args["timestep"]
+            c = dict(args.get("c") or {})
+            t_opts = c.get("transformer_options") or {}
+            off = float(t_opts.get(TEMPORAL_ROPE_OPTION, target_offset) or target_offset)
+
+            payload_obj = c.get("minimax_payload")
+            is_cond_constant = False
+            if hasattr(payload_obj, "cond") and isinstance(payload_obj.cond, dict):
+                payload = dict(payload_obj.cond)
+                is_cond_constant = True
+            elif isinstance(payload_obj, dict):
+                payload = dict(payload_obj)
+            else:
+                payload = None
+
+            if off and payload is not None:
+                layout = payload.get("layout")
+                if layout is not None and hasattr(layout, "position_ids"):
+                    payload["layout"] = _cached_shifted_layout(layout, off)
+                    if is_cond_constant:
+                        try:
+                            import comfy.conds
+                            c["minimax_payload"] = comfy.conds.CONDConstant(payload)
+                        except Exception:
+                            c["minimax_payload"] = payload
+                    else:
+                        c["minimax_payload"] = payload
+
+            return apply_model(input_x, timestep, **c)
+
+        # 2. Direct or Patcher Extension APPLY_MODEL fallback
+        call_args = [args] + list(extra_args) if args is not None else list(extra_args)
+        if len(call_args) >= 2:
+            input_x = call_args[0]
+            timestep = call_args[1]
+            c = dict(kwargs)
+            t_opts = call_args[5] if len(call_args) > 5 and isinstance(call_args[5], dict) else c.get("transformer_options")
+            t_opts = t_opts or {}
+            off = float(t_opts.get(TEMPORAL_ROPE_OPTION, target_offset) or target_offset)
+
+            payload_obj = c.get("minimax_payload")
+            is_cond_constant = False
+            if hasattr(payload_obj, "cond") and isinstance(payload_obj.cond, dict):
+                payload = dict(payload_obj.cond)
+                is_cond_constant = True
+            elif isinstance(payload_obj, dict):
+                payload = dict(payload_obj)
+            else:
+                payload = None
+
+            if off and payload is not None:
+                layout = payload.get("layout")
+                if layout is not None and hasattr(layout, "position_ids"):
+                    payload["layout"] = _cached_shifted_layout(layout, off)
+                    if is_cond_constant:
+                        try:
+                            import comfy.conds
+                            c["minimax_payload"] = comfy.conds.CONDConstant(payload)
+                        except Exception:
+                            c["minimax_payload"] = payload
+                    else:
+                        c["minimax_payload"] = payload
+
+            return apply_model(input_x, timestep, *call_args[2:], **c)
+
+        return apply_model(args, *extra_args, **kwargs)
+
+    return h3_temporal_offset_wrapper
+
+
+h3_temporal_offset_wrapper = create_h3_temporal_offset_wrapper(0.0)

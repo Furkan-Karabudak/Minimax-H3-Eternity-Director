@@ -134,6 +134,27 @@ function showWidget(w) {
 
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
+function getIterationSeeds(masterSeed, count) {
+  let raw = masterSeed;
+  if (typeof raw === "number") raw = Math.floor(raw);
+  let state = 0n;
+  try {
+    state = BigInt(raw || 0) & 0xFFFFFFFFFFFFFFFFn;
+  } catch (e) {
+    state = 0n;
+  }
+  const seeds = [];
+  for (let i = 0; i < count; i++) {
+    state = (state + 0x9e3779b97f4a7c15n) & 0xFFFFFFFFFFFFFFFFn;
+    let z = state;
+    z = ((z ^ (z >> 30n)) * 0xbf58476d1ce4e5b9n) & 0xFFFFFFFFFFFFFFFFn;
+    z = ((z ^ (z >> 27n)) * 0x94d049bb133111ebn) & 0xFFFFFFFFFFFFFFFFn;
+    z = (z ^ (z >> 31n)) & 0xFFFFFFFFFFFFFFFFn;
+    seeds.push(z.toString());
+  }
+  return seeds;
+}
+
 // --- Modern Dark/Grey UI CSS (ComfyUI Match) ---
 const STYLES = `
   .mmxd-wrapper {
@@ -870,7 +891,7 @@ const STYLES = `
   .mmxd-characters-container { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 12px; margin-top: 6px; margin-bottom: 4px; box-sizing: border-box; width: 100%; flex-shrink: 0; }
   /* grows to nine slots, so they wrap into rows of three rather than shrinking to slivers */
   /* height is set inline from the dragged panel size — deliberately not duplicated here */
-  .mmxd-character-slot { flex: 1 1 calc(20% - 10px); min-width: 110px; min-height: 300px; background: #1e1e1e; border: 1.5px dashed #444; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 4px; position: relative; cursor: pointer; overflow: hidden; transition: border-color 0.2s ease, background 0.2s ease; box-sizing: border-box; }
+  .mmxd-character-slot { flex: 1 1 calc(20% - 10px); min-width: 110px; min-height: 280px; background: #1e1e1e; border: 1.5px dashed #444; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 4px; position: relative; cursor: pointer; overflow: hidden; transition: border-color 0.2s ease, background 0.2s ease; box-sizing: border-box; }
   .mmxd-character-slot:hover { border-color: #666; background: #252525; }
   .mmxd-character-slot.drag-over { border-color: #4fff8f; background: rgba(79, 255, 143, 0.05); }
   .mmxd-character-label { font-size: 10px; font-weight: bold; color: #888; margin-bottom: 2px; pointer-events: none; }
@@ -1123,15 +1144,15 @@ const REF_ROLE_TIP =
 // to the text boxes. Unlike SOUND_ROW_HEIGHT there is no matching CSS literal to keep in
 // step: the height is set inline per slot, precisely so there is only one of it.
 // 8 padding + 44 previews + 42 first field + 38 second field + 24 controls
-const SUBJECT_SLOT_MIN_H = 160;
-const SUBJECT_SLOT_DEFAULT_H = 215;
+const SUBJECT_SLOT_MIN_H = 200;
+const SUBJECT_SLOT_DEFAULT_H = 310;
 const SUBJECT_SLOT_GAP = 12;
 const SUBJECT_RESIZER_H = 12;
 const SUBJECT_STEPPER_H = 26;   // the 22px buttons and the gap under them
 function subjectPanelHeight(slotCount, slotHeight) {
   const rows = Math.max(1, Math.ceil(slotCount / 3));
   const h = Math.max(SUBJECT_SLOT_MIN_H, slotHeight || SUBJECT_SLOT_DEFAULT_H);
-  return rows * h + (rows - 1) * SUBJECT_SLOT_GAP + 20 + SUBJECT_RESIZER_H
+  return rows * h + (rows - 1) * SUBJECT_SLOT_GAP + 24 + SUBJECT_RESIZER_H
     + SUBJECT_STEPPER_H;
 }
 
@@ -1474,13 +1495,18 @@ function parseInitial(jsonStr) {
         parsed.reference_mode = p.reference_mode === "OFF" ? "OFF" : "REF2VA";
       }
       if (p.cuts !== undefined && Array.isArray(p.cuts)) {
-        parsed.cuts = p.cuts.map(c => ({
-          id: c.id || ("cut_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6)),
-          type: (c.type === "chain" || c.type === "hard") ? "chain" : "soft",
-          frame_index: parseInt(c.frame_index, 10) || 0,
-          time_seconds: c.time_seconds !== undefined ? parseFloat(c.time_seconds) : 0,
-          overlap_frames: parseInt(c.overlap_frames, 10) || 22
-        })).sort((a, b) => a.frame_index - b.frame_index);
+        parsed.cuts = p.cuts.map(c => {
+          const fIdx = parseInt(c.frame_index, 10) || 0;
+          const ov = parseInt(c.overlap_frames, 10) || 22;
+          return {
+            id: c.id || ("cut_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6)),
+            type: (c.type === "chain" || c.type === "hard") ? "chain" : "soft",
+            frame_index: fIdx,
+            time_seconds: c.time_seconds !== undefined ? parseFloat(c.time_seconds) : 0,
+            overlap_frames: ov,
+            audio_overlap_frames: ov,
+          };
+        }).sort((a, b) => a.frame_index - b.frame_index);
       }
       if (p.analyzeProvider !== undefined) parsed.analyzeProvider = p.analyzeProvider;
       if (p.analyzeBaseUrl !== undefined) parsed.analyzeBaseUrl = p.analyzeBaseUrl;
@@ -3174,6 +3200,7 @@ class TimelineEditor {
         if (validF !== null) {
           cut.frame_index = validF;
           cut.time_seconds = parseFloat((validF / fps).toFixed(3));
+          cut.audio_overlap_frames = cut.overlap_frames || 22;
           this.timeline.cuts.sort((a, b) => a.frame_index - b.frame_index);
           this.updateCutInspectorValues(cut);
           this.commitChanges();
@@ -3211,6 +3238,7 @@ class TimelineEditor {
         if (validF !== null) {
           cut.frame_index = validF;
           cut.time_seconds = parseFloat((validF / fps).toFixed(3));
+          cut.audio_overlap_frames = cut.overlap_frames || 22;
           this.timeline.cuts.sort((a, b) => a.frame_index - b.frame_index);
           this.updateCutInspectorValues(cut);
           this.commitChanges();
@@ -3253,6 +3281,7 @@ class TimelineEditor {
           return;
         }
         cut.overlap_frames = newOverlap;
+        cut.audio_overlap_frames = newOverlap;
         cut.frame_index = validF;
         this.commitChanges();
         this.render();
@@ -5179,6 +5208,23 @@ class TimelineEditor {
         this.updateOverrideAudioToggleStyle(overrideWidget.value);
       }
     }
+
+    // 5. Hook eternity_seed widget callback for real-time timeline repaint
+    const eternitySeedWidget = this.node?.widgets?.find(w => w.name === "eternity_seed");
+    if (eternitySeedWidget && !eternitySeedWidget._eternityHooked) {
+      const origSeedCb = eternitySeedWidget.callback;
+      eternitySeedWidget.callback = (val) => {
+        if (origSeedCb) origSeedCb.call(eternitySeedWidget, val);
+        this.node?.setDirtyCanvas?.(true, true);
+        this.render();
+      };
+      eternitySeedWidget._eternityHooked = true;
+    }
+  }
+
+  getEternitySeed() {
+    const w = this.node?.widgets?.find(x => x.name === "eternity_seed");
+    return w ? w.value : 0;
   }
 
   checkResize() {
@@ -5241,6 +5287,19 @@ class TimelineEditor {
       this._lastWidth = viewportWidth;
       this._lastZoom = this.zoomLevel;
       if (forceRender) this.render();
+    }
+
+    if (this.node && typeof this.node.computeSize === "function" && this.node.size) {
+      const minH = this.node.computeSize()[1];
+      if (this.node.size[1] < minH) {
+        if (typeof this.node.setSize === "function") {
+          this.node.setSize([this.node.size[0], minH]);
+        } else {
+          this.node.size[1] = minH;
+        }
+        this.node._widgetSlotsDirty = true;
+        this.node.setDirtyCanvas?.(true, true);
+      }
     }
   }
 
@@ -6809,7 +6868,7 @@ class TimelineEditor {
   // Frames and start edit the segment itself, so the track keeps showing what will be sent.
   _syncRefLimitsRow(seg) {
     if (!this.refLimitsRow) return;
-    const refsOn = String(this.timeline.reference_mode || "OFF").toUpperCase() !== "OFF";
+    const refsOn = String(this.timeline.reference_mode || "REF2VA").toUpperCase() !== "OFF";
     if (!seg || this.selectionType !== "motion" || !refsOn || this.retakeMode) {
       this.refLimitsRow.style.display = "none";
       return;
@@ -6852,7 +6911,7 @@ class TimelineEditor {
   // the prompt there is nothing for either sentence to attach to.
   _syncRefNoteRow(seg) {
     if (!this.refNoteRow) return;
-    const refsOn = String(this.timeline.reference_mode || "OFF").toUpperCase() !== "OFF";
+    const refsOn = String(this.timeline.reference_mode || "REF2VA").toUpperCase() !== "OFF";
     const isRef = !!seg && (
       this.selectionType === "motion" || this.selectionType === "audio" ||
       (this.selectionType === "image" && (seg.type === "image" || seg.type === "video")));
@@ -8840,7 +8899,10 @@ class TimelineEditor {
         }
       }
 
-      // C. Generated Frames text in top strip (y = 0..12, centered horizontally per iteration)
+      // C. Generated Frames text & Iteration Seed in top strip (y = 0..12)
+      const masterSeed = this.getEternitySeed ? this.getEternitySeed() : 0;
+      const iterSeeds = getIterationSeeds(masterSeed, regions.length);
+
       for (let i = 0; i < regions.length; i++) {
         const reg = regions[i];
         const startX = (reg.startFrame / totalFrames) * width;
@@ -8861,6 +8923,7 @@ class TimelineEditor {
         const genSecs = (genFrames / fps).toFixed(2);
         const genLabelText = `${genFrames}f \u2022 ${genSecs}s`;
         const xCenter = (startX + endX) / 2;
+        const seedText = `\u{1F3B2} ${iterSeeds[i]}`;
 
         this.ctx.save();
         this.ctx.beginPath();
@@ -8868,10 +8931,31 @@ class TimelineEditor {
         this.ctx.clip();
 
         this.ctx.font = "bold 9px sans-serif";
-        this.ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
-        this.ctx.textAlign = "center";
+        const seedW = this.ctx.measureText(seedText).width;
+        const genW = this.ctx.measureText(genLabelText).width;
+
+        // Draw left-aligned seed if enough room
+        if (regW > seedW + 12) {
+          this.ctx.fillStyle = "rgba(255, 255, 255, 0.65)";
+          this.ctx.textAlign = "left";
+          this.ctx.textBaseline = "middle";
+          this.ctx.fillText(seedText, startX + 5, 6.5);
+        }
+
+        // Draw duration text
+        this.ctx.fillStyle = "rgba(255, 255, 255, 0.45)";
         this.ctx.textBaseline = "middle";
-        this.ctx.fillText(genLabelText, xCenter, 6);
+        if (regW > seedW + genW + 24) {
+          this.ctx.textAlign = "center";
+          this.ctx.fillText(genLabelText, xCenter, 6.5);
+        } else if (regW > seedW + genW + 12) {
+          this.ctx.textAlign = "right";
+          this.ctx.fillText(genLabelText, endX - 5, 6.5);
+        } else if (regW > genW + 8) {
+          this.ctx.textAlign = "center";
+          this.ctx.fillText(genLabelText, xCenter, 6.5);
+        }
+
         this.ctx.restore();
       }
 
@@ -8958,6 +9042,7 @@ class TimelineEditor {
             this.ctx.stroke();
             this.ctx.restore();
           }
+
 
           // 2. Cut Marker Vertical Dashed Line (Terminates at horizontal iteration line y=13, opacity 1.0, glows when selected)
           this.ctx.save();
@@ -10017,6 +10102,7 @@ class TimelineEditor {
         if (validFrame !== null) {
           cut.frame_index = validFrame;
           cut.time_seconds = parseFloat((validFrame / fps).toFixed(3));
+          cut.audio_overlap_frames = cut.overlap_frames || 22;
           this.timeline.cuts.sort((a, b) => a.frame_index - b.frame_index);
           this.updateCutInspectorValues(cut);
           this.commitChanges(true);
@@ -11010,7 +11096,7 @@ class TimelineEditor {
   // Shown only on the ref2va path, where `summary` is a section of the prompt.
   _syncSummaryField() {
     if (!this.summaryField) return;
-    const refsOn = String(this.timeline.reference_mode || "OFF").toUpperCase() !== "OFF";
+    const refsOn = String(this.timeline.reference_mode || "REF2VA").toUpperCase() !== "OFF";
     this.summaryField.style.display = refsOn ? "" : "none";
   }
 
@@ -11024,7 +11110,7 @@ class TimelineEditor {
   // taking the click and doing nothing with it.
   _audioSubjectOptions(seg) {
     const subjectOfSlot = this.node?._mmxSubjectOfSlot;
-    const refsOn = String(this.timeline.reference_mode || "OFF").toUpperCase() !== "OFF";
+    const refsOn = String(this.timeline.reference_mode || "REF2VA").toUpperCase() !== "OFF";
     return ['<option value="">— not a specific subject —</option>'].concat(
       this.subjectSlots().map((c, i) => {
         const desc = escapeAttr((c.description || "").trim().slice(0, 40));
@@ -11236,7 +11322,9 @@ class TimelineEditor {
     this.charPanelHeight = subjectPanelHeight(this.characterSlots?.length || 3, h);
     if (this.node?.setDirtyCanvas && typeof this.node.computeSize === "function"
         && this.node.size) {
-      this.node.setSize([this.node.size[0], this.node.computeSize()[1]]);
+      const minH = this.node.computeSize()[1];
+      this.node.setSize([this.node.size[0], Math.max(this.node.size[1], minH)]);
+      this.node._widgetSlotsDirty = true;
       this.node.setDirtyCanvas(true, true);
     }
   }
@@ -11272,7 +11360,9 @@ class TimelineEditor {
     // restored. After that, this fires whenever a slot is gained or lost.
     if (grew && this._subjectPanelReady && this.node?.setDirtyCanvas
         && typeof this.node.computeSize === "function" && this.node.size) {
-      this.node.setSize([this.node.size[0], this.node.computeSize()[1]]);
+      const minH = this.node.computeSize()[1];
+      this.node.setSize([this.node.size[0], Math.max(this.node.size[1], minH)]);
+      this.node._widgetSlotsDirty = true;
       this.node.setDirtyCanvas(true, true);
     }
     this._subjectPanelReady = true;
@@ -11379,7 +11469,7 @@ class TimelineEditor {
       // a <Subject N> label on the ref2va path; on fl2va the image is discarded by the
       // render and the description is the whole subject. So the text boxes are always
       // here, and only the controls that can actually reach the prompt come and go.
-      const refsOn = String(this.timeline.reference_mode || "OFF").toUpperCase() !== "OFF";
+      const refsOn = String(this.timeline.reference_mode || "REF2VA").toUpperCase() !== "OFF";
       const hasImages = !!(data.images && data.images.length);
 
       if (hasImages) {
@@ -11867,7 +11957,7 @@ class TimelineEditor {
       } : null,
       normalStartFrame: this.timeline.normalStartFrame,
       normalDurationFrames: this.timeline.normalDurationFrames,
-      reference_mode: this.timeline.reference_mode || "OFF",
+      reference_mode: this.timeline.reference_mode || "REF2VA",
       prompt_format: this.timeline.prompt_format || "minimax",
       analyzeProvider: this.timeline.analyzeProvider || "ollama",
       analyzeBaseUrl: this.timeline.analyzeBaseUrl || "",
@@ -11899,13 +11989,17 @@ class TimelineEditor {
         const { _sSecs, _lSecs, _tSecs, _dSecs, _uploading, _decoding, _blobUrl, _audioBuffer, ...rest } = s;
         return rest;
       }),
-      cuts: (this.timeline.cuts || []).map(c => ({
-        id: c.id,
-        type: (c.type === "chain" || c.type === "hard") ? "chain" : "soft",
-        frame_index: c.frame_index,
-        time_seconds: c.time_seconds !== undefined ? c.time_seconds : parseFloat((c.frame_index / this.getFrameRate()).toFixed(3)),
-        overlap_frames: c.overlap_frames !== undefined ? c.overlap_frames : 22
-      }))
+      cuts: (this.timeline.cuts || []).map(c => {
+        const ov = c.overlap_frames !== undefined ? c.overlap_frames : 22;
+        return {
+          id: c.id,
+          type: (c.type === "chain" || c.type === "hard") ? "chain" : "soft",
+          frame_index: c.frame_index,
+          time_seconds: c.time_seconds !== undefined ? c.time_seconds : parseFloat((c.frame_index / this.getFrameRate()).toFixed(3)),
+          overlap_frames: ov,
+          audio_overlap_frames: ov,
+        };
+      })
     };
 
     const jsonStr = JSON.stringify(toSave);
@@ -12674,7 +12768,7 @@ class TimelineEditor {
     // attach any of this to, so showing it there would offer a setting with no effect)
     // ==========================================
     const refBtns = [];
-    if (String(this.timeline.reference_mode || "OFF").toUpperCase() !== "OFF") {
+    if (String(this.timeline.reference_mode || "REF2VA").toUpperCase() !== "OFF") {
       let onRefChange = () => {};
       const cycler = (caption, options, key, fallback, tip) => {
         const btn = document.createElement("button");
@@ -13377,7 +13471,7 @@ class TimelineEditor {
         } : null,
         normalStartFrame: this.timeline.normalStartFrame,
         normalDurationFrames: this.timeline.normalDurationFrames,
-        reference_mode: this.timeline.reference_mode || "OFF",
+        reference_mode: this.timeline.reference_mode || "REF2VA",
         prompt_format: this.timeline.prompt_format || "minimax",
         analyzeProvider: this.timeline.analyzeProvider || "ollama",
         analyzeBaseUrl: this.timeline.analyzeBaseUrl || "",
@@ -14170,6 +14264,7 @@ class TimelineEditor {
       frame_index: targetFrame,
       time_seconds: parseFloat((targetFrame / fps).toFixed(3)),
       overlap_frames: 22,
+      audio_overlap_frames: 22,
     };
 
     this.timeline.cuts.push(newCut);
@@ -14207,7 +14302,8 @@ class TimelineEditor {
     if (this.segmentBoundsDisplay) {
       const fps = this.getFrameRate();
       const timeStr = this.formatTime(cut.frame_index / fps);
-      this.segmentBoundsDisplay.textContent = `Cut Marker: Frame ${cut.frame_index} (${timeStr}) | Overlap: ${cut.overlap_frames || 22}f`;
+      const ov = cut.overlap_frames || 22;
+      this.segmentBoundsDisplay.textContent = `Cut Marker: Frame ${cut.frame_index} (${timeStr}) | Overlap: ${ov}f (${(ov / fps).toFixed(2)}s)`;
     }
   }
 
@@ -14631,6 +14727,102 @@ const APPENDED_WIDGET_DEFAULTS = [
   ["segment_lengths", ""],
 ];
 
+// --------------------------------------------------------------------------------------
+// Dynamic video_name Synchronization & Locking between H3Eternity_Start and Director
+// --------------------------------------------------------------------------------------
+function syncStartVideoNameLockState(node) {
+  if (!node || !node.widgets) return;
+
+  const planInput = node.inputs?.find(inp => inp.name === "render_plan");
+  const isConnected = !!(planInput && planInput.link != null);
+
+  const videoNameWidget = node.widgets.find(w => w.name === "video_name");
+  if (!videoNameWidget) return;
+
+  if (isConnected) {
+    let upstreamVideoName = null;
+    try {
+      if (app.graph && planInput.link != null) {
+        const link = app.graph.links?.[planInput.link] || (app.graph.links?.get ? app.graph.links.get(planInput.link) : null);
+        if (link) {
+          const originNode = app.graph.getNodeById ? app.graph.getNodeById(link.origin_id) : (app.graph._nodes_by_id ? app.graph._nodes_by_id[link.origin_id] : null);
+          if (originNode) {
+            const originWidget = originNode.widgets?.find(w => w.name === "video_name");
+            if (originWidget && originWidget.value != null && String(originWidget.value).trim() !== "") {
+              upstreamVideoName = String(originWidget.value).trim();
+            }
+          }
+        }
+      }
+    } catch (err) {
+      // Non-blocking fallback
+    }
+
+    if (upstreamVideoName != null) {
+      // Start node has a custom non-empty video name: lock and sync Director widget
+      if (!videoNameWidget._h3StartLocked) {
+        videoNameWidget._h3StartLocked = true;
+        videoNameWidget._savedEditableValue = videoNameWidget.value;
+      }
+      videoNameWidget.value = upstreamVideoName;
+      videoNameWidget.disabled = true;
+      videoNameWidget.label = "video_name";
+      if (videoNameWidget.inputEl) {
+        videoNameWidget.inputEl.disabled = true;
+        videoNameWidget.inputEl.readOnly = true;
+      }
+    } else {
+      // Upstream Start node video_name is empty: unlock Director widget
+      if (videoNameWidget._h3StartLocked) {
+        videoNameWidget._h3StartLocked = false;
+        videoNameWidget.disabled = false;
+        videoNameWidget.label = "video_name";
+        if (videoNameWidget.inputEl) {
+          videoNameWidget.inputEl.disabled = false;
+          videoNameWidget.inputEl.readOnly = false;
+        }
+        if (videoNameWidget._savedEditableValue !== undefined) {
+          videoNameWidget.value = videoNameWidget._savedEditableValue;
+        }
+      }
+    }
+  } else {
+    // Disconnected from render_plan: unlock Director widget
+    if (videoNameWidget._h3StartLocked) {
+      videoNameWidget._h3StartLocked = false;
+      videoNameWidget.disabled = false;
+      videoNameWidget.label = "video_name";
+      if (videoNameWidget.inputEl) {
+        videoNameWidget.inputEl.disabled = false;
+        videoNameWidget.inputEl.readOnly = false;
+      }
+      if (videoNameWidget._savedEditableValue !== undefined) {
+        videoNameWidget.value = videoNameWidget._savedEditableValue;
+      }
+    }
+  }
+
+  if (node.setDirtyCanvas) {
+    node.setDirtyCanvas(true, true);
+  }
+}
+
+function notifyConnectedDirectors(startNode) {
+  if (!startNode || !startNode.outputs || !app.graph) return;
+  const planOutput = startNode.outputs.find(out => out.name === "render_plan" || out.type === "RENDER_PLAN");
+  if (planOutput && planOutput.links) {
+    for (const linkId of planOutput.links) {
+      const link = app.graph.links?.[linkId] || (app.graph.links?.get ? app.graph.links.get(linkId) : null);
+      if (link) {
+        const targetNode = app.graph.getNodeById ? app.graph.getNodeById(link.target_id) : (app.graph._nodes_by_id ? app.graph._nodes_by_id[link.target_id] : null);
+        if (targetNode && (targetNode.comfyClass === "H3Eternity_Director" || targetNode.type === "MiniMaxH3Director_Eternity" || targetNode.type === "H3Eternity_Director")) {
+          syncStartVideoNameLockState(targetNode);
+        }
+      }
+    }
+  }
+}
+
 app.registerExtension({
   name: "H3Eternity_Director",
   // Declared here so the key also has a home in ComfyUI's own Settings dialog, and so it
@@ -14687,6 +14879,45 @@ app.registerExtension({
     };
   },
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
+    if (nodeData.name === "H3Eternity_Start") {
+      const origOnCreated = nodeType.prototype.onNodeCreated;
+      nodeType.prototype.onNodeCreated = function () {
+        if (origOnCreated) origOnCreated.apply(this, arguments);
+        const vnWidget = this.widgets?.find(w => w.name === "video_name");
+        if (vnWidget) {
+          const origCb = vnWidget.callback;
+          const selfStart = this;
+          vnWidget.callback = function (val) {
+            if (origCb) origCb.apply(this, arguments);
+            notifyConnectedDirectors(selfStart);
+          };
+        }
+      };
+
+      const origOnConfigure = nodeType.prototype.onConfigure;
+      nodeType.prototype.onConfigure = function () {
+        const out = origOnConfigure?.apply(this, arguments);
+        const vnWidget = this.widgets?.find(w => w.name === "video_name");
+        if (vnWidget && !vnWidget._h3StartHooked) {
+          vnWidget._h3StartHooked = true;
+          const origCb = vnWidget.callback;
+          const selfStart = this;
+          vnWidget.callback = function (val) {
+            if (origCb) origCb.apply(this, arguments);
+            notifyConnectedDirectors(selfStart);
+          };
+        }
+        setTimeout(() => notifyConnectedDirectors(this), 50);
+        return out;
+      };
+
+      const origOnConn = nodeType.prototype.onConnectionsChange;
+      nodeType.prototype.onConnectionsChange = function (type, slotIndex, isConnected, link_info) {
+        if (origOnConn) origOnConn.apply(this, arguments);
+        notifyConnectedDirectors(this);
+      };
+    }
+
     if (nodeData.name === "H3Eternity_Director" || nodeData.name === "MiniMaxH3Director_Eternity") {
 
       const onNodeCreated = nodeType.prototype.onNodeCreated;
@@ -14728,6 +14959,7 @@ app.registerExtension({
           start_frame: 0,
           end_frame: 120,
           duration_frames: 120,
+          video_name: "vid_${date:yyyy-MM-dd}_${date:hh-mm-ss}",
         };
         for (const [key, val] of Object.entries(DEFAULTS)) {
           if (this.properties[key] === undefined) {
@@ -14761,6 +14993,79 @@ app.registerExtension({
         if (compWidget && (compWidget.value === undefined || compWidget.value === null || compWidget.value === 0)) {
           compWidget.value = 18;
         }
+
+        const eternitySeedWidget = this.widgets?.find(w => w.name === "eternity_seed");
+        if (eternitySeedWidget && !eternitySeedWidget._eternityHooked) {
+          const origSeedCb = eternitySeedWidget.callback;
+          eternitySeedWidget.callback = (val) => {
+            if (origSeedCb) origSeedCb.call(eternitySeedWidget, val);
+            this.setDirtyCanvas?.(true, true);
+            if (this._timelineEditor) {
+              this._timelineEditor.render();
+            }
+          };
+          eternitySeedWidget._eternityHooked = true;
+        }
+
+        const audioAnchorWidget = this.widgets?.find(w => w.name === "audio_anchor_mode");
+        const contModeWidget = this.widgets?.find(w => w.name === "continuation_mode");
+        const audioRefDurWidget = this.widgets?.find(w => w.name === "audio_ref_duration");
+        const vidOvlpWidget = this.widgets?.find(w => w.name === "video_overlap_duration");
+        const audOvlpWidget = this.widgets?.find(w => w.name === "audio_overlap_duration");
+
+        const updateContinuationWidgetsVisibility = () => {
+          const aWidget = this.widgets?.find(w => w.name === "audio_anchor_mode");
+          const cWidget = this.widgets?.find(w => w.name === "continuation_mode");
+          const dWidget = this.widgets?.find(w => w.name === "audio_ref_duration");
+          const vWidget = this.widgets?.find(w => w.name === "video_overlap_duration");
+          const oWidget = this.widgets?.find(w => w.name === "audio_overlap_duration");
+
+          const aMode = aWidget ? aWidget.value : "in_latent_freeze + ref";
+          const cMode = cWidget ? cWidget.value : "in_latent_freeze";
+
+          const isGolden = (cMode === "golden_experience" && aMode === "golden_experience");
+
+          if (isGolden) {
+            if (vWidget) showWidget(vWidget);
+            if (oWidget) showWidget(oWidget);
+            if (dWidget) hideWidget(dWidget);
+          } else {
+            if (vWidget) hideWidget(vWidget);
+            if (oWidget) hideWidget(oWidget);
+            if (dWidget) {
+              if (aMode === "in_latent_freeze + ref") {
+                showWidget(dWidget);
+              } else {
+                hideWidget(dWidget);
+              }
+            }
+          }
+          this.setDirtyCanvas?.(true, true);
+        };
+        this._updateContinuationWidgetsVisibility = updateContinuationWidgetsVisibility;
+
+        if (audioAnchorWidget && !audioAnchorWidget._audioRefHooked) {
+          const origAudioCb = audioAnchorWidget.callback;
+          audioAnchorWidget.callback = (val) => {
+            if (origAudioCb) origAudioCb.call(audioAnchorWidget, val);
+            updateContinuationWidgetsVisibility();
+          };
+          audioAnchorWidget._audioRefHooked = true;
+        }
+
+        if (contModeWidget && !contModeWidget._contModeHooked) {
+          const origContCb = contModeWidget.callback;
+          contModeWidget.callback = (val) => {
+            if (origContCb) origContCb.call(contModeWidget, val);
+            updateContinuationWidgetsVisibility();
+          };
+          contModeWidget._contModeHooked = true;
+        }
+
+        setTimeout(updateContinuationWidgetsVisibility, 10);
+        setTimeout(updateContinuationWidgetsVisibility, 100);
+
+        setTimeout(() => syncStartVideoNameLockState(this), 50);
 
         const self = this;
         this._syncGlobalPromptFromLink = function () {
@@ -14824,6 +15129,7 @@ app.registerExtension({
             origOnConnectionsChange.apply(this, arguments);
           }
           self._syncGlobalPromptFromLink();
+          syncStartVideoNameLockState(self);
         };
 
         const origOnDrawForeground = this.onDrawForeground;
@@ -15249,6 +15555,7 @@ app.registerExtension({
         this.onConfigure = function () {
           if (_mmxOrigOnConfigure) _mmxOrigOnConfigure.apply(this, arguments);
           if (this._mmxSettingsRefresh) { try { this._mmxSettingsRefresh(); } catch (e) {} }
+          if (this._updateAudioRefDurVisibility) { try { this._updateAudioRefDurVisibility(); } catch (e) {} }
         };
 
         const container = document.createElement("div");
@@ -15266,11 +15573,36 @@ app.registerExtension({
           const genPropH = 68; // Space for Cut / Iteration Properties panel (62px height + 6px margin)
           // Reserve room for the @refN reference panel at the bottom so the node doesn't
           // collapse and crop it whenever ComfyUI recomputes the node height.
-          const charPanelH = self._timelineEditor
-            ? (self._timelineEditor.charPanelHeight || subjectPanelHeight(3, self.properties?.subjectSlotHeight))
-            : subjectPanelHeight(3, self.properties?.subjectSlotHeight);
+          const slotH = self._timelineEditor ? self._timelineEditor.subjectSlotHeight() : (self.properties?.subjectSlotHeight || SUBJECT_SLOT_DEFAULT_H);
+          const slotCount = self._timelineEditor ? self._timelineEditor.visibleSlotCount() : (self.timeline?.subjectSlotCount || 3);
+          const charPanelH = self._timelineEditor?.charPanelHeight
+            ? Math.max(self._timelineEditor.charPanelHeight, subjectPanelHeight(slotCount, slotH))
+            : subjectPanelHeight(slotCount, slotH);
+
+          // Full vertical layout overhead: toolbar (~40px), zoom controls (~30px), controls group (~80px),
+          // wrapper flex gaps (7 gaps * 8px = 56px), padding/margins, calibrated so that the Compiled
+          // Prompt panel sits exactly 12px beneath the reference subject slots.
+          const calculatedH = canvasH + propH + globalPropH + genPropH + charPanelH + 178;
+
+          let finalH = calculatedH;
+          if (self._timelineEditor?.characterSlots?.length && container) {
+            const lastSlot = self._timelineEditor.characterSlots[self._timelineEditor.characterSlots.length - 1];
+            if (lastSlot && typeof lastSlot.getBoundingClientRect === "function") {
+              const containerRect = container.getBoundingClientRect();
+              const slotRect = lastSlot.getBoundingClientRect();
+              if (containerRect.height > 0 && slotRect.bottom > containerRect.top) {
+                const scale = container.offsetHeight > 0 ? (containerRect.height / container.offsetHeight) : 1;
+                const unscaledDist = scale > 0 ? ((slotRect.bottom - containerRect.top) / scale) : (slotRect.bottom - containerRect.top);
+                const liveH = Math.round(unscaledDist) + 12;
+                if (liveH > 200) {
+                  finalH = liveH;
+                }
+              }
+            }
+          }
+
           const nodeWidth = self.size?.[0] || width || 1375;
-          return [Math.max(10, nodeWidth - 30), canvasH + propH + globalPropH + genPropH + charPanelH + 185];
+          return [Math.max(10, nodeWidth - 30), finalH];
         };
 
         // --- Live prompt preview -------------------------------------------------
@@ -15538,14 +15870,19 @@ app.registerExtension({
         setTimeout(() => {
           try {
             self._timelineEditor = new TimelineEditor(self, container, widget);
-            if (self.size && typeof self.computeSize === "function") {
-              const minH = self.computeSize()[1];
-              if (self.size[1] < minH) {
-                self.setSize([self.size[0], minH]);
+            const syncNodeMinSize = () => {
+              if (self.size && typeof self.computeSize === "function") {
+                const minH = self.computeSize()[1];
+                if (self.size[1] < minH) {
+                  self.setSize([self.size[0], minH]);
+                }
+                self._widgetSlotsDirty = true;
+                self.setDirtyCanvas(true, true);
               }
-              self._widgetSlotsDirty = true;
-              self.setDirtyCanvas(true, true);
-            }
+            };
+            syncNodeMinSize();
+            setTimeout(syncNodeMinSize, 80);
+            setTimeout(syncNodeMinSize, 300);
             // every edit funnels through commitChanges, so that is the one hook needed
             const ed = self._timelineEditor;
             if (ed && typeof ed.commitChanges === "function" && !ed._mmxPromptHooked) {
@@ -15567,6 +15904,12 @@ app.registerExtension({
 
       const onResize = nodeType.prototype.onResize;
       nodeType.prototype.onResize = function (size) {
+        if (typeof this.computeSize === "function") {
+          const minH = this.computeSize()[1];
+          if (size && size[1] < minH) {
+            size[1] = minH;
+          }
+        }
         const out = onResize?.apply(this, arguments);
         if (this._timelineEditor) {
           requestAnimationFrame(() => this._timelineEditor?.syncLayoutToNode());
@@ -15654,6 +15997,7 @@ app.registerExtension({
             start_frame: 0,
             end_frame: 120,
             duration_frames: 120,
+            video_name: "vid_${date:yyyy-MM-dd}_${date:hh-mm-ss}",
           };
 
           // Only fill in widgets that carry no value at all; never overwrite a restored one.
@@ -15689,7 +16033,11 @@ app.registerExtension({
         // the minimum, never shrink: anything above it is the user's own sizing.
         const minHeight = this.computeSize()[1];
         if (this.size[1] < minHeight) {
-          this.size[1] = minHeight;
+          if (typeof this.setSize === "function") {
+            this.setSize([this.size[0], minHeight]);
+          } else {
+            this.size[1] = minHeight;
+          }
           // the draw loop only re-arranges widgets for nodes carrying this flag; without
           // it the body redraws taller while the overlays keep their old positions
           this._widgetSlotsDirty = true;
@@ -15752,6 +16100,7 @@ app.registerExtension({
             this._timelineEditor.syncLayoutToNode();
             this._timelineEditor.render();
           }
+          syncStartVideoNameLockState(this);
         }, 0);
 
         return out;

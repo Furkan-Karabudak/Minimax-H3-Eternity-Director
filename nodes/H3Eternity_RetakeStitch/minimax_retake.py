@@ -44,8 +44,14 @@ def _silence(seconds):
 def _audio_slice(path, start_sec, dur_sec):
     """Stereo 44.1 kHz slice of a file's soundtrack, silence-padded when short."""
     want = max(1, int(round(dur_sec * AUDIO_SR)))
+    # `path` is a timeline reference relative to the input folder, which is not necessarily
+    # the process's working directory; the video side resolves it, so the audio side must too
+    resolved = media.resolve_input_path(path)
+    if resolved is None:
+        log.warning("[H3.E - RetakeStitch] base video not found in the input folder: %s", path)
+        return _silence(dur_sec)
     try:
-        waveform = media._decode_audio_stereo(path)
+        waveform = media._decode_audio_stereo(resolved)
     except Exception as e:
         log.warning("[H3.E - RetakeStitch] could not read audio from %s: %s", path, e)
         waveform = None

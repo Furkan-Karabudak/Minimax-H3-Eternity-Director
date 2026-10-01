@@ -657,6 +657,17 @@ def normalize_base_url(url, fallback=""):
     return url
 
 
+def chat_completions_url(base_url):
+    """The chat endpoint for an OpenAI-compatible base address, with or without `/v1`.
+
+    Providers document their base URL both ways (Anthropic and LM Studio include `/v1`),
+    and appending `/v1/chat/completions` to one that already has it asks for `/v1/v1/...`
+    and gets a 404 (issue #31).
+    """
+    root = base_url[:-3] if base_url.endswith("/v1") else base_url
+    return "%s/v1/chat/completions" % root
+
+
 def _resolve_provider(data):
     provider = (data.get("provider") or "ollama").lower()
     defs = _PROVIDER_DEFAULTS.get(provider, _PROVIDER_DEFAULTS["ollama"])
@@ -780,7 +791,7 @@ async def vlm_generate(images_b64, prompt, provider, base_url, model,
                 payload = {"model": model, "messages": messages,
                            "max_tokens": int(max_tokens) if max_tokens else 2048,
                            "stream": False}
-                async with session.post("%s/v1/chat/completions" % base_url, json=payload,
+                async with session.post(chat_completions_url(base_url), json=payload,
                                         timeout=timeout) as response:
                     if response.status in (401, 403):
                         # the one HTTP status worth naming: the fix is somewhere else

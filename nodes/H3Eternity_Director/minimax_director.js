@@ -7271,13 +7271,12 @@ class TimelineEditor {
       this.strengthRow.style.display = "flex";
       this.strengthLabel.style.display = "none";
       this.strengthValue.style.display = "none";
-      this.vidStrLabel.style.display = "inline";
-      this.vidStrValue.style.display = "inline-block";
-      this.vidAttnLabel.style.display = "inline";
-      this.vidAttnValue.style.display = "inline-block";
-
-      this.vidStrValue.value = (seg.videoStrength ?? 1.0).toFixed(2);
-      this.vidAttnValue.value = (seg.videoAttentionStrength ?? 0.65).toFixed(2);
+      // Video Strength / Video Attn stay hidden: they are LTX conditioning weights, H3's
+      // planner never reads them, and a control that does nothing invites tuning it (#26)
+      this.vidStrLabel.style.display = "none";
+      this.vidStrValue.style.display = "none";
+      this.vidAttnLabel.style.display = "none";
+      this.vidAttnValue.style.display = "none";
 
       this.audioInfoArea.style.display = "none";
       this.motionInfoArea.style.display = "none";
@@ -13598,6 +13597,11 @@ class TimelineEditor {
         globalPropHeight: this.globalPropHeight,
         global_prompt: normPrompt,
         retake_global_prompt: retPrompt,
+        // keep in step with the allowlist in commitChanges: a key missing here is silently lost on Save
+        overall_soundscape: this.soundscapeInput ? this.soundscapeInput.value : (this.timeline.overall_soundscape || ""),
+        non_diegetic_music: this.musicInput ? this.musicInput.value : (this.timeline.non_diegetic_music || ""),
+        prompt_override: this.timeline.prompt_override || "",
+        prompt_override_on: !!this.timeline.prompt_override_on,
         retakeMode: this.retakeMode,
         retakeStart: this.timeline.retakeStart,
         retakeLength: this.timeline.retakeLength,

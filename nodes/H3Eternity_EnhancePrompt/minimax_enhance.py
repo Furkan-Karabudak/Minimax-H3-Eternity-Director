@@ -408,7 +408,7 @@ class MiniMaxH3EnhancePrompt(io.ComfyNode):
                                 tooltip="Empty = the provider's default (Ollama "
                                         "http://127.0.0.1:11434, LM Studio "
                                         "http://127.0.0.1:1234). http:// is added if you "
-                                        "leave it off. No path — just host and port."),
+                                        "leave it off. Host and port; a trailing /v1 is fine."),
                 io.String.Input("model", default="", optional=True,
                                 tooltip="Model name. Must be a VISION model — a text-only model "
                                         "will ignore your images without saying so. Empty falls "

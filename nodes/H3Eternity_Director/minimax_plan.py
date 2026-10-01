@@ -1334,6 +1334,23 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
                 "%d subject slot(s) hold reference images; fl2va sends none of them. Only "
                 "the written description reaches the prompt." % unsent)
 
+    # Audio on the timeline that never reaches the model is the easiest thing here to mistake
+    # for a bug: the clip sits in the lane, the mixdown on `combined_audio` carries it, and
+    # the generated soundtrack is the model's own. Name which of the two it is.
+    audio_on_timeline = [s for s in (tdata.get("audioSegments", []) or [])
+                         if (s.get("audioFile") or s.get("audioB64"))
+                         and overlaps(s, win_start, win_end)]
+    if audio_on_timeline and not ref_audio_segs:
+        if not ref_mode_on:
+            why = "references are off (fl2va), which has no audio input at all"
+        else:
+            why = "the audio track is switched off"
+        ref_warnings.append(
+            "%d audio clip(s) on the timeline are not sent to the model: %s. They are only in "
+            "`combined_audio`; wire that into CreateVideo to hear the clip itself, or use "
+            "Refs ON with the audio track enabled so the model gets it as an <Audio> reference."
+            % (len(audio_on_timeline), why))
+
     total_files = len(ref_image_slots) + len(ref_video_segs) + len(ref_audio_segs)
     if total_files > MAX_REF_FILES:
         excess = total_files - MAX_REF_FILES

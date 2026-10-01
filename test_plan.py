@@ -1400,6 +1400,24 @@ check("trigger words alone still make a prompt",
 check("...and it is not the 'video' fallback",
       compile(tl([], global_prompt=""), prepend_text="trig")["prompt_is_fallback"], False)
 
+# ------------------------------------------- audio that never reaches the model
+# A clip in the audio lane with References off is carried only by combined_audio. That is
+# the design, but it reads as a bug unless the node says so.
+aud = {"type": "audio", "start": 0, "length": 120, "audioFile": "v.wav", "fileName": "v.wav"}
+warn = lambda **kw: " ".join(compile(tl([img(0, 144, prompt="she speaks")], audioSegments=[aud]), **kw)["ref_warnings"])
+check("Refs OFF names the audio clip as unsent", "not sent to the model" in warn(), True)
+check("...and says why", "fl2va" in warn(), True)
+check("Refs ON with the audio track off says the track is off",
+      "audio track is switched off" in " ".join(compile(tl([img(0, 144)], ref_mode="REF2VA",
+                                                         audioSegments=[aud]))["ref_warnings"]), True)
+check("Refs ON with the audio track on sends it, so no such warning",
+      "not sent to the model" in " ".join(compile(tl([img(0, 144)], ref_mode="REF2VA",
+          audioSegments=[aud]), use_custom_audio=True)["ref_warnings"]), False)
+check("no audio on the timeline, no warning",
+      "not sent to the model" in " ".join(compile(tl([img(0, 144)]))["ref_warnings"]), False)
+check("a clip outside the window does not count",
+      "not sent to the model" in " ".join(compile(tl([img(0, 144)], audioSegments=[dict(aud, start=900)]))["ref_warnings"]), False)
+
 # ---------------------------------------------------------------- report
 failed = [r for r in _results if not r[0]]
 for ok, name, got, want in _results:

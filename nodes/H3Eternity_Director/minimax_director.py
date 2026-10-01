@@ -1203,6 +1203,11 @@ class MiniMaxH3Director(io.ComfyNode):
                                 "every one after it now name a clip the model was not given.",
                                 plan.seg_name(seg), i + 1)
                     continue
+                seconds = clip_audio["waveform"].shape[-1] / float(clip_audio["sample_rate"])
+                if seconds < plan.REF_AUDIO_MIN_SEC:
+                    log.warning("[H3.E - Director] Reference audio '%s' is %.1fs; H3 wants "
+                                "%.0f-%.0fs per clip.", plan.seg_name(seg), seconds,
+                                plan.REF_AUDIO_MIN_SEC, plan.REF_AUDIO_MAX_SEC)
                 ref_audios["ref_audio_%d" % len(ref_audios)] = clip_audio
 
             if first_frame is not None or last_frame is not None:
@@ -1213,7 +1218,12 @@ class MiniMaxH3Director(io.ComfyNode):
         # 8. Encode stock conditioning
         if p["ref_mode_on"]:
             if (ref_audios or ref_video_audios) and audio_vae is None:
-                raise ValueError("MiniMax H3 Director: audio references need the audio VAE. Connect minimax_h3_audio_vae to 'audio_vae'.")
+                raise ValueError(
+                    "MiniMax H3 Director: audio references need the audio VAE. Connect "
+                    "minimax_h3_audio_vae to the Director's 'audio_vae' input (or turn off "
+                    "the audio track / Override Audio, and remove any voice clip from the "
+                    "subject slots)."
+                )
             out = mm.MiniMaxH3ReferenceToVideo.execute(
                 clip=clip, vae=vae, audio_vae=audio_vae, prompt=prompt,
                 width=width, height=height, length=length,

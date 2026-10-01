@@ -924,6 +924,13 @@ const STYLES = `
   .mmxd-ref-controls { display: flex; gap: 4px; width: 100%; margin-top: 4px; box-sizing: border-box; }
   .mmxd-ref-controls .mmxd-msel { flex: 1 1 0; min-width: 0; height: 20px; font-size: 9px; padding: 0 4px 0 6px; }
   .mmxd-ref-controls .mmxd-msel-caret svg { width: 8px; height: 8px; }
+  /* the subject's own voice clip: one 18px row, the previews row gives the pixels up */
+  .mmxd-voice-row { display: flex; align-items: center; gap: 4px; width: 100%; height: 18px; flex: 0 0 18px; margin-top: 4px; box-sizing: border-box; position: relative; z-index: 10; }
+  .mmxd-voice-add { flex: 1 1 auto; height: 18px; background: #111; color: #9a9a9a; border: 1px dashed #444; border-radius: 4px; font-size: 9px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0 4px; }
+  .mmxd-voice-add:hover { color: #4fff8f; border-color: #4fff8f; }
+  .mmxd-voice-name { flex: 1 1 auto; min-width: 0; height: 18px; line-height: 18px; background: #111; color: #4fff8f; border: 1px solid #2f5f43; border-radius: 4px; font-size: 9px; padding: 0 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-sizing: border-box; }
+  .mmxd-voice-del { flex: 0 0 18px; width: 18px; height: 18px; background: #111; color: #ff4444; border: 1px solid #333; border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
+  .mmxd-voice-del:hover { background: #ff4444; color: #fff; }
   /* --- @refN autocomplete popup --- */
   .mmxd-autocomplete-menu { position: fixed; background: #181818; border: 1px solid #444; border-radius: 6px; padding: 4px; display: flex; flex-direction: column; gap: 2px; z-index: 100000; box-shadow: 0 4px 16px rgba(0,0,0,0.6); min-width: 180px; max-height: 200px; overflow-y: auto; }
   .mmxd-autocomplete-item { background: #252525; color: #aaa; border: 1px solid #333; border-radius: 4px; padding: 6px 12px; font-size: 11px; font-family: monospace; cursor: pointer; text-align: left; display: flex; align-items: center; justify-content: space-between; transition: all 0.15s ease; }
@@ -1187,9 +1194,22 @@ function clampSubjectSlots(n) {
   return Math.max(1, Math.min(MAX_SUBJECT_SLOTS, v > 0 ? v : SUBJECT_SLOTS_DEFAULT));
 }
 
+// A voice clip rides on the subject, not on the timeline (issue #10). Only the file name
+// and what to call it are stored; the audio itself sits in ComfyUI's input folder.
+function normaliseVoice(v) {
+  if (!v || typeof v !== "object" || !v.audioFile) return null;
+  return { audioFile: String(v.audioFile), fileName: String(v.fileName || v.audioFile),
+           seconds: Number(v.seconds) > 0 ? Number(v.seconds) : 0 };
+}
+function voicePayload(v) {
+  return v && v.audioFile
+    ? { audioFile: v.audioFile, fileName: v.fileName || v.audioFile, seconds: v.seconds || 0 }
+    : null;
+}
+
 function emptySubjectSlot() {
   return { images: [], description: "", shortName: "", kind: "person",
-           retention: "fully_preserved", retentionNote: "" };
+           retention: "fully_preserved", retentionNote: "", voice: null };
 }
 
 // Old timelines wrote `characters` and had neither kind nor retention. Reading them back
@@ -1205,6 +1225,7 @@ function normaliseSubjectSlots(raw) {
     retention: RETENTION_OPTIONS.some(o => o.value === c.retention)
       ? c.retention : "fully_preserved",
     retentionNote: c.retentionNote || "",
+    voice: normaliseVoice(c.voice),
   }));
   while (out.length < 3) out.push(emptySubjectSlot());
   return out;
@@ -11353,7 +11374,9 @@ class TimelineEditor {
       e.stopPropagation();
       slot.classList.remove("drag-over");
       if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-        Array.from(e.dataTransfer.files).forEach(f => this.handleCharacterImageUpload(f, i));
+        Array.from(e.dataTransfer.files).forEach(f => (f.type || "").startsWith("audio/")
+          ? this.handleSubjectVoiceUpload(f, i)
+          : this.handleCharacterImageUpload(f, i));
       }
     });
     slot.addEventListener("click", (e) => {
@@ -11364,6 +11387,7 @@ class TimelineEditor {
           e.target.closest(".mmxd-character-validate-btn") ||
           e.target.closest(".mmxd-character-field") ||
           e.target.closest(".mmxd-character-desc") ||
+          e.target.closest(".mmxd-voice-row") ||
           e.target.closest(".mmxd-msel")) return;
 
       const fi = document.createElement("input");
@@ -11637,6 +11661,38 @@ class TimelineEditor {
     }
   }
 
+  // Uploads to the same folder as timeline audio and stores only the name on the slot.
+  async handleSubjectVoiceUpload(file, idx) {
+    if (!(file.type || "").startsWith("audio/")) return;
+    try {
+      const body = new FormData();
+      body.append("image", file);
+      body.append("subfolder", "whatdreamscost");
+      const resp = await api.fetchApi("/upload/image", { method: "POST", body });
+      if (resp.status !== 200) throw new Error("upload failed (" + resp.status + ")");
+      const data = await resp.json();
+      const audioFile = data.subfolder ? data.subfolder + "/" + data.name : data.name;
+
+      let seconds = 0;
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const buf = await ctx.decodeAudioData(await file.arrayBuffer());
+        seconds = buf.duration;
+        ctx.close?.();
+      } catch (e) { /* the length is only for display; the server reads the file itself */ }
+
+      const slots = this.subjectSlots();
+      while (slots.length <= idx) slots.push(emptySubjectSlot());
+      slots[idx].voice = { audioFile, fileName: file.name, seconds };
+      this.updateCharacterSlotsUI();
+      this.commitChanges(true);
+      if (this.node?._mmxRefreshPrompt) this.node._mmxRefreshPrompt();
+    } catch (err) {
+      console.error("[MiniMaxDirector] voice upload failed", err);
+      alert(`Could not add "${file.name}" as a voice.\n\n${err.message || err}`);
+    }
+  }
+
   updateCharacterSlotsUI() {
     if (!this.characterSlots) return;
     const subjects = this.subjectSlots();
@@ -11800,6 +11856,57 @@ class TimelineEditor {
           row.appendChild(kindSel);
           row.appendChild(retSel);
           slot.appendChild(row);
+        }
+
+        // The voice this subject speaks with. Refs ON only: fl2va has no audio input.
+        // It is not on the timeline, so it is not bounded by the render window and takes no
+        // output time; it is sent as an <Audio N> reference tied to this subject.
+        if (refsOn) {
+          const vrow = document.createElement("div");
+          vrow.className = "mmxd-voice-row";
+          const voice = data.voice;
+          if (voice) {
+            const name = document.createElement("span");
+            name.className = "mmxd-voice-name";
+            const secs = voice.seconds ? ` · ${voice.seconds.toFixed(1)}s` : "";
+            name.textContent = `♪ ${voice.fileName}${secs}`;
+            name.title = `${voice.fileName} — this subject's voice reference. It is not on the `
+              + `timeline, so it is not limited by the render length. H3 wants 2-15 s per clip.`
+              + (hasImages ? "" : "\nThis slot has no reference image, so the clip is sent as a "
+                + "plain voice reference and is not tied to a <Subject N>.");
+            const del = document.createElement("button");
+            del.className = "mmxd-voice-del";
+            del.innerHTML = ICONS.close;
+            del.title = "Remove this voice";
+            del.addEventListener("click", (e) => {
+              e.stopPropagation();
+              subjects[i].voice = null;
+              this.updateCharacterSlotsUI();
+              this.commitChanges();
+              if (this.node?._mmxRefreshPrompt) this.node._mmxRefreshPrompt();
+            });
+            vrow.appendChild(name);
+            vrow.appendChild(del);
+          } else {
+            const add = document.createElement("button");
+            add.className = "mmxd-voice-add";
+            add.innerHTML = `${ICONS.audio} Add voice`;
+            add.title = "A voice reference for this subject (2-15 s). It is not placed on the "
+              + "timeline, so it takes no render time. You can also drop an audio file on the slot.";
+            add.addEventListener("click", (e) => {
+              e.stopPropagation();
+              const fi = document.createElement("input");
+              fi.type = "file";
+              fi.accept = "audio/*";
+              fi.addEventListener("change", (ev) => {
+                const f = ev.target.files && ev.target.files[0];
+                if (f) this.handleSubjectVoiceUpload(f, i);
+              });
+              fi.click();
+            });
+            vrow.appendChild(add);
+          }
+          slot.appendChild(vrow);
         }
       }
     }
@@ -12157,7 +12264,8 @@ class TimelineEditor {
         shortName: c.shortName || "",
         kind: c.kind || "person",
         retention: c.retention || "fully_preserved",
-        retentionNote: c.retentionNote || ""
+        retentionNote: c.retentionNote || "",
+        voice: voicePayload(c.voice)
       })),
       segments: sortedSegments.map(s => {
         const { imgObj, videoEl, _isSeeking, thumbnails, _extractingThumbs, _sSecs, _lSecs, _tSecs, _dSecs, _uploading, _blobUrl, ...rest } = s;
@@ -13698,7 +13806,8 @@ class TimelineEditor {
           shortName: c.shortName || "",
           kind: c.kind || "person",
           retention: c.retention || "fully_preserved",
-          retentionNote: c.retentionNote || ""
+          retentionNote: c.retentionNote || "",
+          voice: voicePayload(c.voice)
         })),
         segments: (this.timeline.segments || []).map(s => {
           const { imgObj, videoEl, _isSeeking, thumbnails, _extractingThumbs, _sSecs, _lSecs, _tSecs, _dSecs, _uploading, _blobUrl, ...rest } = s;

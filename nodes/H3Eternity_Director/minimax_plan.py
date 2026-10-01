@@ -30,6 +30,8 @@ MAX_REF_FILES = 12          # "at most 12 files in total across all input types"
 REF_VIDEO_MIN_SEC = 2.0     # "each clip must be 2-15 seconds long"
 REF_VIDEO_MAX_SEC = 15.0
 REF_VIDEO_TOTAL_SEC = 15.0  # "total duration <= 15 seconds"
+REF_AUDIO_MIN_SEC = 2.0     # audio clips: "2-15 seconds", "total <= 15 seconds"
+REF_AUDIO_MAX_SEC = 15.0
 # Decode bound for a reference video. Its frames are VAE-encoded whole and the resulting
 # latents ride through every sampling step, so this is the biggest lever on memory there
 # is — memory goes with the square of the short edge. 768 x 1344 is the native canvas;
@@ -378,6 +380,40 @@ def _declaration(label, written, generated):
     if text.startswith(label):
         return text if text.endswith((".", "!", "?")) else text + "."
     return "%s is %s." % (label, text.rstrip("."))
+
+
+def _clean_voice(raw):
+    """The voice clip a subject slot carries, or None. Only a file name is kept: the audio
+    itself lives in ComfyUI's input folder like every other timeline audio."""
+    if not isinstance(raw, dict):
+        return None
+    name = str(raw.get("audioFile") or "").strip()
+    if not name:
+        return None
+    return {"audioFile": name, "fileName": str(raw.get("fileName") or "").strip() or name}
+
+
+def _voice_segs(subject_slots, fps):
+    """One reference-audio segment per subject slot that carries a voice clip.
+
+    These are timeline-free on purpose (issue #10): a voice reference is not part of the
+    soundtrack and takes no output time, so it needs no place on the timeline and is not
+    bounded by the render window. It is shaped like a parked timeline clip, bound to its
+    slot, so everything downstream — labels, the "voice of <Subject N>" declaration, the
+    speaker IDs, loading — treats it exactly like one.
+    """
+    segs = []
+    for slot_no, slot in enumerate(subject_slots, 1):
+        voice = slot.get("voice")
+        if not voice:
+            continue
+        segs.append({"audioFile": voice["audioFile"], "fileName": voice["fileName"],
+                     "trimStart": 0, "start": 0,
+                     # the whole file, up to the 15 s the model takes per clip
+                     "length": int(REF_AUDIO_MAX_SEC * fps),
+                     "retention": RETENTION_AUDIO_DEFAULT,
+                     "subject": slot_no, "voice_slot": slot_no})
+    return segs
 
 
 def _audio_subject_slot(seg):
@@ -1159,6 +1195,8 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
             "kind": sanitize_kind(info.get("kind")),
             "retention": sanitize_retention(info.get("retention")),
             "note": info.get("retentionNote", "") or "",
+            # a voice reference that belongs to the subject, not to the timeline
+            "voice": _clean_voice(info.get("voice")),
         })
 
     # --- shots + image events ---
@@ -1344,12 +1382,18 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
             motion.sort(key=lambda s: float(s.get("start", 0)))
             ref_video_segs = motion[:MAX_REF_VIDEOS]
             over_cap.extend(("video", MAX_REF_VIDEOS, s) for s in motion[MAX_REF_VIDEOS:])
-        if use_custom_audio:
+        # A subject's own voice clip is not gated by the audio-track switch: that switch is
+        # about the timeline's lane, and a clip dropped on a subject is as deliberate as the
+        # subject's image. They go first, so the cap trims timeline clips before them.
+        voices = _voice_segs(subject_slots, fps)
+        if use_custom_audio or voices:
             audio = [s for s in (tdata.get("audioSegments", []) or [])
-                     if (s.get("audioFile") or s.get("audioB64"))
+                     if use_custom_audio
+                     and (s.get("audioFile") or s.get("audioB64"))
                      and not is_audio_lock(s)
                      and (not retake or overlaps(s, win_start, win_end))]
             audio.sort(key=lambda s: float(s.get("start", 0)))
+            audio = voices + audio
             # Override Audio and the audio track are two answers to one question — where the
             # sound comes from — and the editor keeps them exclusive. Only a hand-edited or
             # scripted workflow arrives with both, and both cannot be sent: core numbers each
@@ -1412,7 +1456,7 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
                          if (s.get("audioFile") or s.get("audioB64"))
                          and not is_audio_lock(s)
                          and overlaps(s, win_start, win_end)]
-    if audio_on_timeline and not ref_audio_segs:
+    if audio_on_timeline and not any(not s.get("voice_slot") for s in ref_audio_segs):
         if not ref_mode_on:
             why = "references are off (fl2va), which has no audio input at all"
         else:

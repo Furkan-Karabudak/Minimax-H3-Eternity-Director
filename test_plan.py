@@ -1537,6 +1537,76 @@ check("position changes nothing about what is declared",
       [ln for ln in inside["prompt"].split("\n") if ln.startswith("<Audio")],
       [ln for ln in parked["prompt"].split("\n") if ln.startswith("<Audio")])
 
+# ------------------------------ issue #10: a voice clip on the subject, not on the timeline
+def vchars(v1=None, v2=None):
+    out = []
+    for i, v in enumerate((v1, v2), 1):
+        c = {"images": [{"b64": "x", "name": "c%d.png" % i}], "description": "a person %d" % i}
+        if v:
+            c["voice"] = {"audioFile": v, "fileName": v, "seconds": 8.0}
+        out.append(c)
+    return out
+
+
+vshot = [img(0, 120, "a.png", prompt="they talk")]
+v2 = compile(tl(vshot, ref_mode="ON", subjects=vchars(None, "bob.wav")), duration_f=120)
+check("a subject's voice is sent with the audio track off", [c["fileName"] for c in v2["ref_audio_segs"]], ["bob.wav"])
+check_in("...and is declared as that subject's voice",
+         "<Audio 1> is the voice-timbre reference for <Subject 2>.", v2["prompt"])
+check_in("...and scored against that subject",
+         "<Audio 1> (voice of <Subject 2>): reference - ", v2["prompt"])
+check("the clip asks for the whole file, capped at the 15s the model takes",
+      v2["ref_audio_segs"][0]["length"], int(plan.REF_AUDIO_MAX_SEC * FPS))
+check("it lives off the timeline", v2["ref_audio_segs"][0]["start"], 0)
+check("the render does not grow for it", v2["length"] <= plan.TRAINED_MIN_FRAMES + 8 or v2["length"] == compile(
+    tl(vshot, ref_mode="ON", subjects=vchars()), duration_f=120)["length"], True)
+check("nothing is dropped or left unsent", [w for w in v2["ref_warnings"] if "dropped" in w or "not sent" in w], [])
+
+both_v = compile(tl(vshot, ref_mode="ON", subjects=vchars("amy.wav", "bob.wav")), duration_f=120)
+check("two subjects, two voices in slot order", [c["fileName"] for c in both_v["ref_audio_segs"]], ["amy.wav", "bob.wav"])
+check_in("the first voice belongs to subject 1",
+         "<Audio 1> is the voice-timbre reference for <Subject 1>.", both_v["prompt"])
+check_in("the second to subject 2",
+         "<Audio 2> is the voice-timbre reference for <Subject 2>.", both_v["prompt"])
+
+off_v = compile(tl(vshot, ref_mode="OFF", subjects=vchars("amy.wav")), duration_f=120)
+check("Refs OFF sends no voice", off_v["ref_audio_segs"], [])
+
+noimg = compile(tl(vshot, ref_mode="ON", subjects=[{"images": [], "description": "a woman",
+                                                    "voice": {"audioFile": "amy.wav", "fileName": "amy.wav"}}]),
+                duration_f=120)
+check("a voice on a slot without an image is still sent", len(noimg["ref_audio_segs"]), 1)
+check_in("...as a plain voice reference, since there is no subject to tie it to",
+         "<Audio 1> is a reference audio clip: follow its voice and timbre.", noimg["prompt"])
+
+junk = compile(tl(vshot, ref_mode="ON", subjects=[{"images": [{"b64": "x", "name": "c.png"}],
+                                                    "voice": {"audioFile": "  "}},
+                                                   {"images": [], "voice": "amy.wav"}]), duration_f=120)
+check("a malformed voice is ignored", junk["ref_audio_segs"], [])
+
+# voices come first, so the cap trims timeline clips before a subject's own voice
+capv = compile(tl(vshot, ref_mode="ON", subjects=vchars("amy.wav", "bob.wav"),
+                  audioSegments=[pclip(i, i * 360) for i in range(3)]),
+               duration_f=120, use_custom_audio=True)
+check("voices first, then timeline clips, three in all",
+      [c["fileName"] for c in capv["ref_audio_segs"]], ["amy.wav", "bob.wav", "a0.wav"])
+check_in("the clips that did not fit are named",
+         "H3 takes at most 3 reference audio clips; 'a1.wav' was dropped.", " ".join(capv["ref_warnings"]))
+
+# the audio-track switch is about the timeline lane, not about a subject's voice
+lane_off = compile(tl(vshot, ref_mode="ON", subjects=vchars("amy.wav"),
+                      audioSegments=[pclip(0, 0, 96)]), duration_f=120)
+check("audio track off: the voice is sent, the timeline clip is not",
+      [c["fileName"] for c in lane_off["ref_audio_segs"]], ["amy.wav"])
+check_in("...and the unsent timeline clip is still reported even though a voice is sent",
+         "not sent to the model", " ".join(lane_off["ref_warnings"]))
+
+# Override Audio and reference-video soundtracks: both answer where the sound comes from
+ov = compile(tl(vshot, ref_mode="ON", subjects=vchars("amy.wav"), motionSegments=[pvid(0, 0)]),
+             duration_f=120, override_audio=True)
+check("Override Audio with a reference video drops the voice too", ov["ref_audio_segs"], [])
+check_in("...and names it", "'amy.wav'", " ".join(ov["ref_warnings"]))
+
 # ---------------------------------------------------------------- report
 failed = [r for r in _results if not r[0]]
 for ok, name, got, want in _results:

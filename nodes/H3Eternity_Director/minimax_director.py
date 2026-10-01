@@ -16,9 +16,11 @@ conditions completely differently from LTX 2.3:
   timeline images resolve to first_frame / last_frame. Images in the middle become
   <Picture i> references instead (ref2va), the closest thing H3 offers.
 
-* Audio: H3 generates native stereo audio jointly with the video, so there is no audio
-  latent to inpaint. Imported audio becomes an <Audio j> reference for voice/music
-  style, and is always also emitted on `combined_audio` for muxing.
+* Audio: H3 generates native stereo audio jointly with the video. A timeline audio clip
+  can be used three ways, chosen per clip: as an <Audio j> reference (the retention marker
+  says whether the signal is only followed or copied), or *locked* — encoded into the
+  target audio stream and held there, so the video is made around sound the model cannot
+  change. Every clip is also on `combined_audio` for muxing, which is the bit-exact copy.
 
 * The reference-video track (the old IC-LoRA track) feeds <Video k> references.
 
@@ -32,10 +34,12 @@ chain node cannot drift from what actually gets encoded.
 
 import json
 import logging
+import math
 
 import torch
 
 import comfy.model_management
+import comfy.nested_tensor
 import comfy.utils
 from comfy_api.latest import io
 
@@ -102,6 +106,35 @@ def _snap(value, multiple):
     # derived edge never grows past the box. 16:9 at height 768 lands on 1344, H3's native
     # canvas, instead of overshooting to 1376.
     return max(multiple, (int(value) // multiple) * multiple)
+
+
+def lock_audio_latent(latent, encoded, spans, latent_fps):
+    """Put already-encoded audio into the target audio stream and hold it there.
+
+    `spans` are (start, end) seconds into the render window, one per locked clip. Inside
+    them the noise mask is 0, which the sampler reads as "keep"; everywhere else it is 1
+    and the model generates, so the gaps between clips and anything past the last one
+    stay the model's. The video half of the mask is all ones — the picture is free.
+
+    The mask has the audio stream's own shape, the same thing core's LTXVConcatAVLatent
+    builds; a smaller one is broadcast onto the 24-channel video latent and blacks the
+    frames out. `encoded` is cut or zero-padded to the stream's length.
+    """
+    video, audio = latent["samples"].unbind()
+    length = audio.shape[-1]
+    held = encoded[..., :length].to(device=audio.device, dtype=audio.dtype)
+    if held.shape[-1] < length:
+        held = torch.nn.functional.pad(held, (0, length - held.shape[-1]))
+    mask = torch.ones_like(audio)
+    for start, end in spans:
+        first = max(0, int(math.floor(start * latent_fps)))
+        last = min(length, int(math.ceil(end * latent_fps)))
+        if last > first:
+            mask[..., first:last] = 0.0
+    out = dict(latent)
+    out["samples"] = comfy.nested_tensor.NestedTensor((video, held))
+    out["noise_mask"] = comfy.nested_tensor.NestedTensor((torch.ones_like(video), mask))
+    return out
 
 
 def resolve_canvas(mm, custom_width, custom_height, divisible_by, resize_method, first_image):
@@ -1213,6 +1246,27 @@ class MiniMaxH3Director(io.ComfyNode):
             )
         else:
             latent = build_empty_av_latent(duration_frames=length, width=width, height=height)
+
+        if p["lock_audio_segs"]:
+            if audio_vae is None:
+                raise ValueError(
+                    "MiniMax H3 Director: an audio clip is set to lock, which encodes it into "
+                    "the audio stream and needs the audio VAE. Connect minimax_h3_audio_vae to "
+                    "the Director's 'audio_vae' input, or set the clip back to reference.")
+            window_frames = max(1, int(round(p["actual_seconds"] * fps)))
+            mix = media.build_combined_audio(timeline_data, win_start, window_frames, fps,
+                                             only=plan.is_audio_lock)
+            encoded, _ = mm._encode_ref_audio(audio_vae, mix)
+            spans = []
+            for seg in p["lock_audio_segs"]:
+                seg_start = float(seg.get("start", 0))
+                first = max(seg_start, win_start) - win_start
+                last = min(seg_start + float(seg.get("length", 1)), win_start + window_frames) - win_start
+                spans.append((first / fps, last / fps))
+            latent = lock_audio_latent(latent, encoded, spans, mm.AUDIO_LATENT_FPS)
+            log.info("[H3.E - Director] %d audio clip(s) locked into the audio stream "
+                     "(%s); the model generates the rest.", len(spans),
+                     ", ".join("%.2f-%.2fs" % sp for sp in spans))
 
         chosen_model = pick_model(model, model_ref2va, p["ref_mode_on"])
         patched_model = _unpack(mm.MiniMaxH3SigmaShift.execute(

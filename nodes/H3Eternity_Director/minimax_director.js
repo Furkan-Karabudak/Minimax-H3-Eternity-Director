@@ -1110,6 +1110,14 @@ const RETENTION_AUDIO_OPTIONS = [
   { value: "fully_copy", label: "fully_copy" },
   { value: "partially_copy", label: "partially_copy" },
   { value: "weak_reference", label: "weak_reference" },
+  { value: "lock", label: "lock (exact audio)" },
+];
+
+// Refs OFF has no <Audio N> labels, so the guide's markers have nothing to attach to; the one
+// thing a clip can still do there is be locked into the audio stream.
+const AUDIO_LOCK_OPTIONS = [
+  { value: "reference", label: "mixdown only" },
+  { value: "lock", label: "lock (exact audio)" },
 ];
 
 const REF_ROLE_OPTIONS = [
@@ -1130,7 +1138,13 @@ const RETENTION_AUDIO_TIP =
   "reference — follow its timbre or style, do not copy the signal\n" +
   "fully_copy — reuse it as the complete final audio track\n" +
   "partially_copy — copy part of it, add or replace the rest\n" +
-  "weak_reference — broad similarity in category or atmosphere only";
+  "weak_reference — broad similarity in category or atmosphere only" + "\n" +
+  "lock (exact audio) — not a guide marker: the clip goes into the audio stream itself and the video is generated around it. Needs the audio VAE; no <Audio N> label is written for it." + "\n" +
+  "Only fully_copy, partially_copy and lock make the generated audio follow the clip; reference keeps the voice or style and invents the rest.";
+
+const AUDIO_LOCK_TIP =
+  "mixdown only — the clip is only on combined_audio (wire that into CreateVideo to hear it)" + "\n" +
+  "lock (exact audio) — the clip is put into the audio stream and held there, so the video is generated around it. Needs the audio VAE; gaps between locked clips are generated.";
 
 const REF_ROLE_TIP =
   "What this image is for (guide 2.2):\n" +
@@ -12949,9 +12963,27 @@ class TimelineEditor {
         refBtns.push(cycler("Follow it", RETENTION_OPTIONS, "retention",
                             "fully_preserved", RETENTION_TIP));
       } else if (trackType === "audio") {
-        refBtns.push(cycler("Follow it", RETENTION_AUDIO_OPTIONS, "retention",
+        refBtns.push(cycler("Audio use", RETENTION_AUDIO_OPTIONS, "retention",
                             "reference", RETENTION_AUDIO_TIP));
       }
+    } else if (trackType === "audio") {
+      const btn = document.createElement("button");
+      btn.className = "mmxd-gap-menu-btn";
+      btn.title = AUDIO_LOCK_TIP;
+      const draw = () => {
+        const cur = AUDIO_LOCK_OPTIONS.find(o => o.value === seg.retention) || AUDIO_LOCK_OPTIONS[0];
+        btn.innerHTML = `Audio use: <b style="color:#4fff8f">${cur.label}</b>`;
+      };
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        seg.retention = seg.retention === "lock" ? "reference" : "lock";
+        draw();
+        this.commitChanges();
+        this.render();
+        if (this.node?._mmxRefreshPrompt) this.node._mmxRefreshPrompt();
+      };
+      draw();
+      refBtns.push(btn);
     }
 
     // ==========================================

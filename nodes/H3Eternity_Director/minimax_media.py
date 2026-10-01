@@ -1239,8 +1239,12 @@ def compress_image(tensor: torch.Tensor, crf: int) -> torch.Tensor:
 # --------------------------------------------------------------------------------------
 
 def build_combined_audio(timeline_data_str: str, start_frame: int, duration_frames: int,
-                         frame_rate: float, override_audio: bool = False) -> dict:
-    """Mix the timeline's audio track down to one AUDIO dict covering the render window."""
+                         frame_rate: float, override_audio: bool = False, only=None) -> dict:
+    """Mix the timeline's audio track down to one AUDIO dict covering the render window.
+
+    `only` is a predicate over the clip's dict; given, it mixes just the clips it accepts
+    — how the locked clips are lifted out of the same track the full mixdown comes from.
+    """
     total_samples = max(1, int(math.ceil(duration_frames / frame_rate * AUDIO_SR)))
     empty = {"waveform": torch.zeros((1, 2, total_samples), dtype=torch.float32),
              "sample_rate": AUDIO_SR}
@@ -1263,6 +1267,8 @@ def build_combined_audio(timeline_data_str: str, start_frame: int, duration_fram
     except Exception:
         return empty
 
+    if only is not None:
+        audio_segs = [seg for seg in audio_segs if only(seg)]
     if not audio_segs:
         return empty
 

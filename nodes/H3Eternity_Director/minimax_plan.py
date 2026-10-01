@@ -58,6 +58,11 @@ RETENTION_AUDIO = ("fully_copy", "partially_copy", "reference", "weak_reference"
 # signal — the track guides timbre and delivery.
 RETENTION_DEFAULT = "fully_preserved"
 RETENTION_AUDIO_DEFAULT = "reference"
+# Not one of the guide's markers: a clip set to "lock" never becomes an <Audio N> at all. Its
+# waveform is encoded straight into the target audio stream and held there, so the model
+# makes the video around sound it cannot change. It lives in the same per-clip field only
+# because that is where the editor already keeps "how is this clip used".
+AUDIO_LOCK = "lock"
 
 # <Subject N> is not a character slot. The guide lists "people, animals, or objects;
 # scenes, backgrounds, or environments; clothing, props, interfaces, or visual effects;
@@ -183,6 +188,10 @@ def sanitize_retention(value, audio=False):
     if text in allowed:
         return text
     return RETENTION_AUDIO_DEFAULT if audio else RETENTION_DEFAULT
+
+
+def is_audio_lock(seg):
+    return str((seg or {}).get("retention") or "").strip().lower() == AUDIO_LOCK
 
 
 def sanitize_kind(value):
@@ -1306,6 +1315,7 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
 
     # --- reference video / audio tracks ---
     ref_video_segs, ref_audio_segs = [], []
+    downgraded_full = []
     if ref_mode_on:
         if use_custom_motion:
             motion = [s for s in (tdata.get("motionSegments", []) or [])
@@ -1317,7 +1327,19 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
                      if (s.get("audioFile") or s.get("audioB64"))
                      and overlaps(s, win_start, win_end)]
             audio.sort(key=lambda s: float(s.get("start", 0)))
-            ref_audio_segs = audio[:MAX_REF_AUDIOS]
+            ref_audio_segs = [s for s in audio if not is_audio_lock(s)][:MAX_REF_AUDIOS]
+            # fully_copy means "the complete source audio is the target video's complete final
+            # audio track" — there is room for exactly one. A second one would contradict the
+            # first, so it is written as partially_copy, which is what copying one of several
+            # clips is, and the user is told.
+            seen_full = False
+            for i, seg in enumerate(ref_audio_segs):
+                if sanitize_retention(seg.get("retention"), audio=True) != "fully_copy":
+                    continue
+                if seen_full:
+                    ref_audio_segs[i] = dict(seg, retention="partially_copy")
+                    downgraded_full.append(seg.get("fileName") or seg.get("audioFile") or "an unnamed clip")
+                seen_full = True
 
     # --- total file cap ---
     # The per-type caps are not the whole story: H3 also takes at most 12 reference files
@@ -1334,11 +1356,28 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
                 "%d subject slot(s) hold reference images; fl2va sends none of them. Only "
                 "the written description reaches the prompt." % unsent)
 
+    # Locked clips are independent of the reference mode: the audio stream is the model's own
+    # in either checkpoint, so this works for fl2va as well, where there is no <Audio N>.
+    lock_audio_segs = []
+    if use_custom_audio and not retake:
+        lock_audio_segs = sorted(
+            (s for s in (tdata.get("audioSegments", []) or [])
+             if is_audio_lock(s) and (s.get("audioFile") or s.get("audioB64"))
+             and overlaps(s, win_start, win_end)),
+            key=lambda s: float(s.get("start", 0)))
+
+    if downgraded_full:
+        ref_warnings.append(
+            "fully_copy means a clip is the video's complete final audio track, so only one clip can "
+            "have it; written as partially_copy instead: %s."
+            % ", ".join("'%s'" % n for n in downgraded_full))
+
     # Audio on the timeline that never reaches the model is the easiest thing here to mistake
     # for a bug: the clip sits in the lane, the mixdown on `combined_audio` carries it, and
     # the generated soundtrack is the model's own. Name which of the two it is.
     audio_on_timeline = [s for s in (tdata.get("audioSegments", []) or [])
                          if (s.get("audioFile") or s.get("audioB64"))
+                         and not is_audio_lock(s)
                          and overlaps(s, win_start, win_end)]
     if audio_on_timeline and not ref_audio_segs:
         if not ref_mode_on:
@@ -1347,8 +1386,9 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
             why = "the audio track is switched off"
         ref_warnings.append(
             "%d audio clip(s) on the timeline are not sent to the model: %s. They are only in "
-            "`combined_audio`; wire that into CreateVideo to hear the clip itself, or use "
-            "Refs ON with the audio track enabled so the model gets it as an <Audio> reference."
+            "`combined_audio`; wire that into CreateVideo to hear the clip itself, set the clip "
+            "to \"lock\" so the model builds the video around it, or use Refs ON with the audio "
+            "track enabled so the model gets it as an <Audio> reference."
             % (len(audio_on_timeline), why))
 
     total_files = len(ref_image_slots) + len(ref_video_segs) + len(ref_audio_segs)
@@ -1513,6 +1553,30 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
         soundscape = (soundscape or "").strip() or found_audio
         music = (music or "").strip() or found_music
 
+        # A copied clip has to be declared in the two sound sections too, not only in
+        # retention_analysis. Measured: with fully_copy in retention_analysis and
+        # `non_diegetic_music: N/A` the generated audio had no relation to the clip (envelope
+        # correlation 0.17), and with nothing but these two lines added it was the clip
+        # (0.98). The guide says as much: "state its copy or reference relationship ... in the
+        # section that matches the audible layer". Written text still wins.
+        copied = [("<Audio %d>" % (i + 1),
+                   sanitize_retention(seg.get("retention"), audio=True))
+                  for i, seg in enumerate(ref_audio_segs)
+                  if sanitize_retention(seg.get("retention"), audio=True)
+                  in ("fully_copy", "partially_copy")]
+        if copied:
+            names = " and ".join(label for label, _ in copied)
+            whole = all(marker == "fully_copy" for _, marker in copied)
+            if not soundscape:
+                soundscape = ("The ambience and any voice in %s are copied and continue "
+                              "throughout the target video." % names if whole else
+                              "The copied layer from %s plays in its place on the timeline; "
+                              "the rest of the sound is generated." % names)
+            if not music:
+                music = ("%s is directly reused as the complete audience-only score." % names
+                         if whole else
+                         "Part of %s is directly reused as the audience-only score." % names)
+
         # Which shots each subject actually turns up in, read back off the shot text now
         # that the tags have been substituted. Numbering matches the body, which counts
         # only shots carrying text.
@@ -1667,6 +1731,7 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
         "subject_of_slot": subject_of_slot,
         "ref_image_slots": ref_image_slots, "ref_notes": ref_notes,
         "ref_video_segs": ref_video_segs, "ref_audio_segs": ref_audio_segs,
+        "lock_audio_segs": lock_audio_segs,
         "ref_warnings": ref_warnings, "prompt_format": prompt_format,
         "description_words": description_words,
         "char_tag_values": char_tag_values,

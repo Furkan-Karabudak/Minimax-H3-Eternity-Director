@@ -1418,6 +1418,52 @@ check("no audio on the timeline, no warning",
 check("a clip outside the window does not count",
       "not sent to the model" in " ".join(compile(tl([img(0, 144)], audioSegments=[dict(aud, start=900)]))["ref_warnings"]), False)
 
+# --------------------------------------------- audio use per clip: copy, lock (0.3.0)
+def aclip(start, length, name, retention=None):
+    d = {"type": "audio", "start": start, "length": length, "audioFile": name, "fileName": name}
+    if retention:
+        d["retention"] = retention
+    return d
+
+
+def ref_plan(clips, **kw):
+    kw.setdefault("use_custom_audio", True)
+    return compile(tl([img(0, 144)], ref_mode="REF2VA", audioSegments=clips), **kw)
+
+
+one = ref_plan([aclip(0, 192, "v.wav", "fully_copy")])
+check("fully_copy: the sound sections declare the reuse, not N/A",
+      "<Audio 1> is directly reused" in one["prompt"] and "non_diegetic_music: N/A" not in one["prompt"], True)
+check("fully_copy: overall_soundscape names the clip too", "overall_soundscape: The ambience and any voice in <Audio 1>" in one["prompt"], True)
+check("fully_copy: no 'soundscape is empty' warning any more",
+      any("overall_soundscape is empty" in w for w in one["ref_warnings"]), False)
+check("reference keeps N/A", "non_diegetic_music: N/A" in ref_plan([aclip(0, 192, "v.wav")])["prompt"], True)
+mine = ref_plan([aclip(0, 192, "v.wav", "fully_copy")], soundscape="rain on a window", music="solo piano")
+check("written sound text wins over the generated lines",
+      "rain on a window" in mine["prompt"] and "solo piano" in mine["prompt"]
+      and "directly reused" not in mine["prompt"], True)
+
+two = ref_plan([aclip(0, 96, "a.wav", "fully_copy"), aclip(96, 96, "b.wav", "fully_copy")])
+check("a second fully_copy is written as partially_copy",
+      "<Audio 1>: fully_copy" in two["prompt"] and "<Audio 2>: partially_copy" in two["prompt"], True)
+check("...and the user is told", any("only one clip can have it" in w for w in two["ref_warnings"]), True)
+check("partial copy: the soundscape says the rest is generated",
+      "the rest of the sound is generated" in ref_plan([aclip(0, 96, "a.wav", "partially_copy")])["prompt"], True)
+
+lk = ref_plan([aclip(0, 96, "a.wav", "lock"), aclip(96, 96, "b.wav", "fully_copy")])
+check("a locked clip is not a reference", len(lk["ref_audio_segs"]), 1)
+check("...it is listed for locking", [s["audioFile"] for s in lk["lock_audio_segs"]], ["a.wav"])
+check("...and gets no <Audio N> label", "<Audio 2>" in lk["prompt"], False)
+check("...so the copied one is <Audio 1>", "<Audio 1>: fully_copy" in lk["prompt"], True)
+check("lock works with References off too",
+      len(compile(tl([img(0, 144)], audioSegments=[aclip(0, 96, "a.wav", "lock")]), use_custom_audio=True)["lock_audio_segs"]), 1)
+check("a locked clip does not trigger the 'not sent' warning",
+      any("not sent to the model" in w for w in compile(tl([img(0, 144)], audioSegments=[aclip(0, 96, "a.wav", "lock")]), use_custom_audio=True)["ref_warnings"]), False)
+check("audio track off: nothing is locked",
+      compile(tl([img(0, 144)], audioSegments=[aclip(0, 96, "a.wav", "lock")]))["lock_audio_segs"], [])
+check("a locked clip outside the window is ignored",
+      compile(tl([img(0, 144)], audioSegments=[aclip(900, 96, "a.wav", "lock")]), use_custom_audio=True)["lock_audio_segs"], [])
+
 # ---------------------------------------------------------------- report
 failed = [r for r in _results if not r[0]]
 for ok, name, got, want in _results:

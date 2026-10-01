@@ -1118,6 +1118,14 @@ def load_audio_segment(seg: dict, frame_rate: float, file_key: str = "audioFile"
                 waveform = _decode_audio_stereo(path)
             except Exception as e:
                 log.warning("[H3.E - Director] Audio decode failed for %s: %s", seg.get(file_key), e)
+        elif not seg.get("audioB64"):
+            # A clip whose file has gone used to leave nothing behind at all: the caller drops it,
+            # and with the prompt already written the <Audio N> labels then name references the
+            # model never got.
+            log.warning("[H3.E - Director] Audio clip '%s' is not in ComfyUI's input folder "
+                        "(looked in it, in input/%s, and for the bare filename). The clip is on "
+                        "the timeline but there is no file left to send — re-add it.",
+                        seg[file_key], WORKSPACE_SUBDIR)
     if waveform is None and seg.get("audioB64"):
         try:
             b64 = seg["audioB64"]
@@ -1133,6 +1141,12 @@ def load_audio_segment(seg: dict, frame_rate: float, file_key: str = "audioFile"
     length = int(float(seg.get("length", 1)) / frame_rate * AUDIO_SR)
     clip = waveform[:, max(0, start):max(0, start) + max(1, length)]
     if clip.shape[1] <= 0:
+        # Not a missing file but timeline arithmetic: the trim starts past the end of the decoded
+        # audio. Say which clip and with what numbers, or it looks like a clip never loaded.
+        log.warning("[H3.E - Director] Audio clip '%s' came out empty: its trim starts at %.2fs "
+                    "and the file decoded to %.2fs. Nothing to send — retrim the clip.",
+                    seg.get("fileName") or seg.get(file_key),
+                    float(seg.get("trimStart", 0)) / frame_rate, waveform.shape[1] / AUDIO_SR)
         return None
     return {"waveform": clip.unsqueeze(0), "sample_rate": AUDIO_SR}
 
@@ -1275,7 +1289,13 @@ def build_combined_audio(timeline_data_str: str, start_frame: int, duration_fram
     out = torch.zeros((2, total_samples), dtype=torch.float32)
     file_key = "videoFile" if override_audio else "audioFile"
 
+    from . import minimax_plan as plan   # the planner's own test: mixdown and plan must agree
+
     for seg in audio_segs:
+        # A clip that cannot reach the window adds nothing, and reference clips are routinely
+        # parked outside it — decide that before decoding up to 15s of file to add zero samples.
+        if not plan.overlaps(seg, start_frame, start_frame + duration_frames):
+            continue
         buffer = None
         if seg.get(file_key):
             path = resolve_input_path(seg[file_key])

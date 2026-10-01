@@ -1464,6 +1464,79 @@ check("audio track off: nothing is locked",
 check("a locked clip outside the window is ignored",
       compile(tl([img(0, 144)], audioSegments=[aclip(900, 96, "a.wav", "lock")]), use_custom_audio=True)["lock_audio_segs"], [])
 
+# ------------------------------ a reference does not have to spend output time (PR #18)
+# The model card wants each reference audio clip 10-15s long and H3 renders 4-15s, so three
+# clips cannot fit any window it can render. A reference is an input, never composited, so
+# where it sits decides only whether an audio clip is *also* part of the muxed soundtrack.
+def pclip(i, start, length=360, **extra):
+    d = {"audioFile": "a%d.wav" % i, "fileName": "a%d.wav" % i, "start": start, "length": length,
+         "audioDurationFrames": length, "trimStart": 0}
+    d.update(extra)
+    return d
+
+
+def pvid(i, start, length=96, **extra):
+    d = {"videoFile": "v%d.mp4" % i, "fileName": "v%d.mp4" % i, "start": start, "length": length}
+    d.update(extra)
+    return d
+
+
+def pplan(**kw):
+    extra = kw.pop("extra", {})
+    return compile(tl([img(0, 120, "a.png", prompt="she walks")], ref_mode="ON", **extra), duration_f=120, **kw)
+
+
+parked = pplan(extra={"audioSegments": [pclip(i, i * 360) for i in range(3)]}, use_custom_audio=True)
+check("all three reference clips are sent from a 5s window", len(parked["ref_audio_segs"]), 3)
+check("...and the output stays inside H3's trained range", parked["length"] <= plan.TRAINED_MAX_FRAMES, True)
+check("<Audio 3> is declared from past the window", "<Audio 3> is a reference audio clip" in parked["prompt"], True)
+check("a parked clip is not warned about", [w for w in parked["ref_warnings"] if "window" in w], [])
+
+check("Override Audio reports a parked reference video it was counting on",
+      "no part of them reaches combined_audio: 'v1.mp4'." in " ".join(
+          pplan(extra={"motionSegments": [pvid(0, 0), pvid(1, 360)]}, override_audio=True)["ref_warnings"]), True)
+check("...and says nothing when every clip is inside the window",
+      any("Override Audio takes" in w for w in pplan(extra={"motionSegments": [pvid(0, 0)]}, override_audio=True)["ref_warnings"]), False)
+
+both = pplan(extra={"motionSegments": [pvid(0, 0)], "audioSegments": [pclip(0, 0), pclip(1, 360)]},
+             use_custom_audio=True, override_audio=True)
+check("Override Audio wins over the audio track", len(both["ref_audio_segs"]), 0)
+check("...so no <Audio N> is left declared", "<Audio 1>" in both["prompt"], False)
+check("...and the clips that were not sent are named", "clip: 'a0.wav', 'a1.wav'." in " ".join(both["ref_warnings"]), True)
+check("Override Audio with no reference video keeps the clips",
+      [c["fileName"] for c in pplan(extra={"audioSegments": [pclip(0, 0), pclip(1, 360)]},
+                                   use_custom_audio=True, override_audio=True)["ref_audio_segs"]], ["a0.wav", "a1.wav"])
+check("<Audio N> follows the clip's position on the track, parked or not",
+      [c["fileName"] for c in pplan(extra={"audioSegments": [pclip(2, 720), pclip(0, 0), pclip(1, 360)]},
+                                   use_custom_audio=True)["ref_audio_segs"]], ["a0.wav", "a1.wav", "a2.wav"])
+
+check("all three reference videos are sent from a 5s window",
+      len(pplan(extra={"motionSegments": [pvid(i, i * 120, 120) for i in range(3)]})["ref_video_segs"]), 3)
+budgeted = pplan(extra={"motionSegments": [pvid(i, i * 144, 144) for i in range(3)]})
+check("the 15s video budget still applies to parked clips", [c["fileName"] for c in budgeted["ref_video_segs"]], ["v0.mp4", "v1.mp4"])
+
+capped = pplan(extra={"audioSegments": [pclip(i, i * 360) for i in range(4)]}, use_custom_audio=True)
+check("the fourth audio clip does not reach the model", len(capped["ref_audio_segs"]), plan.MAX_REF_AUDIOS)
+check("...and the cap names the clip it dropped",
+      "H3 takes at most 3 reference audio clips; 'a3.wav' was dropped." in " ".join(capped["ref_warnings"]), True)
+check("the video cap names its casualty",
+      "H3 takes at most 3 reference video clips; 'v3.mp4' was dropped." in " ".join(
+          pplan(extra={"motionSegments": [pvid(i, i * 120, 120) for i in range(4)]})["ref_warnings"]), True)
+
+retake_parked = plan.plan_timeline(
+    tl([img(0, 480, "a.png", prompt="she walks")], ref_mode="ON", retakeMode=True,
+       retakeVideo={"imageFile": "base.mp4", "videoDurationFrames": 480}, retakeStart=48, retakeLength=96,
+       audioSegments=[pclip(0, 0, 96), pclip(1, 360)]),
+    48, 96, FPS, use_custom_audio=True)
+check("a retake still ignores a clip outside the marked range",
+      [c["fileName"] for c in retake_parked["ref_audio_segs"]], ["a0.wav"])
+
+inside = compile(tl([img(0, 288, "a.png", prompt="she walks")], ref_mode="ON",
+                    audioSegments=[pclip(i, 0, 96) for i in range(3)]), use_custom_audio=True)
+check("position changes nothing about what is declared",
+      [ln for ln in inside["prompt"].split("\n") if ln.startswith("<Audio")],
+      [ln for ln in parked["prompt"].split("\n") if ln.startswith("<Audio")])
+
 # ---------------------------------------------------------------- report
 failed = [r for r in _results if not r[0]]
 for ok, name, got, want in _results:

@@ -418,6 +418,9 @@ const STYLES = `
   .mmxd-audio-subject-label { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; color: #aaa; }
   .mmxd-audio-subject { background: #2a2a2a; color: #e6e6e6; border: 1px solid #444; border-radius: 4px; height: 22px; padding: 0 4px; font-size: 11px; font-family: inherit; cursor: pointer; outline: none; max-width: 260px; }
   .mmxd-audio-subject:hover { background: #343434; border-color: #666; }
+  /* a clip parked past the render window: still a reference, so this states a fact rather
+     than warning about one */
+  .mmxd-ref-only { margin-top: 6px; color: #8fb8d8; font-style: italic; }
   .mmxd-controls-group {
     background: #1e1e1e;
     border: 1px solid #333;
@@ -2231,7 +2234,12 @@ class TimelineEditor {
 
   // Grow the timeline duration to fit `requiredFrames` if it is currently shorter.
   // The timeline only ever grows — never shrinks — through this method.
-  // Snaps up to the nearest valid 17k+5 frame lattice.
+  // Only the main track calls this, and that is the rule rather than an accident: a
+  // reference is an input to the model, not content in the video, so an <Audio N> or
+  // <Video N> clip must never stretch the output. Reference audio wants to be 10-15s per
+  // the model card, and three of those growing the window would ask H3 for 45s of video —
+  // past anything it can render. Keyframes and prompt zones decide the length; references
+  // park in the shaded area past it and are sent from there.
   growTimelineIfNeeded(requiredFrames) {
     const current = this.getDurationFrames();
     if (requiredFrames <= current) return; // already big enough
@@ -2931,7 +2939,15 @@ class TimelineEditor {
         }
       }
 
-      const matchingSegs = this.timeline.audioSegments.filter(s => s.audioFile === seg.audioFile || s._blobUrl === seg._blobUrl);
+      // Only the clips that really are this file. A standalone audio clip never gets a
+      // `_blobUrl`, and commitChanges strips the key from every segment it saves, so
+      // `s._blobUrl === seg._blobUrl` read `undefined === undefined` for the whole track: on a
+      // reloaded workflow one clip's buffer was stamped over every other clip, and the play
+      // button played that one file at every clip's position. The waveforms stayed right,
+      // which made it look like a limit on how many audio files fit.
+      const matchingSegs = this.timeline.audioSegments.filter(
+        s => (seg.audioFile && s.audioFile === seg.audioFile) ||
+             (seg._blobUrl && s._blobUrl === seg._blobUrl));
       for (const s of matchingSegs) {
         s._audioBuffer = audioBuffer;
         s._decoding = false;
@@ -6055,9 +6071,8 @@ class TimelineEditor {
     this.timeline.motionSegments.push(seg);
     this.timeline.motionSegments.sort((a, b) => a.start - b.start);
 
-    if (!this.retakeMode) {
-      this.growTimelineIfNeeded(seg.start + seg.length);
-    }
+    // deliberately no growTimelineIfNeeded: a <Video N> reference is not in the video, so it
+    // does not decide how long the video is — see the note on that method
 
     this.selectionType = "motion";
     this.selectedIndex = this.timeline.motionSegments.findIndex(s => s.id === seg.id);
@@ -6607,9 +6622,11 @@ class TimelineEditor {
     this.selectionType = copiedTrack;
     this.selectedIndex = this.getSegmentArray(copiedTrack).findIndex(s => s.id === mainSeg.id);
 
-    // Pasting an audio clip must not grow the render duration either (same reason as an audio
-    // drop — a long track would balloon duration_frames). Non-audio pastes still grow.
-    if (!this.retakeMode && copiedTrack !== "audio") {
+    // Only a paste that put something on the main track can decide the output length. A lone
+    // audio or reference-video clip is a reference and grows nothing; an audio clip with a `_v`
+    // sibling means a real video landed on the main track, which does.
+    const onMainTrack = copiedTrack === "audio" ? !!sibSeg : copiedTrack !== "motion";
+    if (!this.retakeMode && onMainTrack) {
       this.growTimelineIfNeeded(mainSeg.start + mainSeg.length);
     }
 
@@ -6984,8 +7001,26 @@ class TimelineEditor {
     const parts = [`${secs.toFixed(1)}s`];
     if (secs < 2) parts.push("under the 2s minimum");
     else if (secs > 15) parts.push("over the 15s maximum");
+    // where it sits, when that is past the window: still sent, and not in the video
+    if (this._refOnlyNote(seg, "motion")) parts.push("past the window, sent as a reference");
     this.refLimitsNote.textContent = parts.join(" · ");
     this.refLimitsNote.style.color = (secs < 2 || secs > 15) ? "#d08a3a" : "#5a5a5a";
+  }
+
+  // What to say about a reference clip parked outside the render window. It is still sent to
+  // the model — that is the whole point of parking it there — and the shaded background only
+  // says "not in the video", which is the half that misleads. Empty for a clip that reaches into
+  // the window, in retake mode, and with refs off, where nothing is sent from either side.
+  _refOnlyNote(seg, kind) {
+    if (!seg || this.retakeMode) return "";
+    if (String(this.timeline.reference_mode || "OFF").toUpperCase() === "OFF") return "";
+    const winStart = this.getStartFrames();
+    const winEnd = winStart + this.getDurationFrames();
+    const start = seg.start || 0;
+    if (start < winEnd && start + (seg.length || 0) > winStart) return "";
+    return kind === "audio"
+      ? "Past the render window: sent as a reference, and no part of the soundtrack."
+      : "Past the render window: sent as a reference.";
   }
 
   // Opens the panel far enough that showing the strip does not squeeze the prompt box to
@@ -7246,6 +7281,7 @@ class TimelineEditor {
       // somewhere to say it, a second voice reference is just another numbered clip with
       // no way to tell the model who is speaking (issue #10).
       const options = this._audioSubjectOptions(seg);
+      const parkedNote = this._refOnlyNote(seg, "audio");
       this.audioInfoArea.innerHTML = `
         File: <span>${escapeAttr(seg.fileName || "Unknown")}</span><br>
         Length: <span>${this.formatTime(seg.audioDurationFrames)}</span> Output Length: <span>${this.formatTime(seg.length)}</span><br>
@@ -7253,6 +7289,7 @@ class TimelineEditor {
         <label class="mmxd-audio-subject-label">Voice of:
           <select class="mmxd-audio-subject">${options}</select>
         </label>
+        ${parkedNote ? `<div class="mmxd-ref-only">${parkedNote}</div>` : ""}
       `;
       const subjSel = this.audioInfoArea.querySelector(".mmxd-audio-subject");
       if (subjSel) {

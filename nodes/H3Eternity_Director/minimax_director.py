@@ -1159,11 +1159,17 @@ class MiniMaxH3Director(io.ComfyNode):
             for sem_frame in semantic_ref_frames:
                 ref_image_tensors.append(fit(sem_frame))
 
-            for seg in p["ref_video_segs"]:
+            for i, seg in enumerate(p["ref_video_segs"]):
                 idx = len(ref_videos)
                 seg_start = float(seg.get("start", 0))
                 seg_len = float(seg.get("length", 1))
-                offset = max(0.0, win_start - seg_start)
+                # Only a clip that reaches into the window has a head the window cuts off. A
+                # clip parked outside it goes whole, on its own trim: the window start is then
+                # nothing to do with the clip, and subtracting it would eat the front of a
+                # reference for a reason that has no bearing on it.
+                offset = (max(0.0, win_start - seg_start)
+                          if plan.overlaps(seg, win_start, win_start + iter_duration)
+                          else 0.0)
                 trim = float(seg.get("trimStart", 0)) + offset
                 clip_sec = min(plan.REF_VIDEO_MAX_SEC, (seg_len - offset) / fps)
                 short_edge = int(seg.get("refSize") or plan.REF_VIDEO_SHORT_EDGE)
@@ -1172,6 +1178,10 @@ class MiniMaxH3Director(io.ComfyNode):
                     max_short_edge=short_edge,
                     max_pixels=int(short_edge * short_edge * plan.REF_VIDEO_ASPECT_BUDGET))
                 if frames.shape[0] < 5:
+                    log.warning("[H3.E - Director] Reference video '%s' is shorter than 5 "
+                                "frames — skipped. The prompt still declares it as "
+                                "<Video %d>, so that label and every one after it now name "
+                                "a clip the model was not given.", plan.seg_name(seg), i + 1)
                     continue
                 ref_videos["ref_video_%d" % idx] = frames
                 if override_audio:
@@ -1181,10 +1191,19 @@ class MiniMaxH3Director(io.ComfyNode):
                     if clip_audio is not None:
                         ref_video_audios["ref_video_audio_%d" % idx] = clip_audio
 
-            for seg in p["ref_audio_segs"]:
+            for i, seg in enumerate(p["ref_audio_segs"]):
                 clip_audio = media.load_audio_segment(seg, fps)
-                if clip_audio is not None:
-                    ref_audios["ref_audio_%d" % len(ref_audios)] = clip_audio
+                if clip_audio is None:
+                    # The prompt is already written, and it numbers <Audio N> by the clip's place
+                    # on the track. Dropping one in silence therefore does not just lose a
+                    # reference: every label from here on names a different clip than the model
+                    # was handed. load_audio_segment has already said why this one failed.
+                    log.warning("[H3.E - Director] Reference audio '%s' could not be loaded — "
+                                "the prompt still declares it as <Audio %d>, so that label and "
+                                "every one after it now name a clip the model was not given.",
+                                plan.seg_name(seg), i + 1)
+                    continue
+                ref_audios["ref_audio_%d" % len(ref_audios)] = clip_audio
 
             if first_frame is not None or last_frame is not None:
                 first_frame = last_frame = None

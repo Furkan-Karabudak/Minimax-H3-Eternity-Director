@@ -211,6 +211,13 @@ def overlaps(seg, win_start, win_end, min_overlap_frames=0.5):
     return overlap_duration >= min_overlap_frames
 
 
+def seg_name(seg):
+    """What to call a clip in a warning — the display name, or the file it came from."""
+    seg = seg or {}
+    return (seg.get("fileName") or seg.get("videoFile") or seg.get("audioFile")
+            or "an unnamed clip")
+
+
 def parse_timeline(timeline_data):
     try:
         return json.loads(timeline_data) if timeline_data else {}
@@ -1314,20 +1321,46 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
                     char_tag_later[slot_idx + 1] = slot["short_name"]
 
     # --- reference video / audio tracks ---
+    # A reference is an input to the model, not content in the video: <Video N> and <Audio N>
+    # are never composited, so neither has any business occupying output time. The model card
+    # wants each reference audio clip 10-15s long, and three of those would need a 45s timeline
+    # — longer than anything H3 can render. So where a clip sits does not decide whether it is
+    # a reference. It decides one thing only: whether an audio clip is *also* part of the muxed
+    # soundtrack, which build_combined_audio answers by filling the window and nothing else. A
+    # clip parked in the shaded area past the window is a reference and no more than that.
+    # (Brioch's PR #18, ported.)
+    #
+    # Retake is the exception and keeps the old rule: there the window is a deliberate sub-range
+    # of a video that already exists, so outside it means "another part of this same video".
     ref_video_segs, ref_audio_segs = [], []
     downgraded_full = []
+    over_cap = []
+    override_dropped_audio = []
     if ref_mode_on:
         if use_custom_motion:
             motion = [s for s in (tdata.get("motionSegments", []) or [])
-                      if s.get("videoFile") and overlaps(s, win_start, win_end)]
+                      if s.get("videoFile")
+                      and (not retake or overlaps(s, win_start, win_end))]
             motion.sort(key=lambda s: float(s.get("start", 0)))
             ref_video_segs = motion[:MAX_REF_VIDEOS]
+            over_cap.extend(("video", MAX_REF_VIDEOS, s) for s in motion[MAX_REF_VIDEOS:])
         if use_custom_audio:
             audio = [s for s in (tdata.get("audioSegments", []) or [])
                      if (s.get("audioFile") or s.get("audioB64"))
-                     and overlaps(s, win_start, win_end)]
+                     and not is_audio_lock(s)
+                     and (not retake or overlaps(s, win_start, win_end))]
             audio.sort(key=lambda s: float(s.get("start", 0)))
-            ref_audio_segs = [s for s in audio if not is_audio_lock(s)][:MAX_REF_AUDIOS]
+            # Override Audio and the audio track are two answers to one question — where the
+            # sound comes from — and the editor keeps them exclusive. Only a hand-edited or
+            # scripted workflow arrives with both, and both cannot be sent: core numbers each
+            # reference video's soundtrack <Audio j> *before* the standalone clips, so every
+            # label in the prompt would name a different clip than the model was handed.
+            # Override Audio wins, as it does in the editor.
+            if override_audio and ref_video_segs:
+                override_dropped_audio = [seg_name(s) for s in audio]
+            else:
+                ref_audio_segs = audio[:MAX_REF_AUDIOS]
+                over_cap.extend(("audio", MAX_REF_AUDIOS, s) for s in audio[MAX_REF_AUDIOS:])
             # fully_copy means "the complete source audio is the target video's complete final
             # audio track" — there is room for exactly one. A second one would contradict the
             # first, so it is written as partially_copy, which is what copying one of several
@@ -1338,7 +1371,7 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
                     continue
                 if seen_full:
                     ref_audio_segs[i] = dict(seg, retention="partially_copy")
-                    downgraded_full.append(seg.get("fileName") or seg.get("audioFile") or "an unnamed clip")
+                    downgraded_full.append(seg_name(seg))
                 seen_full = True
 
     # --- total file cap ---
@@ -1412,18 +1445,45 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
             if seconds < REF_VIDEO_MIN_SEC:
                 ref_warnings.append(
                     "Reference video '%s' is %.1fs; H3 wants 2-15s per clip."
-                    % (seg.get("fileName") or seg.get("videoFile"), seconds))
+                    % (seg_name(seg), seconds))
             # what this clip would actually contribute, after the per-clip cap
             usable = min(seconds, REF_VIDEO_MAX_SEC)
             # the question is whether it FITS, not whether anything is left at all
             if usable > budget + 1e-6:
                 ref_warnings.append(
                     "Reference videos exceed the %.0fs total budget; '%s' was dropped."
-                    % (REF_VIDEO_TOTAL_SEC, seg.get("fileName") or seg.get("videoFile")))
+                    % (REF_VIDEO_TOTAL_SEC, seg_name(seg)))
                 continue
             kept.append(seg)
             budget -= usable
         ref_video_segs = kept
+
+    # Both per-type caps used to trim in silence, which is the one thing a reference limit is
+    # not allowed to do — every other one names what it dropped. Parking clips off the window
+    # is what makes this worth saying: a fourth clip out in the shade looks exactly as loaded
+    # as the three that are being sent.
+    for kind, cap, seg in over_cap:
+        ref_warnings.append("H3 takes at most %d reference %s clips; '%s' was dropped."
+                            % (cap, kind, seg_name(seg)))
+
+    # Parked audio gets no warning: being a reference and not a soundtrack is the whole point
+    # of parking it, and a line that fires on every timeline of a kind is how a warnings area
+    # stops being read. Override Audio is different — two explicit choices contradict each
+    # other there.
+    if override_dropped_audio:
+        ref_warnings.append(
+            "Override Audio and the audio track are two answers to one question, and the "
+            "editor keeps them exclusive; this timeline has both on. Override Audio wins "
+            "and these clips were not sent, because <Audio N> counts each reference video's "
+            "soundtrack first and every label in the prompt would have named a different "
+            "clip: %s." % ", ".join("'%s'" % n for n in override_dropped_audio))
+    if override_audio:
+        muted = [seg_name(s) for s in ref_video_segs if not overlaps(s, win_start, win_end)]
+        if muted:
+            ref_warnings.append(
+                "Override Audio takes the soundtrack from the reference videos, and these "
+                "sit past the render window, so no part of them reaches combined_audio: %s."
+                % ", ".join("'%s'" % n for n in muted))
 
     # --- output length ---
     # Computed before the prompt because the alignment instruction has to name the

@@ -791,6 +791,10 @@ class MiniMaxH3Director(io.ComfyNode):
                                      "node here; leave it unconnected to use the panel."),
                 io.Int.Input("[opt] height", force_input=True, optional=True, default=0,
                              tooltip="Automation (connection-only). Output height. See width."),
+                io.String.Input("prepend_text", force_input=True, optional=True, default="",
+                                tooltip="Connection-only. Text put in front of the global prompt — LoRA "
+                                        "trigger words from a loader node, say. It is part of the "
+                                        "`prompt` output, but the panel's live preview cannot see it."),
                 io.String.Input("ref_image_notes", multiline=True, default="", optional=True,
                                 tooltip="One line per image on 'ref_images', describing what it "
                                         "is: 'the kitchen set', 'a storyboard reference for the "
@@ -914,7 +918,7 @@ class MiniMaxH3Director(io.ComfyNode):
                 audio_anchor_mode="golden_experience (recommended)", audio_ref_duration=22,
                 video_overlap_duration=5, audio_overlap_duration=22,
                 start=None, end=None, duration=None,
-                width=None, height=None, **kwargs) -> io.NodeOutput:
+                width=None, height=None, prepend_text="", **kwargs) -> io.NodeOutput:
 
         # 1. Apply runtime patches (idempotent)
         apply_layout_patch()
@@ -1069,6 +1073,7 @@ class MiniMaxH3Director(io.ComfyNode):
             override_audio=override_audio,
             extra_ref_images=total_extra_refs,
             ref_image_notes=ref_image_notes,
+            prepend_text=prepend_text,
         )
 
         length = p["length"]

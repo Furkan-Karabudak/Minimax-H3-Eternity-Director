@@ -1081,7 +1081,7 @@ def classify_events(events, duration_frames, fps):
 def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
                   use_custom_motion=True, use_custom_audio=False, override_audio=False,
                   extra_ref_image_count=0, soundscape="", music="", prompt_format=None,
-                  summary="", ref_image_notes=""):
+                  summary="", ref_image_notes="", prepend_text=""):
     """Work out shots, keyframe roles, reference ordinals and the final prompt.
 
     Returns a dict; `execute` uses it to decide what media to load, the endpoint just
@@ -1094,6 +1094,15 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
     if not global_prompt:
         global_prompt = tdata.get(
             "retake_global_prompt" if retake else "global_prompt", "") or ""
+
+    # Text wired into the node (LoRA trigger words from a loader, typically) goes in front
+    # of the scene description. It is joined here rather than glued onto the finished
+    # prompt: in the minimax format the prompt opens with the task line and the labelled
+    # sections, which text in front of them would break.
+    prepend_text = (prepend_text or "").strip().strip(",").strip()
+    if prepend_text:
+        global_prompt = ("%s, %s" % (prepend_text, global_prompt.strip())
+                         if global_prompt.strip() else prepend_text)
 
     # The editor's two soundscape boxes live in the timeline, so both consumers read them
     # from the same place and no third copy can go stale. Unlike the global prompt these

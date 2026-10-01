@@ -1381,6 +1381,25 @@ except Exception:
     ok_tiny = False
 check("a one-frame window does not raise", ok_tiny, True)
 
+# ---------------------------------------------------------------- prepend_text (#29)
+# Text wired into the node (LoRA trigger words) belongs in front of the scene description,
+# not in front of the whole prompt, whose first line is the task statement.
+base_prompt = compile(tl([img(0, 144, prompt="she turns")]))["prompt"]
+with_trig = compile(tl([img(0, 144, prompt="she turns")]), prepend_text="mytrigger, style_x")["prompt"]
+check("prepend_text is in the prompt", "mytrigger, style_x, a woman walks through a market" in with_trig, True)
+check("...and the prompt still opens the way it did, with the task statement first",
+      with_trig.startswith(base_prompt.split("\n")[0]), True)
+check("nothing wired leaves the prompt untouched",
+      compile(tl([img(0, 144, prompt="she turns")]), prepend_text="")["prompt"], base_prompt)
+check("whitespace-only text is nothing",
+      compile(tl([img(0, 144, prompt="she turns")]), prepend_text="  \n ")["prompt"], base_prompt)
+check("a trailing comma from the loader does not double up",
+      "trig, a woman" in compile(tl([]), prepend_text="trig,")["prompt"], True)
+check("trigger words alone still make a prompt",
+      "trig" in compile(tl([], global_prompt=""), prepend_text="trig")["prompt"], True)
+check("...and it is not the 'video' fallback",
+      compile(tl([], global_prompt=""), prepend_text="trig")["prompt_is_fallback"], False)
+
 # ---------------------------------------------------------------- report
 failed = [r for r in _results if not r[0]]
 for ok, name, got, want in _results:

@@ -135,11 +135,12 @@ class H3Eternity_Finalize:
                     "tooltip": "Automatically drop duplicate head overlap frames on continuation "
                                "iterations (O frames). Keep True for smooth, stutter-free playback."
                 }),
-                "seam_audio": (["crossfade_end", "instant"], {
+                "seam_audio": (["crossfade_end", "crossfade", "instant"], {
                     "default": "crossfade_end",
                     "tooltip": "Audio stitching strategy across iteration seams: "
-                               "crossfade_end (smooth micro-fade at video cut boundary), "
-                               "instant (abrupt cut at video cut boundary without smoothing)."
+                               "crossfade_end (boundary micro-fade; chunk_a plays in full, chunk_b drops overlap), "
+                               "crossfade (full equal-power smooth blend of chunk_a tail and chunk_b head across overlap window), "
+                               "instant (knife-edge drop of overlap at boundary without smoothing)."
                 }),
                 "seam_audio_fade_ms": ("FLOAT", {
                     "default": 12.0, "min": 1.0, "max": 200.0, "step": 1.0,
@@ -345,7 +346,7 @@ if _HAVE_COMFY_API:
         def define_schema(cls):
             return io.Schema(
                 node_id="H3Eternity_Finalize",
-                display_name="H3 Eternity - Finalize",
+                display_name="H3 Eternity ♾️ Finalize",
                 category="H3 Eternity",
                 description=cls.DESCRIPTION,
                 inputs=[

@@ -723,7 +723,7 @@ class MiniMaxH3Director(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="H3Eternity_Director",
-            display_name="H3 Eternity - Director",
+            display_name="H3 Eternity ♾️ Director",
             category="H3 Eternity",
             description=(
                 "Visual timeline for MiniMax H3. Segments become a storyboard prompt with "
@@ -742,19 +742,19 @@ class MiniMaxH3Director(io.ComfyNode):
                 io.Int.Input("eternity_seed", default=0, min=0, max=0xffffffffffffffff, optional=True,
                              tooltip="Master seed for deterministic pseudo-random iteration seeds across recursive continuation runs."),
                 io.Combo.Input("temporal_rope_mode",
-                               options=["dynamic_spread_natural", "dynamic_spread_full", "timeline_sync", "wrap", "static"],
-                               default="dynamic_spread_natural", optional=True,
+                               options=["dynamic_spread_natural (recommended)", "dynamic_spread_full", "timeline_sync", "wrap", "static"],
+                               default="dynamic_spread_natural (recommended)", optional=True,
                                tooltip="3D-RoPE temporal position strategy across iterations (12s ceiling)."),
+                io.Combo.Input("continuation_mode",
+                               options=["golden_experience (recommended)", "hybrid_keyframes", "in_latent_freeze (experimental)"],
+                               default="golden_experience (recommended)", optional=True,
+                               tooltip="Continuation engine: 'golden_experience' decouples video/audio overlaps with hybrid keyframes and unanchored acoustic reference; 'hybrid_keyframes' uses DiT latent keyframe conditioning; 'in_latent_freeze' physically embeds and freezes previous video & audio latents."),
                 io.Combo.Input("audio_anchor_mode",
-                               options=["in_latent_freeze + ref", "in_latent_freeze", "golden_experience", "ref", "overlap", "off"],
-                               default="in_latent_freeze + ref", optional=True,
-                               tooltip="Audio continuation mode: 'in_latent_freeze + ref' physically freezes audio overlap and attaches an unanchored acoustic style reference for voice timbre; 'in_latent_freeze' physically freezes audio overlap with zero reference tokens; 'golden_experience' uses unanchored acoustic style reference outside timeline without cross-modal camera interference; 'ref' uses unanchored acoustic style reference; 'overlap' pins to timeline overlap window; 'off' disables continuation audio."),
+                               options=["golden_experience (recommended)", "in_latent_freeze + ref (experimental)", "in_latent_freeze (experimental)", "ref", "overlap", "off"],
+                               default="golden_experience (recommended)", optional=True,
+                               tooltip="Audio continuation mode: 'golden_experience' uses unanchored acoustic style reference outside timeline without cross-modal camera interference; 'in_latent_freeze + ref' physically freezes audio overlap and attaches an unanchored acoustic style reference for voice timbre; 'in_latent_freeze' physically freezes audio overlap with zero reference tokens; 'ref' uses unanchored acoustic style reference; 'overlap' pins to timeline overlap window; 'off' disables continuation audio."),
                 io.Int.Input("audio_ref_duration", default=22, min=5, max=300, step=1, optional=True,
                              tooltip="Length of historical audio to extract as unanchored acoustic style reference in frames (only active when audio_anchor_mode is 'in_latent_freeze + ref')."),
-                io.Combo.Input("continuation_mode",
-                               options=["in_latent_freeze", "hybrid_keyframes", "golden_experience"],
-                               default="in_latent_freeze", optional=True,
-                               tooltip="Continuation engine: 'in_latent_freeze' physically embeds and freezes previous video & audio latents; 'hybrid_keyframes' uses DiT latent keyframe conditioning; 'golden_experience' decouples video/audio overlaps with hybrid keyframes and unanchored acoustic reference."),
                 io.Combo.Input("video_overlap_duration", options=[1, 5, 22, 39], default=5, optional=True,
                                tooltip="Global video overlap duration in frames overriding all markers when golden_experience is active (options: 1, 5, 22, 39; default 5)."),
                 io.Int.Input("audio_overlap_duration", default=22, min=1, max=300, step=1, optional=True,
@@ -773,23 +773,23 @@ class MiniMaxH3Director(io.ComfyNode):
                 io.Vae.Input("audio_vae", optional=True,
                              tooltip="minimax_h3_audio_vae. Only needed when audio references are used (ref2va)."),
                 io.String.Input(
-                    "global_prompt", multiline=True, default="", force_input=True, optional=True,
+                    "[opt] global_prompt", multiline=True, default="", force_input=True, optional=True,
                     tooltip="Conditions the whole video: style, scene, characters. Written above the storyboard.",
                 ),
-                io.Image.Input("ref_images", optional=True,
+                io.Image.Input("[opt] ref_images", optional=True,
                                tooltip="Extra <Picture i> references (single image or batch), appended after the "
                                        "character slots. ref2va only."),
-                io.Float.Input("start", force_input=True, optional=True, default=0.0,
+                io.Float.Input("[opt] start", force_input=True, optional=True, default=0.0,
                                tooltip="Automation (connection-only). Window start in SECONDS."),
-                io.Float.Input("end", force_input=True, optional=True, default=0.0,
+                io.Float.Input("[opt] end", force_input=True, optional=True, default=0.0,
                                tooltip="Automation (connection-only). Window end in SECONDS."),
-                io.Float.Input("duration", force_input=True, optional=True, default=0.0,
+                io.Float.Input("[opt] duration", force_input=True, optional=True, default=0.0,
                                tooltip="Automation (connection-only). Render length in SECONDS."),
-                io.Int.Input("width", force_input=True, optional=True, default=0,
+                io.Int.Input("[opt] width", force_input=True, optional=True, default=0,
                              tooltip="Automation (connection-only). Output width in pixels, "
                                      "overriding the settings panel's Width. Wire a resolution "
                                      "node here; leave it unconnected to use the panel."),
-                io.Int.Input("height", force_input=True, optional=True, default=0,
+                io.Int.Input("[opt] height", force_input=True, optional=True, default=0,
                              tooltip="Automation (connection-only). Output height. See width."),
                 io.String.Input("ref_image_notes", multiline=True, default="", optional=True,
                                 tooltip="One line per image on 'ref_images', describing what it "
@@ -909,9 +909,9 @@ class MiniMaxH3Director(io.ComfyNode):
                 override_audio=False, ref_image_size="match",
                 shift_video=12.0, shift_audio=3.0, ref_images=None, ref_image_notes="",
                 render_plan=None, video_name="vid_${date:yyyy-MM-dd}_${date:hh-mm-ss}",
-                eternity_seed=0, temporal_rope_mode="dynamic_spread_natural",
-                audio_anchor_mode="in_latent_freeze + ref", audio_ref_duration=22,
-                continuation_mode="in_latent_freeze",
+                eternity_seed=0, temporal_rope_mode="dynamic_spread_natural (recommended)",
+                continuation_mode="golden_experience (recommended)",
+                audio_anchor_mode="golden_experience (recommended)", audio_ref_duration=22,
                 video_overlap_duration=5, audio_overlap_duration=22,
                 start=None, end=None, duration=None,
                 width=None, height=None, **kwargs) -> io.NodeOutput:
@@ -927,16 +927,25 @@ class MiniMaxH3Director(io.ComfyNode):
         cuts_data = tdata.get("cuts", []) if isinstance(tdata, dict) else []
         total_timeline_frames = int(tdata.get("normalDurationFrames", duration_frames)) if isinstance(tdata, dict) else int(duration_frames)
 
+        # Resolve optional automation/extra inputs (support both '[opt] name' and legacy 'name')
+        global_prompt = kwargs.get("[opt] global_prompt", global_prompt)
+        ref_images = kwargs.get("[opt] ref_images", ref_images)
+        start = kwargs.get("[opt] start", start)
+        end = kwargs.get("[opt] end", end)
+        duration = kwargs.get("[opt] duration", duration)
+        width = kwargs.get("[opt] width", width)
+        height = kwargs.get("[opt] height", height)
+
         # 2. Synchronize or initialize render_plan
         node_id = str(kwargs.get("unique_id", "director"))
         box_w, box_h = resolve_size(custom_width, custom_height, width, height)
 
         vn_template = (video_name or "vid_${date:yyyy-MM-dd}_${date:hh-mm-ss}").strip()
         eff_seed = int(eternity_seed or 0)
-        eff_rope_mode = str(temporal_rope_mode or "dynamic_spread_natural")
-        eff_audio_mode = str(audio_anchor_mode or "in_latent_freeze + ref")
+        eff_rope_mode = str(temporal_rope_mode or "dynamic_spread_natural").split(" (")[0].strip()
+        eff_audio_mode = str(audio_anchor_mode or "golden_experience").split(" (")[0].strip()
         eff_audio_ref_dur = int(audio_ref_duration or 22)
-        eff_continuation_mode = str(continuation_mode or "in_latent_freeze")
+        eff_continuation_mode = str(continuation_mode or "golden_experience").split(" (")[0].strip()
         eff_video_overlap = int(video_overlap_duration or 5)
         eff_audio_overlap = int(audio_overlap_duration or 22)
 
@@ -1252,4 +1261,4 @@ class MiniMaxH3Director(io.ComfyNode):
 
 
 NODE_CLASS_MAPPINGS = {"H3Eternity_Director": MiniMaxH3Director}
-NODE_DISPLAY_NAME_MAPPINGS = {"H3Eternity_Director": "H3 Eternity - Director"}
+NODE_DISPLAY_NAME_MAPPINGS = {"H3Eternity_Director": "H3 Eternity ♾️ Director"}

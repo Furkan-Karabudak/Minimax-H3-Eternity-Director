@@ -137,6 +137,16 @@ def decode_joint_latent(
     # 1. Video VAE Decoding
     if vae is not None and zv is not None:
         try:
+            import comfy.model_management
+            comfy.model_management.soft_empty_cache()
+        except Exception:
+            pass
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        try:
             import nodes as comfy_nodes
             if tiled:
                 try:
@@ -151,11 +161,26 @@ def decode_joint_latent(
                 images = comfy_nodes.VAEDecode().decode(vae, {"samples": zv})[0]
             out_images = images.to(torch.float32).cpu()
         except Exception as e:
-            _LOG.error("[H3.E - Sampler] Video VAE decode error: %s", e)
-            num_frames = 124
-            if zv.ndim >= 3:
-                num_frames = max(1, (zv.shape[2] - 2) // 5 * 17 + 5)
-            out_images = torch.zeros((num_frames, fallback_h, fallback_w, 3), dtype=torch.float32)
+            _LOG.warning("[H3.E - Sampler] Video VAE decode failed (%s) - attempting cache cleanup and retry...", e)
+            try:
+                try:
+                    import comfy.model_management
+                    comfy.model_management.soft_empty_cache()
+                except Exception:
+                    pass
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                import nodes as comfy_nodes
+                images = comfy_nodes.VAEDecode().decode(vae, {"samples": zv})[0]
+                out_images = images.to(torch.float32).cpu()
+                _LOG.info("[H3.E - Sampler] Video VAE decode retry succeeded!")
+            except Exception as retry_err:
+                _LOG.error("[H3.E - Sampler] Video VAE decode error after retry: %s", retry_err)
+                num_frames = 124
+                if zv.ndim >= 3:
+                    num_frames = max(1, (zv.shape[2] - 2) // 5 * 17 + 5)
+                out_images = torch.zeros((num_frames, fallback_h, fallback_w, 3), dtype=torch.float32)
     else:
         num_frames = 124
         if zv is not None and zv.ndim >= 3:

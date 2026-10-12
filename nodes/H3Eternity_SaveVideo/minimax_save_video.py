@@ -64,6 +64,8 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def get_ffmpeg_path() -> Optional[str]:
+    if "FORCE_FFMPEG_PATH" in os.environ:
+        return os.environ.get("FORCE_FFMPEG_PATH")
     if "VHS_FORCE_FFMPEG_PATH" in os.environ:
         return os.environ.get("VHS_FORCE_FFMPEG_PATH")
     
@@ -1207,5 +1209,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "H3Eternity_SaveVideo": "H3 Eternity - Save Video",
+    "H3Eternity_SaveVideo": "H3 Eternity ♾️ Save Video",
 }

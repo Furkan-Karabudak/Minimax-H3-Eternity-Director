@@ -1,14 +1,17 @@
 [project]
-name = "Minimax-H3-Director_Eternity-Edition"
+name = "minimax-h3-eternity-director"
 description = "A fork of MiniMax H3 Director: long-form chaining past H3's ~15s ceiling in one node, two-phase GPU decode, audio-seam handling, and a saveable gen-log — on top of upstream's timeline editor, typed references, dialogue and prompt compiler."
-version = "0.2.2-ee.0.1.0"
+version = "0.2.2-ee.0.2.0"
 authors = [
     { name = "FurkanKarabudak" }
 ]
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
-# Nothing beyond what ComfyUI itself already installs.
-dependencies = []
+dependencies = [
+    "imageio-ffmpeg>=0.4.8",
+    "safetensors>=0.4.0",
+    "av>=10.0.0",
+]
 classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: OS Independent",
@@ -23,7 +26,7 @@ Upstream = "https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director"
 [tool.comfy]
 # Must match the publisher you create at https://registry.comfy.org
 PublisherId = "FurkanKarabudak"
-DisplayName = "Minimax-H3-Director_Eternity-Edition"
+DisplayName = "Minimax H3 Eternity Director"
 Icon = ""
 # comfy_api.latest, the packed AV latent and H3 support all landed in ComfyUI 0.30.0.
 requires-comfyui = ">=0.30.0"

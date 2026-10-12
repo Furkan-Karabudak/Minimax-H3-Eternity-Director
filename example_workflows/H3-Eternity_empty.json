@@ -1,0 +1,977 @@
+{
+  "id": "d12bc552-8e3a-4ff0-a320-bff17b6e5d4b",
+  "revision": 0,
+  "last_node_id": 21,
+  "last_link_id": 13,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "UNETLoader",
+      "pos": [
+        1464.9983641830913,
+        1700.0272232297273
+      ],
+      "size": [
+        545,
+        82
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            4
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UNETLoader",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "video\\minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "default"
+      ],
+      "widgets_values_named": {
+        "unet_name": "video\\minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    {
+      "id": 2,
+      "type": "CLIPLoader",
+      "pos": [
+        1464.9983641830913,
+        1831.0272232297273
+      ],
+      "size": [
+        545,
+        106
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            5
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPLoader",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "N_qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+        "minimax",
+        "default"
+      ],
+      "widgets_values_named": {
+        "clip_name": "N_qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+        "type": "minimax",
+        "device": "default"
+      }
+    },
+    {
+      "id": 4,
+      "type": "VAELoader",
+      "pos": [
+        1464.9983641830913,
+        2085.0272232297275
+      ],
+      "size": [
+        545,
+        58
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            7
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "video\\minimax_h3_audio_vae_fp32.safetensors"
+      ],
+      "widgets_values_named": {
+        "vae_name": "video\\minimax_h3_audio_vae_fp32.safetensors"
+      }
+    },
+    {
+      "id": 18,
+      "type": "H3Eternity_Director",
+      "pos": [
+        2214.4983641830913,
+        2235.0892232297274
+      ],
+      "size": [
+        1375,
+        2126
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "render_plan",
+          "shape": 7,
+          "type": "RENDER_PLAN",
+          "link": 3
+        },
+        {
+          "name": "model",
+          "shape": 7,
+          "type": "MODEL",
+          "link": null
+        },
+        {
+          "name": "model_ref2va",
+          "shape": 7,
+          "type": "MODEL",
+          "link": 4
+        },
+        {
+          "name": "clip",
+          "shape": 7,
+          "type": "CLIP",
+          "link": 5
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": 6
+        },
+        {
+          "name": "audio_vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": 7
+        },
+        {
+          "name": "[opt] global_prompt",
+          "shape": 7,
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "[opt] ref_images",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "[opt] start",
+          "shape": 7,
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "[opt] end",
+          "shape": 7,
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "[opt] duration",
+          "shape": 7,
+          "type": "FLOAT",
+          "link": null
+        },
+        {
+          "name": "[opt] width",
+          "shape": 7,
+          "type": "INT",
+          "link": null
+        },
+        {
+          "name": "[opt] height",
+          "shape": 7,
+          "type": "INT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "render_plan",
+          "type": "RENDER_PLAN",
+          "links": [
+            8
+          ]
+        },
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            9
+          ]
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": null
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": null
+        },
+        {
+          "name": "combined_audio",
+          "type": "AUDIO",
+          "links": null
+        },
+        {
+          "name": "fps",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "length",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "retake_info",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        },
+        "Node name for S&R": "H3Eternity_Director",
+        "global_prompt": "",
+        "mainTrackEnabled": true,
+        "audioTrackEnabled": true,
+        "motionTrackEnabled": true,
+        "audioTrackWasEnabledBeforeOverride": false,
+        "inpaint_audio": true,
+        "override_audio": false,
+        "overrideAudio": false,
+        "showFilenames": true,
+        "showPromptZones": true,
+        "showPromptPreview": true,
+        "use_custom_audio": true,
+        "use_custom_motion": true,
+        "frame_rate": 24,
+        "display_mode": "seconds",
+        "custom_width": 0,
+        "custom_height": 0,
+        "resize_method": "crop",
+        "divisible_by": 32,
+        "img_compression": 18,
+        "guide_strength": "",
+        "local_prompts": "",
+        "segment_lengths": "",
+        "timeline_data": "{\"mainTrackEnabled\":true,\"audioTrackEnabled\":true,\"motionTrackEnabled\":true,\"propHeight\":90,\"globalPropHeight\":126,\"showFilenames\":true,\"showPromptZones\":true,\"overrideAudio\":false,\"inpaint_audio\":true,\"global_prompt\":\"\",\"retake_global_prompt\":\"\",\"overall_soundscape\":\"\",\"non_diegetic_music\":\"\",\"prompt_override\":\"\",\"prompt_override_on\":false,\"retakeMode\":false,\"retakeStart\":24,\"retakeLength\":48,\"retakePrompt\":\"\",\"retakeStrength\":1,\"retakeVideo\":null,\"normalStartFrame\":0,\"normalDurationFrames\":120,\"reference_mode\":\"REF2VA\",\"prompt_format\":\"minimax\",\"analyzeProvider\":\"ollama\",\"analyzeBaseUrl\":\"\",\"analyzeModel\":\"\",\"summary\":\"\",\"task_type_override\":\"\",\"subjectSlotCount\":3,\"subjects\":[{\"images\":[],\"description\":\"\",\"shortName\":\"\",\"kind\":\"person\",\"retention\":\"fully_preserved\",\"retentionNote\":\"\"},{\"images\":[],\"description\":\"\",\"shortName\":\"\",\"kind\":\"person\",\"retention\":\"fully_preserved\",\"retentionNote\":\"\"},{\"images\":[],\"description\":\"\",\"shortName\":\"\",\"kind\":\"person\",\"retention\":\"fully_preserved\",\"retentionNote\":\"\"}],\"segments\":[],\"motionSegments\":[],\"audioSegments\":[],\"cuts\":[]}",
+        "shift_video": 12,
+        "shift_audio": 3,
+        "ref_image_size": "match",
+        "start_second": 0,
+        "end_second": 5,
+        "duration_seconds": 5,
+        "start_frame": 0,
+        "end_frame": 120,
+        "duration_frames": 120,
+        "video_name": "vid_${date:yyyy-MM-dd}_${date:hh-mm-ss}",
+        "propHeight": 90,
+        "globalPropHeight": 126,
+        "eternity_seed": 0,
+        "temporal_rope_mode": "dynamic_spread_natural (recommended)",
+        "continuation_mode": "golden_experience (recommended)",
+        "audio_anchor_mode": "golden_experience (recommended)",
+        "audio_ref_duration": 22,
+        "video_overlap_duration": 5,
+        "audio_overlap_duration": 22,
+        "ref_image_notes": "",
+        "minimax_settings_ui": "",
+        "timeline_ui": "",
+        "minimax_prompt_preview": "",
+        "has_serialized_properties": true,
+        "retakeMode": false
+      },
+      "widgets_values": [
+        0,
+        5,
+        5,
+        0,
+        120,
+        120,
+        "{\"mainTrackEnabled\":true,\"audioTrackEnabled\":true,\"motionTrackEnabled\":true,\"propHeight\":90,\"globalPropHeight\":126,\"showFilenames\":true,\"showPromptZones\":true,\"overrideAudio\":false,\"inpaint_audio\":true,\"global_prompt\":\"\",\"retake_global_prompt\":\"\",\"overall_soundscape\":\"\",\"non_diegetic_music\":\"\",\"prompt_override\":\"\",\"prompt_override_on\":false,\"retakeMode\":false,\"retakeStart\":24,\"retakeLength\":48,\"retakePrompt\":\"\",\"retakeStrength\":1,\"retakeVideo\":null,\"normalStartFrame\":0,\"normalDurationFrames\":120,\"reference_mode\":\"REF2VA\",\"prompt_format\":\"minimax\",\"analyzeProvider\":\"ollama\",\"analyzeBaseUrl\":\"\",\"analyzeModel\":\"\",\"summary\":\"\",\"task_type_override\":\"\",\"subjectSlotCount\":3,\"subjects\":[{\"images\":[],\"description\":\"\",\"shortName\":\"\",\"kind\":\"person\",\"retention\":\"fully_preserved\",\"retentionNote\":\"\"},{\"images\":[],\"description\":\"\",\"shortName\":\"\",\"kind\":\"person\",\"retention\":\"fully_preserved\",\"retentionNote\":\"\"},{\"images\":[],\"description\":\"\",\"shortName\":\"\",\"kind\":\"person\",\"retention\":\"fully_preserved\",\"retentionNote\":\"\"}],\"segments\":[],\"motionSegments\":[],\"audioSegments\":[],\"cuts\":[]}",
+        "",
+        "",
+        "",
+        "vid_${date:yyyy-MM-dd}_${date:hh-mm-ss}",
+        0,
+        "dynamic_spread_natural (recommended)",
+        "golden_experience (recommended)",
+        "golden_experience (recommended)",
+        22,
+        5,
+        22,
+        "",
+        true,
+        true,
+        true,
+        24,
+        "seconds",
+        0,
+        0,
+        "crop",
+        32,
+        18,
+        false,
+        "match",
+        12,
+        3,
+        "",
+        ""
+      ],
+      "widgets_values_named": {
+        "start_second": 0,
+        "end_second": 5,
+        "duration_seconds": 5,
+        "start_frame": 0,
+        "end_frame": 120,
+        "duration_frames": 120,
+        "timeline_data": "{\"mainTrackEnabled\":true,\"audioTrackEnabled\":true,\"motionTrackEnabled\":true,\"propHeight\":90,\"globalPropHeight\":126,\"showFilenames\":true,\"showPromptZones\":true,\"overrideAudio\":false,\"inpaint_audio\":true,\"global_prompt\":\"\",\"retake_global_prompt\":\"\",\"overall_soundscape\":\"\",\"non_diegetic_music\":\"\",\"prompt_override\":\"\",\"prompt_override_on\":false,\"retakeMode\":false,\"retakeStart\":24,\"retakeLength\":48,\"retakePrompt\":\"\",\"retakeStrength\":1,\"retakeVideo\":null,\"normalStartFrame\":0,\"normalDurationFrames\":120,\"reference_mode\":\"REF2VA\",\"prompt_format\":\"minimax\",\"analyzeProvider\":\"ollama\",\"analyzeBaseUrl\":\"\",\"analyzeModel\":\"\",\"summary\":\"\",\"task_type_override\":\"\",\"subjectSlotCount\":3,\"subjects\":[{\"images\":[],\"description\":\"\",\"shortName\":\"\",\"kind\":\"person\",\"retention\":\"fully_preserved\",\"retentionNote\":\"\"},{\"images\":[],\"description\":\"\",\"shortName\":\"\",\"kind\":\"person\",\"retention\":\"fully_preserved\",\"retentionNote\":\"\"},{\"images\":[],\"description\":\"\",\"shortName\":\"\",\"kind\":\"person\",\"retention\":\"fully_preserved\",\"retentionNote\":\"\"}],\"segments\":[],\"motionSegments\":[],\"audioSegments\":[],\"cuts\":[]}",
+        "local_prompts": "",
+        "segment_lengths": "",
+        "guide_strength": "",
+        "video_name": "vid_${date:yyyy-MM-dd}_${date:hh-mm-ss}",
+        "eternity_seed": 0,
+        "temporal_rope_mode": "dynamic_spread_natural (recommended)",
+        "continuation_mode": "golden_experience (recommended)",
+        "audio_anchor_mode": "golden_experience (recommended)",
+        "audio_ref_duration": 22,
+        "video_overlap_duration": 5,
+        "audio_overlap_duration": 22,
+        "ref_image_notes": "",
+        "use_custom_audio": true,
+        "use_custom_motion": true,
+        "inpaint_audio": true,
+        "frame_rate": 24,
+        "display_mode": "seconds",
+        "custom_width": 0,
+        "custom_height": 0,
+        "resize_method": "crop",
+        "divisible_by": 32,
+        "img_compression": 18,
+        "override_audio": false,
+        "ref_image_size": "match",
+        "shift_video": 12,
+        "shift_audio": 3,
+        "minimax_settings_ui": "",
+        "timeline_ui": ""
+      }
+    },
+    {
+      "id": 19,
+      "type": "H3Eternity_Sampler",
+      "pos": [
+        3705.9983641830913,
+        2235.0892232297274
+      ],
+      "size": [
+        451,
+        638
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "render_plan",
+          "type": "RENDER_PLAN",
+          "link": 8
+        },
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 9
+        },
+        {
+          "name": "[opt] vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "[opt] audio_vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "render_plan",
+          "type": "RENDER_PLAN",
+          "links": [
+            10
+          ]
+        },
+        {
+          "name": "out_latent",
+          "type": "LATENT",
+          "links": null
+        },
+        {
+          "name": "out_images",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "out_audio",
+          "type": "AUDIO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        },
+        "Node name for S&R": "H3Eternity_Sampler"
+      },
+      "widgets_values": [
+        20,
+        1,
+        "res_multistep",
+        "simple",
+        1,
+        false,
+        false,
+        "temp/h3_eternity/tmp_${video_name}_${seed}",
+        "video/ffv1-mkv [default]",
+        "FLAC [default]",
+        18,
+        "medium",
+        20,
+        "bgra",
+        "hq",
+        "3",
+        "1",
+        "1",
+        1,
+        "16",
+        "1",
+        "sierra2_4a",
+        true,
+        "48000 (recommended)",
+        "256k",
+        "CBR",
+        "LC",
+        "160k",
+        "On (VBR)",
+        "audio",
+        10,
+        "Quality (VBR)",
+        6,
+        "192k",
+        "24-bit",
+        5,
+        "High",
+        "24-bit",
+        "4096",
+        "24-bit",
+        "320k",
+        "",
+        ""
+      ],
+      "widgets_values_named": {
+        "steps": 20,
+        "cfg": 1,
+        "sampler_name": "res_multistep",
+        "scheduler": "simple",
+        "denoise": 1,
+        "tiled_vae": false,
+        "advanced_save": false,
+        "filename": "temp/h3_eternity/tmp_${video_name}_${seed}",
+        "video_format": "video/ffv1-mkv [default]",
+        "audio_format": "FLAC [default]",
+        "crf": 18,
+        "preset": "medium",
+        "bitrate": 20,
+        "pix_fmt": "bgra",
+        "profile": "hq",
+        "level": "3",
+        "coder": "1",
+        "context": "1",
+        "gop_size": 1,
+        "slices": "16",
+        "slicecrc": "1",
+        "dither": "sierra2_4a",
+        "lossless": true,
+        "audio_sample_rate": "48000 (recommended)",
+        "aac_bitrate": "256k",
+        "aac_control": "CBR",
+        "aac_profile": "LC",
+        "opus_bitrate": "160k",
+        "opus_vbr": "On (VBR)",
+        "opus_content": "audio",
+        "opus_complexity": 10,
+        "vorbis_mode": "Quality (VBR)",
+        "vorbis_quality": 6,
+        "vorbis_bitrate": "192k",
+        "flac_bit_depth": "24-bit",
+        "flac_compression": 5,
+        "flac_lpc": "High",
+        "alac_bit_depth": "24-bit",
+        "alac_frame_size": "4096",
+        "wav_bit_depth": "24-bit",
+        "mp3_bitrate": "320k",
+        "h3_status_tracker": "",
+        "preview": ""
+      }
+    },
+    {
+      "id": 3,
+      "type": "VAELoader",
+      "pos": [
+        1464.9983641830913,
+        1986.0272232297273
+      ],
+      "size": [
+        545,
+        58
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            6
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "video\\minimax_h3_video_vae_fp16.safetensors"
+      ],
+      "widgets_values_named": {
+        "vae_name": "video\\minimax_h3_video_vae_fp16.safetensors"
+      }
+    },
+    {
+      "id": 17,
+      "type": "H3Eternity_Start",
+      "pos": [
+        1762.6253641830913,
+        2235.0892232297274
+      ],
+      "size": [
+        270,
+        78
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "render_plan",
+          "shape": 7,
+          "type": "RENDER_PLAN",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "render_plan",
+          "type": "RENDER_PLAN",
+          "links": [
+            3
+          ]
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        },
+        "Node name for S&R": "H3Eternity_Start"
+      },
+      "widgets_values": [
+        ""
+      ],
+      "widgets_values_named": {
+        "video_name": ""
+      }
+    },
+    {
+      "id": 20,
+      "type": "H3Eternity_Finalize",
+      "pos": [
+        4246.147176683092,
+        2235.0892232297274
+      ],
+      "size": [
+        284.984375,
+        218
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "render_plan",
+          "type": "RENDER_PLAN",
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "name": "render_plan",
+          "type": "RENDER_PLAN",
+          "links": [
+            11
+          ]
+        },
+        {
+          "name": "final_images",
+          "type": "IMAGE",
+          "links": [
+            12
+          ]
+        },
+        {
+          "name": "final_audio",
+          "type": "AUDIO",
+          "links": [
+            13
+          ]
+        }
+      ],
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        },
+        "Node name for S&R": "H3Eternity_Finalize"
+      },
+      "widgets_values": [
+        "smooth_blend",
+        true,
+        true,
+        "crossfade_end",
+        12,
+        true
+      ],
+      "widgets_values_named": {
+        "seam_video": "smooth_blend",
+        "harmonize_color": true,
+        "trim_head_overlap": true,
+        "seam_audio": "crossfade_end",
+        "seam_audio_fade_ms": 12,
+        "anti_flashbang": true
+      }
+    },
+    {
+      "id": 21,
+      "type": "H3Eternity_SaveVideo",
+      "pos": [
+        4631.899364183089,
+        2235.0892232297274
+      ],
+      "size": [
+        400,
+        554
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "render_plan",
+          "shape": 7,
+          "type": "RENDER_PLAN",
+          "link": 11
+        },
+        {
+          "name": "images",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 12
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": 13
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
+        }
+      ],
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        },
+        "Node name for S&R": "H3Eternity_SaveVideo"
+      },
+      "widgets_values": [
+        24,
+        0,
+        "h3_video",
+        "video/h264-mp4",
+        "AAC [default]",
+        false,
+        false,
+        true,
+        false,
+        19,
+        "medium",
+        20,
+        "yuv420p",
+        "hq",
+        "3",
+        "1",
+        "1",
+        1,
+        "16",
+        "1",
+        "sierra2_4a",
+        true,
+        "48000 (recommended)",
+        "256k",
+        "CBR",
+        "LC",
+        "160k",
+        "On (VBR)",
+        "audio",
+        10,
+        "Quality (VBR)",
+        6,
+        "192k",
+        "24-bit",
+        5,
+        "High",
+        "24-bit",
+        "4096",
+        "24-bit",
+        "320k",
+        ""
+      ],
+      "widgets_values_named": {
+        "frame_rate": 24,
+        "loop_count": 0,
+        "filename": "h3_video",
+        "video_format": "video/h264-mp4",
+        "audio_format": "AAC [default]",
+        "pingpong": false,
+        "save_shot_overlay": false,
+        "save_metadata_image": true,
+        "show_advanced": false,
+        "crf": 19,
+        "preset": "medium",
+        "bitrate": 20,
+        "pix_fmt": "yuv420p",
+        "profile": "hq",
+        "level": "3",
+        "coder": "1",
+        "context": "1",
+        "gop_size": 1,
+        "slices": "16",
+        "slicecrc": "1",
+        "dither": "sierra2_4a",
+        "lossless": true,
+        "audio_sample_rate": "48000 (recommended)",
+        "aac_bitrate": "256k",
+        "aac_control": "CBR",
+        "aac_profile": "LC",
+        "opus_bitrate": "160k",
+        "opus_vbr": "On (VBR)",
+        "opus_content": "audio",
+        "opus_complexity": 10,
+        "vorbis_mode": "Quality (VBR)",
+        "vorbis_quality": 6,
+        "vorbis_bitrate": "192k",
+        "flac_bit_depth": "24-bit",
+        "flac_compression": 5,
+        "flac_lpc": "High",
+        "alac_bit_depth": "24-bit",
+        "alac_frame_size": "4096",
+        "wav_bit_depth": "24-bit",
+        "mp3_bitrate": "320k",
+        "preview": ""
+      }
+    }
+  ],
+  "links": [
+    [
+      3,
+      17,
+      0,
+      18,
+      0,
+      "RENDER_PLAN"
+    ],
+    [
+      4,
+      1,
+      0,
+      18,
+      2,
+      "MODEL"
+    ],
+    [
+      5,
+      2,
+      0,
+      18,
+      3,
+      "CLIP"
+    ],
+    [
+      6,
+      3,
+      0,
+      18,
+      4,
+      "VAE"
+    ],
+    [
+      7,
+      4,
+      0,
+      18,
+      5,
+      "VAE"
+    ],
+    [
+      8,
+      18,
+      0,
+      19,
+      0,
+      "RENDER_PLAN"
+    ],
+    [
+      9,
+      18,
+      1,
+      19,
+      1,
+      "MODEL"
+    ],
+    [
+      10,
+      19,
+      0,
+      20,
+      0,
+      "RENDER_PLAN"
+    ],
+    [
+      11,
+      20,
+      0,
+      21,
+      0,
+      "RENDER_PLAN"
+    ],
+    [
+      12,
+      20,
+      1,
+      21,
+      1,
+      "IMAGE"
+    ],
+    [
+      13,
+      20,
+      2,
+      21,
+      2,
+      "AUDIO"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ue_links": [],
+    "ds": {
+      "scale": 0.6209213230591548,
+      "offset": [
+        -1374.273474183087,
+        -1578.6149615630645
+      ]
+    },
+    "frontendVersion": "1.51.10",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}

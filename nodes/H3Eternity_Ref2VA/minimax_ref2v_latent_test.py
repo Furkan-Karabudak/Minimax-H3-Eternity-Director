@@ -172,7 +172,7 @@ class MiniMaxH3ReferenceToVideo_test(io.ComfyNode):
         return io.Schema(
             node_id="H3Eternity_Ref2VA",
             description="<Picture i> / <Video k> / <Audio j> reference conditioning with direct Latent & Pixel inputs for MiniMax H3.",
-            display_name="H3 Eternity - Ref2VA",
+            display_name="[Extra] H3 Eternity - Ref2VA",
             category="H3 Eternity",
             inputs=[
                 io.Clip.Input("clip"),
@@ -397,4 +397,4 @@ class MiniMaxH3ReferenceToVideo_test(io.ComfyNode):
 
 
 NODE_CLASS_MAPPINGS = {"H3Eternity_Ref2VA": MiniMaxH3ReferenceToVideo_test}
-NODE_DISPLAY_NAME_MAPPINGS = {"H3Eternity_Ref2VA": "H3 Eternity - Ref2VA"}
+NODE_DISPLAY_NAME_MAPPINGS = {"H3Eternity_Ref2VA": "[Extra] H3 Eternity - Ref2VA"}

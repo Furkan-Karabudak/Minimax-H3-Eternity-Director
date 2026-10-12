@@ -114,7 +114,7 @@ if _HAVE_COMFY_API:
         def define_schema(cls):
             return io.Schema(
                 node_id="H3Eternity_Start",
-                display_name="H3 Eternity - Start",
+                display_name="H3 Eternity ♾️ Start",
                 category="H3 Eternity",
                 description=cls.DESCRIPTION,
                 inputs=[

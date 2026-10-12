@@ -195,10 +195,11 @@ def sanitize_ref_role(value):
     return text if text in REF_ROLES else REF_ROLE_AUTO
 
 
-def overlaps(seg, win_start, win_end):
-    start = float(seg.get("start", 0))
-    length = float(seg.get("length", 1))
-    return start < win_end and start + length > win_start
+def overlaps(seg, win_start, win_end, min_overlap_frames=0.5):
+    start = round(float(seg.get("start", 0)))
+    length = max(1, round(float(seg.get("length", 1))))
+    overlap_duration = min(win_end, start + length) - max(win_start, start)
+    return overlap_duration >= min_overlap_frames
 
 
 def parse_timeline(timeline_data):
@@ -1155,8 +1156,8 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
                     if overlaps(s, win_start, win_end)]
         segments.sort(key=lambda s: float(s.get("start", 0)))
         for seg in segments:
-            seg_start = float(seg.get("start", 0))
-            seg_len = float(seg.get("length", 1))
+            seg_start = float(round(float(seg.get("start", 0))))
+            seg_len = float(max(1, round(float(seg.get("length", 1)))))
             rel_start = max(0.0, seg_start - win_start)
             rel_end = min(float(duration_frames), seg_start + seg_len - win_start)
             # dialogue is lifted before anything else touches the text, so a shot
@@ -1687,7 +1688,7 @@ def plan_iteration_timeline(
         raw_segs = tdata.get("segments", []) or []
         filtered_segs = [
             s for s in raw_segs
-            if (float(s.get("start", 0)) + float(s.get("length", 1))) > boundary
+            if (round(float(s.get("start", 0))) + max(1, round(float(s.get("length", 1))))) > boundary
         ]
         if filtered_segs:
             active_tdata = dict(tdata)
@@ -1696,7 +1697,7 @@ def plan_iteration_timeline(
             if "motionSegments" in tdata and tdata["motionSegments"]:
                 filtered_motion = [
                     s for s in tdata["motionSegments"]
-                    if (float(s.get("start", 0)) + float(s.get("length", 1))) > boundary
+                    if (round(float(s.get("start", 0))) + max(1, round(float(s.get("length", 1))))) > boundary
                 ]
                 if filtered_motion:
                     active_tdata["motionSegments"] = filtered_motion
@@ -1704,7 +1705,7 @@ def plan_iteration_timeline(
             if "audioSegments" in tdata and tdata["audioSegments"]:
                 filtered_audio = [
                     s for s in tdata["audioSegments"]
-                    if (float(s.get("start", 0)) + float(s.get("length", 1))) > boundary
+                    if (round(float(s.get("start", 0))) + max(1, round(float(s.get("length", 1))))) > boundary
                 ]
                 if filtered_audio:
                     active_tdata["audioSegments"] = filtered_audio

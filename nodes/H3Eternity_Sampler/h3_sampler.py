@@ -148,10 +148,10 @@ class H3Eternity_Sampler:
                 }),
             },
             "optional": {
-                "vae [opt]": ("VAE", {
+                "[opt] vae": ("VAE", {
                     "tooltip": "Optional video VAE for decoding frames. If omitted, automatically resolves from render_plan."
                 }),
-                "audio_vae [opt]": ("VAE", {
+                "[opt] audio_vae": ("VAE", {
                     "tooltip": "Optional audio VAE for decoding audio. If omitted, automatically resolves from render_plan."
                 }),
                 # Video Advanced Settings (dynamically filtered by video_format in JS)
@@ -248,8 +248,8 @@ class H3Eternity_Sampler:
         latent_image = plan.get("current_latent")
 
         # 2. VAE Resolution (node socket overrides render_plan carrier)
-        node_vae = kwargs.get("vae [opt]") or kwargs.get("vae")
-        node_audio_vae = kwargs.get("audio_vae [opt]") or kwargs.get("audio_vae")
+        node_vae = kwargs.get("[opt] vae") or kwargs.get("vae [opt]") or kwargs.get("vae")
+        node_audio_vae = kwargs.get("[opt] audio_vae") or kwargs.get("audio_vae [opt]") or kwargs.get("audio_vae")
         eff_vae, eff_audio_vae = resolve_vae_references(node_vae, node_audio_vae, plan)
         tiled_vae = bool(tiled_vae or kwargs.get("tiled_vae", False))
 

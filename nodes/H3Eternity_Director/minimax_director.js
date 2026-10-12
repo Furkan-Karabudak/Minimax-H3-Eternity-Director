@@ -1368,12 +1368,12 @@ function drawSvgLabelTabGrad(ctx, xCenter, yTop, textW, deltaY, hue) {
 }
 
 // --- H3 Frame Lattice Helper (17k + 5) & Collision Prevention ---
-function getNearestH3LatticeFrame(targetFrame, maxFrames = Infinity) {
+function getNearestH3LatticeFrame(targetFrame, maxFrames = Infinity, minK = 0) {
   let k = Math.round((targetFrame - 5) / 17);
-  if (k < 1) k = 1;
+  if (k < minK) k = minK;
   let f = 17 * k + 5;
   if (f >= maxFrames) {
-    k = Math.max(1, Math.floor((maxFrames - 6) / 17));
+    k = Math.max(minK, Math.floor((maxFrames - 6) / 17));
     f = 17 * k + 5;
   }
   return f;
@@ -1569,8 +1569,10 @@ function parseInitial(jsonStr) {
   for (let seg of parsed.segments) {
     if (seg.start === undefined) {
       seg.start = currentStart;
-      currentStart += seg.length;
     }
+    seg.start = Math.round(seg.start || 0);
+    seg.length = Math.max(1, Math.round(seg.length !== undefined ? seg.length : 1));
+    currentStart = seg.start + seg.length;
     // Guarantee ID assignment to prevent node loading drag breaks
     if (!seg.id) {
       seg.id = Date.now().toString() + Math.random().toString(36).substr(2, 5);
@@ -1584,14 +1586,20 @@ function parseInitial(jsonStr) {
     if (!seg.id) {
       seg.id = Date.now().toString() + Math.random().toString(36).substr(2, 5);
     }
+    seg.start = Math.round(seg.start || 0);
+    seg.length = Math.max(1, Math.round(seg.length !== undefined ? seg.length : 1));
     if (seg.trimStart === undefined) seg.trimStart = 0;
+    else seg.trimStart = Math.round(seg.trimStart);
   }
 
   for (let seg of parsed.audioSegments) {
     if (!seg.id) {
       seg.id = Date.now().toString() + Math.random().toString(36).substr(2, 5);
     }
+    seg.start = Math.round(seg.start || 0);
+    seg.length = Math.max(1, Math.round(seg.length !== undefined ? seg.length : 1));
     if (seg.trimStart === undefined) seg.trimStart = 0;
+    else seg.trimStart = Math.round(seg.trimStart);
   }
 
   return parsed;
@@ -1753,21 +1761,21 @@ class TimelineEditor {
         if (!isSyncing && this.startSecondsWidget && this.durationFramesWidget && this.endFramesWidget) {
           isSyncing = true;
 
+          const fps = this.getFrameRate();
           let newStartFrames = this.getStartFrames();
-          const endFrame = this.endFramesWidget.value || 1;
-          let newDurationFrames = Math.max(1, endFrame - newStartFrames);
+          this.startFramesWidget.value = newStartFrames;
+          this.startSecondsWidget.value = parseFloat((newStartFrames / fps).toFixed(3));
 
-          if (newDurationFrames <= 1) {
-            newStartFrames = endFrame - 1;
-            this.startFramesWidget.value = newStartFrames;
-            newDurationFrames = 1;
+          const currentDurFrames = getNearestH3LatticeFrame(this.getDurationFrames(), Infinity, 0);
+          this.durationFramesWidget.value = currentDurFrames;
+          if (this.durationSecondsWidget) {
+            this.durationSecondsWidget.value = parseFloat((currentDurFrames / fps).toFixed(3));
           }
 
-          this.startSecondsWidget.value = parseFloat((newStartFrames / this.getFrameRate()).toFixed(3));
-
-          this.durationFramesWidget.value = newDurationFrames;
-          if (this.durationSecondsWidget) {
-            this.durationSecondsWidget.value = parseFloat((newDurationFrames / this.getFrameRate()).toFixed(3));
+          const newEndFrames = newStartFrames + currentDurFrames;
+          this.endFramesWidget.value = newEndFrames;
+          if (this.endSecondsWidget) {
+            this.endSecondsWidget.value = parseFloat((newEndFrames / fps).toFixed(3));
           }
 
           this._prevStartFrames = newStartFrames;
@@ -1777,6 +1785,11 @@ class TimelineEditor {
         }
 
         this.commitChanges();
+        this.render();
+        if (this.node) this.node.setDirtyCanvas(true, true);
+        if (window.app && window.app.graph) {
+          window.app.graph.setDirtyCanvas(true, true);
+        }
       };
     }
 
@@ -1788,24 +1801,22 @@ class TimelineEditor {
         if (!isSyncing && this.startFramesWidget && this.durationSecondsWidget && this.endFramesWidget) {
           isSyncing = true;
 
-          let newStartSeconds = this.startSecondsWidget.value;
-          let newStartFrames = Math.max(0, Math.round(newStartSeconds * this.getFrameRate()));
+          const fps = this.getFrameRate();
+          let newStartSeconds = parseFloat(this.startSecondsWidget.value) || 0;
+          let newStartFrames = Math.max(0, Math.round(newStartSeconds * fps));
+          this.startFramesWidget.value = newStartFrames;
+          this.startSecondsWidget.value = parseFloat((newStartFrames / fps).toFixed(3));
 
-          const endFrame = this.endFramesWidget.value || 1;
-          let newDurationFrames = Math.max(1, endFrame - newStartFrames);
-
-          if (newDurationFrames <= 1) {
-            newStartFrames = endFrame - 1;
-            newStartSeconds = newStartFrames / this.getFrameRate();
-            this.startSecondsWidget.value = parseFloat(newStartSeconds.toFixed(3));
-            newDurationFrames = 1;
+          const currentDurFrames = getNearestH3LatticeFrame(this.getDurationFrames(), Infinity, 0);
+          this.durationFramesWidget.value = currentDurFrames;
+          if (this.durationSecondsWidget) {
+            this.durationSecondsWidget.value = parseFloat((currentDurFrames / fps).toFixed(3));
           }
 
-          this.startFramesWidget.value = newStartFrames;
-
-          this.durationFramesWidget.value = newDurationFrames;
-          if (this.durationSecondsWidget) {
-            this.durationSecondsWidget.value = parseFloat((newDurationFrames / this.getFrameRate()).toFixed(3));
+          const newEndFrames = newStartFrames + currentDurFrames;
+          this.endFramesWidget.value = newEndFrames;
+          if (this.endSecondsWidget) {
+            this.endSecondsWidget.value = parseFloat((newEndFrames / fps).toFixed(3));
           }
 
           this._prevStartFrames = newStartFrames;
@@ -1815,6 +1826,11 @@ class TimelineEditor {
         }
 
         this.commitChanges();
+        this.render();
+        if (this.node) this.node.setDirtyCanvas(true, true);
+        if (window.app && window.app.graph) {
+          window.app.graph.setDirtyCanvas(true, true);
+        }
       };
     }
 
@@ -1827,27 +1843,34 @@ class TimelineEditor {
         if (!isSyncing && this.endSecondsWidget && this.durationFramesWidget && this.startFramesWidget) {
           isSyncing = true;
 
-          let newEndFrames = this.endFramesWidget.value;
+          const fps = this.getFrameRate();
+          let newEndFrames = parseInt(this.endFramesWidget.value, 10) || 1;
           const startFrame = this.startFramesWidget.value || 0;
-          let newDurationFrames = Math.max(1, newEndFrames - startFrame);
+          let rawDurationFrames = Math.max(1, newEndFrames - startFrame);
+          const snappedDurationFrames = getNearestH3LatticeFrame(rawDurationFrames, Infinity, 0);
 
-          if (newDurationFrames <= 1) {
-            newEndFrames = startFrame + 1;
-            this.endFramesWidget.value = newEndFrames;
-            newDurationFrames = 1;
+          newEndFrames = startFrame + snappedDurationFrames;
+          this.endFramesWidget.value = newEndFrames;
+          if (this.endSecondsWidget) {
+            this.endSecondsWidget.value = parseFloat((newEndFrames / fps).toFixed(3));
           }
 
-          this.endSecondsWidget.value = parseFloat((newEndFrames / this.getFrameRate()).toFixed(3));
-
-          this.durationFramesWidget.value = newDurationFrames;
+          this.durationFramesWidget.value = snappedDurationFrames;
           if (this.durationSecondsWidget) {
-            this.durationSecondsWidget.value = parseFloat((newDurationFrames / this.getFrameRate()).toFixed(3));
+            this.durationSecondsWidget.value = parseFloat((snappedDurationFrames / fps).toFixed(3));
           }
+
+          this.timeline.normalDurationFrames = snappedDurationFrames;
 
           isSyncing = false;
         }
 
         this.commitChanges();
+        this.render();
+        if (this.node) this.node.setDirtyCanvas(true, true);
+        if (window.app && window.app.graph) {
+          window.app.graph.setDirtyCanvas(true, true);
+        }
       };
     }
 
@@ -1859,30 +1882,34 @@ class TimelineEditor {
         if (!isSyncing && this.endFramesWidget && this.durationSecondsWidget && this.startFramesWidget) {
           isSyncing = true;
 
-          let newEndSeconds = this.endSecondsWidget.value;
-          let newEndFrames = Math.max(1, Math.round(newEndSeconds * this.getFrameRate()));
+          const fps = this.getFrameRate();
+          let newEndSeconds = parseFloat(this.endSecondsWidget.value) || 0.1;
+          let newEndFrames = Math.max(1, Math.round(newEndSeconds * fps));
 
           const startFrame = this.startFramesWidget.value || 0;
-          let newDurationFrames = Math.max(1, newEndFrames - startFrame);
+          let rawDurationFrames = Math.max(1, newEndFrames - startFrame);
+          const snappedDurationFrames = getNearestH3LatticeFrame(rawDurationFrames, Infinity, 0);
 
-          if (newDurationFrames <= 1) {
-            newEndFrames = startFrame + 1;
-            newEndSeconds = newEndFrames / this.getFrameRate();
-            this.endSecondsWidget.value = parseFloat(newEndSeconds.toFixed(3));
-            newDurationFrames = 1;
-          }
-
+          newEndFrames = startFrame + snappedDurationFrames;
           this.endFramesWidget.value = newEndFrames;
+          this.endSecondsWidget.value = parseFloat((newEndFrames / fps).toFixed(3));
 
-          this.durationFramesWidget.value = newDurationFrames;
+          this.durationFramesWidget.value = snappedDurationFrames;
           if (this.durationSecondsWidget) {
-            this.durationSecondsWidget.value = parseFloat((newDurationFrames / this.getFrameRate()).toFixed(3));
+            this.durationSecondsWidget.value = parseFloat((snappedDurationFrames / fps).toFixed(3));
           }
+
+          this.timeline.normalDurationFrames = snappedDurationFrames;
 
           isSyncing = false;
         }
 
         this.commitChanges();
+        this.render();
+        if (this.node) this.node.setDirtyCanvas(true, true);
+        if (window.app && window.app.graph) {
+          window.app.graph.setDirtyCanvas(true, true);
+        }
       };
     }
 
@@ -1894,16 +1921,31 @@ class TimelineEditor {
 
         if (!isSyncing && this.durationSecondsWidget && this.startFramesWidget && this.endFramesWidget) {
           isSyncing = true;
-          this.durationSecondsWidget.value = parseFloat((this.getDurationFrames() / this.getFrameRate()).toFixed(3));
+          const fps = this.getFrameRate();
+          const rawFrames = parseInt(this.durationFramesWidget.value, 10) || 5;
+          const snappedFrames = getNearestH3LatticeFrame(rawFrames, Infinity, 0);
+          this.durationFramesWidget.value = snappedFrames;
 
-          const newEndFrames = this.startFramesWidget.value + this.getDurationFrames();
+          const snappedSeconds = parseFloat((snappedFrames / fps).toFixed(3));
+          this.durationSecondsWidget.value = snappedSeconds;
+
+          const newEndFrames = (this.startFramesWidget.value || 0) + snappedFrames;
           this.endFramesWidget.value = newEndFrames;
-          this.endSecondsWidget.value = parseFloat((newEndFrames / this.getFrameRate()).toFixed(3));
+          if (this.endSecondsWidget) {
+            this.endSecondsWidget.value = parseFloat((newEndFrames / fps).toFixed(3));
+          }
+
+          this.timeline.normalDurationFrames = snappedFrames;
 
           isSyncing = false;
         }
 
         this.commitChanges();
+        this.render();
+        if (this.node) this.node.setDirtyCanvas(true, true);
+        if (window.app && window.app.graph) {
+          window.app.graph.setDirtyCanvas(true, true);
+        }
       };
     }
 
@@ -1914,17 +1956,32 @@ class TimelineEditor {
 
         if (!isSyncing && this.durationFramesWidget && this.startFramesWidget && this.endFramesWidget) {
           isSyncing = true;
-          const newFrames = Math.max(1, Math.round(this.durationSecondsWidget.value * this.getFrameRate()));
-          this.durationFramesWidget.value = newFrames;
+          const fps = this.getFrameRate();
+          const rawSec = Math.max(0.1, parseFloat(this.durationSecondsWidget.value) || 0.1);
+          const rawFrames = Math.round(rawSec * fps);
+          const snappedFrames = getNearestH3LatticeFrame(rawFrames, Infinity, 0);
+          const snappedSeconds = parseFloat((snappedFrames / fps).toFixed(3));
 
-          const newEndFrames = this.startFramesWidget.value + newFrames;
+          this.durationSecondsWidget.value = snappedSeconds;
+          this.durationFramesWidget.value = snappedFrames;
+
+          const newEndFrames = (this.startFramesWidget.value || 0) + snappedFrames;
           this.endFramesWidget.value = newEndFrames;
-          this.endSecondsWidget.value = parseFloat((newEndFrames / this.getFrameRate()).toFixed(3));
+          if (this.endSecondsWidget) {
+            this.endSecondsWidget.value = parseFloat((newEndFrames / fps).toFixed(3));
+          }
+
+          this.timeline.normalDurationFrames = snappedFrames;
 
           isSyncing = false;
         }
 
         this.commitChanges();
+        this.render();
+        if (this.node) this.node.setDirtyCanvas(true, true);
+        if (window.app && window.app.graph) {
+          window.app.graph.setDirtyCanvas(true, true);
+        }
       };
     }
 
@@ -1954,8 +2011,18 @@ class TimelineEditor {
             this.endFramesWidget.value = newEndFrames;
           }
 
-          const newFrames = Math.max(1, Math.round(this.durationSecondsWidget.value * newFPS));
-          this.durationFramesWidget.value = newFrames;
+          const rawFrames = Math.max(1, Math.round(this.durationSecondsWidget.value * newFPS));
+          const snappedFrames = getNearestH3LatticeFrame(rawFrames, Infinity, 0);
+          this.durationFramesWidget.value = snappedFrames;
+          this.durationSecondsWidget.value = parseFloat((snappedFrames / newFPS).toFixed(3));
+          this.timeline.normalDurationFrames = snappedFrames;
+          if (this.endFramesWidget) {
+            const newStart = this.startFramesWidget ? this.startFramesWidget.value : 0;
+            this.endFramesWidget.value = newStart + snappedFrames;
+            if (this.endSecondsWidget) {
+              this.endSecondsWidget.value = parseFloat(((newStart + snappedFrames) / newFPS).toFixed(3));
+            }
+          }
 
           // Update our tracked previous rate now that the change is complete.
           this._prevFrameRate = newFPS;
@@ -2150,18 +2217,33 @@ class TimelineEditor {
 
   // Grow the timeline duration to fit `requiredFrames` if it is currently shorter.
   // The timeline only ever grows — never shrinks — through this method.
+  // Snaps up to the nearest valid 17k+5 frame lattice.
   growTimelineIfNeeded(requiredFrames) {
     const current = this.getDurationFrames();
     if (requiredFrames <= current) return; // already big enough
 
-    const newFrames = Math.ceil(requiredFrames);
+    let k = Math.ceil((requiredFrames - 5) / 17);
+    if (k < 0) k = 0;
+    const newFrames = 17 * k + 5;
+    if (newFrames <= current) return;
+
     if (this.durationFramesWidget) {
       this.durationFramesWidget.value = newFrames;
     }
     if (this.durationSecondsWidget) {
       this.durationSecondsWidget.value = parseFloat((newFrames / this.getFrameRate()).toFixed(3));
     }
-    // Notify ComfyUI that the widget value changed so it serialises correctly.
+    const newEndFrames = (this.startFramesWidget ? this.startFramesWidget.value : 0) + newFrames;
+    if (this.endFramesWidget) {
+      this.endFramesWidget.value = newEndFrames;
+    }
+    if (this.endSecondsWidget) {
+      this.endSecondsWidget.value = parseFloat((newEndFrames / this.getFrameRate()).toFixed(3));
+    }
+    this.timeline.normalDurationFrames = newFrames;
+    this.commitChanges();
+    this.render();
+    if (this.node) this.node.setDirtyCanvas(true, true);
     if (window.app && window.app.graph) {
       window.app.graph.setDirtyCanvas(true, true);
     }
@@ -3193,10 +3275,10 @@ class TimelineEditor {
     cutFrameInput.addEventListener("change", (e) => {
       const cut = (this.timeline.cuts || []).find(c => c.id === this.selectedCutId);
       if (cut) {
-        const totalFrames = this.getVisualDurationFrames();
+        const maxTimelineFrames = this.getStartFrames() + this.getDurationFrames();
         const fps = this.getFrameRate();
         const rawF = parseInt(e.target.value, 10) || 5;
-        const validF = getValidCutFrame(rawF, cut.id, this.timeline.cuts, cut.overlap_frames || 22, totalFrames);
+        const validF = getValidCutFrame(rawF, cut.id, this.timeline.cuts, cut.overlap_frames || 22, maxTimelineFrames);
         if (validF !== null) {
           cut.frame_index = validF;
           cut.time_seconds = parseFloat((validF / fps).toFixed(3));
@@ -3230,11 +3312,11 @@ class TimelineEditor {
     cutTimeInput.addEventListener("change", (e) => {
       const cut = (this.timeline.cuts || []).find(c => c.id === this.selectedCutId);
       if (cut) {
-        const totalFrames = this.getVisualDurationFrames();
+        const maxTimelineFrames = this.getStartFrames() + this.getDurationFrames();
         const fps = this.getFrameRate();
         const tVal = Math.max(0.01, parseFloat(e.target.value) || 0.0);
         const rawF = Math.round(tVal * fps);
-        const validF = getValidCutFrame(rawF, cut.id, this.timeline.cuts, cut.overlap_frames || 22, totalFrames);
+        const validF = getValidCutFrame(rawF, cut.id, this.timeline.cuts, cut.overlap_frames || 22, maxTimelineFrames);
         if (validF !== null) {
           cut.frame_index = validF;
           cut.time_seconds = parseFloat((validF / fps).toFixed(3));
@@ -3273,8 +3355,8 @@ class TimelineEditor {
       const cut = (this.timeline.cuts || []).find(c => c.id === this.selectedCutId);
       if (cut) {
         const newOverlap = parseInt(e.target.value, 10) || 22;
-        const totalFrames = this.getVisualDurationFrames();
-        const validF = getValidCutFrame(cut.frame_index, cut.id, this.timeline.cuts, newOverlap, totalFrames);
+        const maxTimelineFrames = this.getStartFrames() + this.getDurationFrames();
+        const validF = getValidCutFrame(cut.frame_index, cut.id, this.timeline.cuts, newOverlap, maxTimelineFrames);
         if (validF === null) {
           alert("Cannot set this overlap duration: it would collide with adjacent cut zones.");
           cutOverlapSelect.value = String(cut.overlap_frames || 22);
@@ -4384,7 +4466,7 @@ class TimelineEditor {
 
       let mouseFrameX = x * (totalFrames / logicalWidth);
       const ghost = this._ghostInitialTimeline.find(s => s.id === this._ghostSegmentId);
-      let D_mouse_start = mouseFrameX - ghost.length / 2;
+      let D_mouse_start = Math.round(mouseFrameX - ghost.length / 2);
 
       this._previewSegments = this._applyCenterDragPhysics(
         this._ghostInitialTimeline,
@@ -4432,7 +4514,7 @@ class TimelineEditor {
       if (this._ghostSegmentId && this._previewSegments) {
         const ghost = this._previewSegments.find(s => s.id === this._ghostSegmentId);
         if (ghost) {
-          targetFrameStart = ghost.resolvedStart !== undefined ? ghost.resolvedStart : ghost.start;
+          targetFrameStart = Math.round(ghost.resolvedStart !== undefined ? ghost.resolvedStart : ghost.start);
         }
       }
       this._ghostSegmentId = null;
@@ -5417,21 +5499,21 @@ class TimelineEditor {
               for (let shiftedSeg of result) {
                 let original = this.timeline.segments.find(s => s.id === shiftedSeg.id);
                 if (original) {
-                  original.start = shiftedSeg.resolvedStart !== undefined ? shiftedSeg.resolvedStart : shiftedSeg.start;
+                  original.start = Math.round(shiftedSeg.resolvedStart !== undefined ? shiftedSeg.resolvedStart : shiftedSeg.start);
                 }
               }
 
               for (let shiftedSib of siblingPhysics) {
                 let originalSib = this.timeline.audioSegments.find(s => s.id === shiftedSib.id);
                 if (originalSib) {
-                  originalSib.start = shiftedSib.start;
+                  originalSib.start = Math.round(shiftedSib.start);
                 }
               }
 
               let tempSeg = this.timeline.segments.find(s => s.id === tempId);
-              newStart = tempSeg.start;
+              newStart = Math.round(tempSeg.start);
               this.timeline.segments = this.timeline.segments.filter(s => s.id !== tempId);
-              targetFrameStart = newStart + newLength; // For the next file in batch
+              targetFrameStart = Math.round(newStart + newLength); // For the next file in batch
             }
 
             // Use the full intended length — the timeline has already been grown to fit.
@@ -5656,18 +5738,18 @@ class TimelineEditor {
 
               for (let shiftedSeg of resultSegments) {
                 let original = this.timeline.segments.find(s => s.id === shiftedSeg.id);
-                if (original) original.start = shiftedSeg.resolvedStart !== undefined ? shiftedSeg.resolvedStart : shiftedSeg.start;
+                if (original) original.start = Math.round(shiftedSeg.resolvedStart !== undefined ? shiftedSeg.resolvedStart : shiftedSeg.start);
               }
               for (let shiftedSib of resultAudioSegments) {
                 let originalSib = this.timeline.audioSegments.find(s => s.id === shiftedSib.id);
-                if (originalSib) originalSib.start = shiftedSib.resolvedStart !== undefined ? shiftedSib.resolvedStart : shiftedSib.start;
+                if (originalSib) originalSib.start = Math.round(shiftedSib.resolvedStart !== undefined ? shiftedSib.resolvedStart : shiftedSib.start);
               }
 
               let tempVidSeg = resultSegments.find(s => s.id === tempVidId);
-              newStart = tempVidSeg.start;
+              newStart = Math.round(tempVidSeg.start);
               this.timeline.segments = this.timeline.segments.filter(s => s.id !== tempVidId);
               this.timeline.audioSegments = this.timeline.audioSegments.filter(s => s.id !== tempAudId);
-              targetFrameStart = newStart + newLength;
+              targetFrameStart = Math.round(newStart + newLength);
             }
 
             const sharedId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
@@ -5922,18 +6004,18 @@ class TimelineEditor {
       const result = this._applyCenterDragPhysics(this.timeline.motionSegments, tempId, newStart, newStart + newLength / 2, currentDuration, currentDuration, 1);
       for (const shiftedSeg of result) {
         const original = this.timeline.motionSegments.find(s => s.id === shiftedSeg.id);
-        if (original) original.start = shiftedSeg.resolvedStart !== undefined ? shiftedSeg.resolvedStart : shiftedSeg.start;
+        if (original) original.start = Math.round(shiftedSeg.resolvedStart !== undefined ? shiftedSeg.resolvedStart : shiftedSeg.start);
       }
       const tempSeg = this.timeline.motionSegments.find(s => s.id === tempId);
-      newStart = tempSeg.start;
+      newStart = Math.round(tempSeg.start);
       this.timeline.motionSegments = this.timeline.motionSegments.filter(s => s.id !== tempId);
     }
 
     const seg = {
       id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
       type: "motion_video",
-      start: newStart,
-      length: newLength,
+      start: Math.round(newStart),
+      length: Math.max(1, Math.round(newLength)),
       trimStart: 0,
       videoDurationFrames: clipFrames,
       videoFile: videoFile || "",   // filled in later when the upload runs in background
@@ -6161,29 +6243,29 @@ class TimelineEditor {
 
             for (let shiftedSeg of result) {
               let original = this.timeline.audioSegments.find(s => s.id === shiftedSeg.id);
-              if (original) original.start = shiftedSeg.resolvedStart !== undefined ? shiftedSeg.resolvedStart : shiftedSeg.start;
+              if (original) original.start = Math.round(shiftedSeg.resolvedStart !== undefined ? shiftedSeg.resolvedStart : shiftedSeg.start);
             }
 
             for (let shiftedSib of siblingPhysics) {
               let originalSib = this.timeline.segments.find(s => s.id === shiftedSib.id);
               if (originalSib) {
-                originalSib.start = shiftedSib.start;
+                originalSib.start = Math.round(shiftedSib.start);
               }
             }
 
             let tempSeg = this.timeline.audioSegments.find(s => s.id === tempId);
-            newStart = tempSeg.start;
+            newStart = Math.round(tempSeg.start);
             this.timeline.audioSegments = this.timeline.audioSegments.filter(s => s.id !== tempId);
-            targetFrameStart = newStart + newLength;
+            targetFrameStart = Math.round(newStart + newLength);
           }
 
           // Use the full clip length — timeline has already grown to fit.
-          let constrainedLength = newLength;
+          let constrainedLength = Math.max(1, Math.round(newLength));
 
           const seg = {
             id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
             type: "audio",
-            start: newStart,
+            start: Math.round(newStart),
             length: constrainedLength,
             trimStart: 0,
             audioDurationFrames: clipFrames,
@@ -6430,12 +6512,13 @@ class TimelineEditor {
 
   pasteSegmentAtFrame(copiedSegData, copiedTrack, siblingSegData, startFrame) {
     const isAudio = copiedTrack === "audio";
+    startFrame = Math.round(startFrame);
 
     const randId = () => Date.now().toString() + Math.random().toString(36).substr(2, 5);
     const baseId = randId();
 
-    let mainSeg = { ...copiedSegData };
-    let sibSeg = siblingSegData ? { ...siblingSegData } : null;
+    let mainSeg = { ...copiedSegData, start: startFrame, length: Math.max(1, Math.round(copiedSegData.length)) };
+    let sibSeg = siblingSegData ? { ...siblingSegData, start: startFrame, length: Math.max(1, Math.round(siblingSegData.length)) } : null;
 
     if (sibSeg) {
       mainSeg.id = baseId + (isAudio ? "_a" : "_v");
@@ -6544,8 +6627,8 @@ class TimelineEditor {
     const leftBase = randId();
     const rightBase = randId();
 
-    const leftLen = splitFrame - seg.start;
-    const rightLen = seg.start + seg.length - splitFrame;
+    const leftLen = Math.max(1, Math.round(splitFrame - seg.start));
+    const rightLen = Math.max(1, Math.round(seg.start + seg.length - splitFrame));
 
     if (sibling) {
       const videoSeg = isVidLink ? seg : sibling;
@@ -8737,9 +8820,12 @@ class TimelineEditor {
       }
 
       // --- Cut Region 2px Top Horizontal Lines & Duration Labels ---
-      const sortedCuts = (this.timeline.cuts || []).slice().sort((a, b) => a.frame_index - b.frame_index);
+      const sortedCuts = (this.timeline.cuts || [])
+        .filter(c => c.frame_index > startFrames && c.frame_index < outputFrames)
+        .slice()
+        .sort((a, b) => a.frame_index - b.frame_index);
       const regions = [];
-      let prevFrame = 0;
+      let prevFrame = startFrames;
       let prevKey = "start";
       for (let i = 0; i < sortedCuts.length; i++) {
         const cut = sortedCuts[i];
@@ -8753,10 +8839,10 @@ class TimelineEditor {
         prevFrame = cut.frame_index;
         prevKey = cut.id;
       }
-      if (totalFrames > prevFrame) {
+      if (outputFrames > prevFrame) {
         regions.push({
           startFrame: prevFrame,
-          endFrame: totalFrames,
+          endFrame: outputFrames,
           key: prevKey + "_end"
         });
       }
@@ -8912,7 +8998,7 @@ class TimelineEditor {
 
         let genFrames = 0;
         if (i === 0) {
-          genFrames = reg.endFrame; // 0 to cut[0].frame_index (or totalFrames)
+          genFrames = reg.endFrame - reg.startFrame;
         } else {
           const prevCut = sortedCuts[i - 1];
           const overlap = prevCut.overlap_frames || 22;
@@ -10096,9 +10182,10 @@ class TimelineEditor {
       if (cut) {
         const logicalWidth = this.canvas.offsetWidth;
         const totalFrames = this.getVisualDurationFrames();
+        const maxTimelineFrames = this.getStartFrames() + this.getDurationFrames();
         const fps = this.getFrameRate();
         let rawTargetFrame = Math.round(mouseX * (totalFrames / logicalWidth));
-        let validFrame = getValidCutFrame(rawTargetFrame, cut.id, this.timeline.cuts, cut.overlap_frames || 22, totalFrames);
+        let validFrame = getValidCutFrame(rawTargetFrame, cut.id, this.timeline.cuts, cut.overlap_frames || 22, maxTimelineFrames);
         if (validFrame !== null) {
           cut.frame_index = validFrame;
           cut.time_seconds = parseFloat((validFrame / fps).toFixed(3));
@@ -10172,14 +10259,21 @@ class TimelineEditor {
         if (this.endFramesWidget && this.endFramesWidget.value !== undefined) {
           snapCandidates.push(parseInt(this.endFramesWidget.value, 10));
         }
+        if (this.timeline.cuts && Array.isArray(this.timeline.cuts)) {
+          for (const cut of this.timeline.cuts) {
+            if (cut && cut.frame_index !== undefined) {
+              snapCandidates.push(Math.round(cut.frame_index));
+            }
+          }
+        }
 
         for (const track of ["image", "motion", "audio"]) {
           const allTrackSegs = this._multiDragInitialSegments[track];
           if (!allTrackSegs) continue;
           const nonSelectedOnTrack = allTrackSegs.filter(s => !selectedIds.includes(s.id));
           for (const L of nonSelectedOnTrack) {
-            snapCandidates.push(L.start);
-            snapCandidates.push(L.start + L.length);
+            snapCandidates.push(Math.round(L.start));
+            snapCandidates.push(Math.round(L.start + L.length));
           }
         }
 
@@ -10217,23 +10311,25 @@ class TimelineEditor {
         }
       }
 
+      clampedDragDelta = Math.round(clampedDragDelta);
+
       // Compute previews
       this._multiDragPreviewTimelines = {
         image: this._multiDragInitialSegments.image.map(s => {
           if (selectedIds.includes(s.id)) {
-            return { ...s, start: s.start + clampedDragDelta };
+            return { ...s, start: Math.round(s.start + clampedDragDelta), length: Math.max(1, Math.round(s.length)) };
           }
           return s;
         }),
         motion: this._multiDragInitialSegments.motion.map(s => {
           if (selectedIds.includes(s.id)) {
-            return { ...s, start: s.start + clampedDragDelta };
+            return { ...s, start: Math.round(s.start + clampedDragDelta), length: Math.max(1, Math.round(s.length)) };
           }
           return s;
         }),
         audio: this._multiDragInitialSegments.audio.map(s => {
           if (selectedIds.includes(s.id)) {
-            return { ...s, start: s.start + clampedDragDelta };
+            return { ...s, start: Math.round(s.start + clampedDragDelta), length: Math.max(1, Math.round(s.length)) };
           }
           return s;
         })
@@ -10300,6 +10396,13 @@ class TimelineEditor {
           if (this.endFramesWidget && this.endFramesWidget.value !== undefined) {
             snapCandidates.push(parseInt(this.endFramesWidget.value, 10));
           }
+          if (this.timeline.cuts && Array.isArray(this.timeline.cuts)) {
+            for (const cut of this.timeline.cuts) {
+              if (cut && cut.frame_index !== undefined) {
+                snapCandidates.push(Math.round(cut.frame_index));
+              }
+            }
+          }
           const allTracks = [
             this.timeline.segments || [],
             this.timeline.motionSegments || [],
@@ -10309,8 +10412,8 @@ class TimelineEditor {
           for (const track of allTracks) {
             for (const seg of track) {
               if (ignoreIds.includes(String(seg.id))) continue;
-              snapCandidates.push(seg.start);
-              snapCandidates.push(seg.start + seg.length);
+              snapCandidates.push(Math.round(seg.start));
+              snapCandidates.push(Math.round(seg.start + seg.length));
             }
           }
 
@@ -10324,14 +10427,15 @@ class TimelineEditor {
           dragDelta = bestJoint - (origLeft.start + origLeft.length);
         }
 
-        let safeDelta = clamp(dragDelta, -maxDeltaLeft, maxDeltaRight);
+        dragDelta = Math.round(dragDelta);
+        let safeDelta = Math.round(clamp(dragDelta, -maxDeltaLeft, maxDeltaRight));
 
-        t[leftIdx].length = origLeft.length + safeDelta;
-        t[rightIdx].start = origRight.start + safeDelta;
-        t[rightIdx].length = origRight.length - safeDelta;
+        t[leftIdx].length = Math.max(MIN_SEGMENT_LENGTH, Math.round(origLeft.length + safeDelta));
+        t[rightIdx].start = Math.round(origRight.start + safeDelta);
+        t[rightIdx].length = Math.max(MIN_SEGMENT_LENGTH, Math.round(origRight.length - safeDelta));
 
         if (this.selectionType === "audio" || t[rightIdx].type === "video") {
-          t[rightIdx].trimStart = origRight.trimStart + safeDelta;
+          t[rightIdx].trimStart = Math.round(origRight.trimStart + safeDelta);
         }
       }
     }
@@ -10354,6 +10458,13 @@ class TimelineEditor {
           if (this.endFramesWidget && this.endFramesWidget.value !== undefined) {
             snapCandidates.push(parseInt(this.endFramesWidget.value, 10));
           }
+          if (this.timeline.cuts && Array.isArray(this.timeline.cuts)) {
+            for (const cut of this.timeline.cuts) {
+              if (cut && cut.frame_index !== undefined) {
+                snapCandidates.push(Math.round(cut.frame_index));
+              }
+            }
+          }
           const allTracks = [
             this.timeline.segments || [],
             this.timeline.motionSegments || [],
@@ -10370,8 +10481,8 @@ class TimelineEditor {
           for (const track of allTracks) {
             for (const seg of track) {
               if (ignoreSegmentIds.includes(String(seg.id))) continue;
-              snapCandidates.push(seg.start);
-              snapCandidates.push(seg.start + seg.length);
+              snapCandidates.push(Math.round(seg.start));
+              snapCandidates.push(Math.round(seg.start + seg.length));
             }
           }
 
@@ -10382,7 +10493,7 @@ class TimelineEditor {
               bestEnd = candidate;
             }
           }
-          newLen = bestEnd - t[targetIdx].start;
+          newLen = Math.round(bestEnd - t[targetIdx].start);
           dragDelta = newLen - t[targetIdx].length;
         }
         let maxPossibleLength = totalFrames - t[targetIdx].start;
@@ -10408,7 +10519,7 @@ class TimelineEditor {
           maxPossibleLength = Math.min(maxPossibleLength, origDur - (t[targetIdx].trimStart || 0));
         }
 
-        t[targetIdx].length = Math.max(MIN_SEGMENT_LENGTH, Math.min(newLen, maxPossibleLength));
+        t[targetIdx].length = Math.max(MIN_SEGMENT_LENGTH, Math.round(Math.min(newLen, maxPossibleLength)));
 
       } else if (this._dragType === "left") {
         let newStart = t[targetIdx].start + dragDelta;
@@ -10422,6 +10533,13 @@ class TimelineEditor {
           snapCandidates.push(this.getStartFrames());
           if (this.endFramesWidget && this.endFramesWidget.value !== undefined) {
             snapCandidates.push(parseInt(this.endFramesWidget.value, 10));
+          }
+          if (this.timeline.cuts && Array.isArray(this.timeline.cuts)) {
+            for (const cut of this.timeline.cuts) {
+              if (cut && cut.frame_index !== undefined) {
+                snapCandidates.push(Math.round(cut.frame_index));
+              }
+            }
           }
           const allTracks = [
             this.timeline.segments || [],
@@ -10439,8 +10557,8 @@ class TimelineEditor {
           for (const track of allTracks) {
             for (const seg of track) {
               if (ignoreSegmentIds.includes(String(seg.id))) continue;
-              snapCandidates.push(seg.start);
-              snapCandidates.push(seg.start + seg.length);
+              snapCandidates.push(Math.round(seg.start));
+              snapCandidates.push(Math.round(seg.start + seg.length));
             }
           }
 
@@ -10451,7 +10569,7 @@ class TimelineEditor {
               bestStart = candidate;
             }
           }
-          newStart = bestStart;
+          newStart = Math.round(bestStart);
           dragDelta = newStart - t[targetIdx].start;
         }
         let minPossibleStart = 0;
@@ -10477,13 +10595,13 @@ class TimelineEditor {
         }
 
         let maxStart = t[targetIdx].start + t[targetIdx].length - MIN_SEGMENT_LENGTH;
-        newStart = Math.max(minPossibleStart, Math.min(newStart, maxStart));
+        newStart = Math.round(Math.max(minPossibleStart, Math.min(newStart, maxStart)));
 
         let diff = newStart - t[targetIdx].start;
         t[targetIdx].start = newStart;
-        t[targetIdx].length -= diff;
+        t[targetIdx].length = Math.max(MIN_SEGMENT_LENGTH, Math.round(t[targetIdx].length - diff));
         if (this.selectionType === "audio" || t[targetIdx].type === "video" || t[targetIdx].type === "motion_video") {
-          t[targetIdx].trimStart += diff;
+          t[targetIdx].trimStart = Math.round(t[targetIdx].trimStart + diff);
         }
 
       } else if (this._dragType === "center") {
@@ -10506,6 +10624,13 @@ class TimelineEditor {
           if (this.endFramesWidget && this.endFramesWidget.value !== undefined) {
             snapCandidates.push(parseInt(this.endFramesWidget.value, 10));
           }
+          if (this.timeline.cuts && Array.isArray(this.timeline.cuts)) {
+            for (const cut of this.timeline.cuts) {
+              if (cut && cut.frame_index !== undefined) {
+                snapCandidates.push(Math.round(cut.frame_index));
+              }
+            }
+          }
           const allTracks = [
             this.timeline.segments || [],
             this.timeline.motionSegments || [],
@@ -10522,8 +10647,8 @@ class TimelineEditor {
           for (const track of allTracks) {
             for (const seg of track) {
               if (ignoreSegmentIds.includes(String(seg.id))) continue;
-              snapCandidates.push(seg.start);
-              snapCandidates.push(seg.start + seg.length);
+              snapCandidates.push(Math.round(seg.start));
+              snapCandidates.push(Math.round(seg.start + seg.length));
             }
           }
 
@@ -10542,10 +10667,12 @@ class TimelineEditor {
             }
           }
           const rawStart = D_mouse_start;
-          D_mouse_start = bestStart;
+          D_mouse_start = Math.round(bestStart);
           const snapOffset = D_mouse_start - rawStart;
           dragDelta = D_mouse_start - D.start;
           mouseFrameX += snapOffset;
+        } else {
+          D_mouse_start = Math.round(D_mouse_start);
         }
 
         t = this._applyCenterDragPhysics(initT, D.id, D_mouse_start, mouseFrameX, durationFrames, totalFrames, logicalWidth);
@@ -10566,7 +10693,7 @@ class TimelineEditor {
               const origStart = D.start;
               const activeDelta = Math.abs(activeFinal.start - origStart);
               const siblingDelta = Math.abs(siblingFinal.start - origStart);
-              const finalStart = activeDelta < siblingDelta ? activeFinal.start : siblingFinal.start;
+              const finalStart = Math.round(activeDelta < siblingDelta ? activeFinal.start : siblingFinal.start);
 
               const finalMouseX = finalStart + D.length / 2;
               t = this._applyCenterDragPhysics(initT, D.id, finalStart, finalMouseX, durationFrames, totalFrames, logicalWidth, true);
@@ -10639,7 +10766,7 @@ class TimelineEditor {
     if (dIdx < 0) return t_copy;
 
     let D = t_copy[dIdx];
-    let D_clamped_start = clamp(D_mouse_start, 0, durationFrames - D.length);
+    let D_clamped_start = Math.round(clamp(D_mouse_start, 0, durationFrames - D.length));
 
     let baseSegments = t_copy.filter(s => s.id !== D.id);
 
@@ -10657,58 +10784,60 @@ class TimelineEditor {
       let rightBound = insertIdx < baseSegments.length ? baseSegments[insertIdx].start : durationFrames;
 
       if (rightBound - leftBound >= D.length) {
-        D_clamped_start = clamp(D_clamped_start, leftBound, rightBound - D.length);
+        D_clamped_start = Math.round(clamp(D_clamped_start, leftBound, rightBound - D.length));
       } else {
-        let gapCenter = (leftBound + rightBound) / 2;
-        D_clamped_start = gapCenter - D.length / 2;
+        let gapCenter = Math.round((leftBound + rightBound) / 2);
+        D_clamped_start = Math.round(gapCenter - D.length / 2);
       }
     }
 
     let t_test = [];
     for (let i = 0; i < insertIdx; i++) {
-      t_test.push({ ...baseSegments[i], original_start: baseSegments[i].start });
+      t_test.push({ ...baseSegments[i], original_start: Math.round(baseSegments[i].start) });
     }
     t_test.push({ ...D, start: D_clamped_start, original_start: D_clamped_start });
     let D_index = insertIdx;
 
     for (let i = insertIdx; i < baseSegments.length; i++) {
-      t_test.push({ ...baseSegments[i], original_start: baseSegments[i].start });
+      t_test.push({ ...baseSegments[i], original_start: Math.round(baseSegments[i].start) });
     }
 
     for (let i = D_index + 1; i < t_test.length; i++) {
       let prev = t_test[i - 1];
-      t_test[i].start = Math.max(t_test[i].original_start, prev.start + prev.length);
+      t_test[i].start = Math.round(Math.max(t_test[i].original_start, prev.start + prev.length));
     }
 
     for (let i = D_index - 1; i >= 0; i--) {
       let next = t_test[i + 1];
-      t_test[i].start = Math.min(t_test[i].original_start, next.start - t_test[i].length);
+      t_test[i].start = Math.round(Math.min(t_test[i].original_start, next.start - t_test[i].length));
     }
 
     let rightCursor = durationFrames;
     for (let i = t_test.length - 1; i >= 0; i--) {
       if (t_test[i].start + t_test[i].length > rightCursor) {
-        t_test[i].start = rightCursor - t_test[i].length;
+        t_test[i].start = Math.round(rightCursor - t_test[i].length);
       }
       rightCursor = t_test[i].start;
     }
     let leftCursor = 0;
     for (let i = 0; i < t_test.length; i++) {
       if (t_test[i].start < leftCursor) {
-        t_test[i].start = leftCursor;
+        t_test[i].start = Math.round(leftCursor);
       }
       leftCursor = t_test[i].start + t_test[i].length;
     }
 
     let result = t_test.map(s => {
       let clean = { ...s };
+      clean.start = Math.round(clean.start);
+      clean.length = Math.max(1, Math.round(clean.length));
       delete clean.original_start;
       return clean;
     });
 
     let draggedPreview = result.find(s => s.id === D.id);
     if (draggedPreview) {
-      draggedPreview.resolvedStart = draggedPreview.start;
+      draggedPreview.resolvedStart = Math.round(draggedPreview.start);
     }
 
     return result;
@@ -10753,7 +10882,7 @@ class TimelineEditor {
               const dSib = Math.abs(sib.start - sibOrigStart);
 
               // The segment that was pushed furthest dictates the new position
-              const targetStart = dSeg > dSib ? seg.start : sib.start;
+              const targetStart = Math.round(dSeg > dSib ? seg.start : sib.start);
 
               if (seg.start !== targetStart) {
                 seg.start = targetStart;
@@ -10779,7 +10908,7 @@ class TimelineEditor {
             // Push elements to the right of the epicenter
             for (let i = epIndex + 1; i < track.length; i++) {
               let prev = track[i - 1];
-              let targetStart = prev.start + prev.length;
+              let targetStart = Math.round(prev.start + prev.length);
               if (track[i].start < targetStart) {
                 track[i].start = targetStart;
                 didChange = true;
@@ -10788,7 +10917,7 @@ class TimelineEditor {
             // Push elements to the left of the epicenter
             for (let i = epIndex - 1; i >= 0; i--) {
               let next = track[i + 1];
-              let targetStart = next.start - track[i].length;
+              let targetStart = Math.round(next.start - track[i].length);
               if (track[i].start > targetStart) {
                 track[i].start = targetStart;
                 didChange = true;
@@ -10800,7 +10929,7 @@ class TimelineEditor {
           let rightCursor = durationFrames;
           for (let i = track.length - 1; i >= 0; i--) {
             if (track[i].start + track[i].length > rightCursor) {
-              let newStart = rightCursor - track[i].length;
+              let newStart = Math.round(rightCursor - track[i].length);
               if (track[i].start !== newStart) { track[i].start = newStart; didChange = true; }
             }
             rightCursor = track[i].start;
@@ -10809,7 +10938,7 @@ class TimelineEditor {
           let leftCursor = 0;
           for (let i = 0; i < track.length; i++) {
             if (track[i].start < leftCursor) {
-              let newStart = leftCursor;
+              let newStart = Math.round(leftCursor);
               if (track[i].start !== newStart) { track[i].start = newStart; didChange = true; }
             }
             leftCursor = track[i].start + track[i].length;
@@ -10925,49 +11054,52 @@ class TimelineEditor {
         if (this._multiDragPreviewTimelines.image) {
           this.timeline.segments = this._multiDragPreviewTimelines.image.map(ps => {
             const orig = this.timeline.segments.find(s => s.id === ps.id);
+            let newPs = { ...ps, start: Math.round(ps.start), length: Math.max(1, Math.round(ps.length)) };
             if (orig) {
-              if (orig.imgObj) ps.imgObj = orig.imgObj;
-              if (orig.videoEl) ps.videoEl = orig.videoEl;
-              if (orig.thumbnails) ps.thumbnails = orig.thumbnails;
-              if (orig._extractingThumbs !== undefined) ps._extractingThumbs = orig._extractingThumbs;
-              if (orig._uploading !== undefined) ps._uploading = orig._uploading;
-              if (orig._decoding !== undefined) ps._decoding = orig._decoding;
-              if (orig._blobUrl !== undefined) ps._blobUrl = orig._blobUrl;
-              if (orig._audioBuffer !== undefined) ps._audioBuffer = orig._audioBuffer;
+              if (orig.imgObj) newPs.imgObj = orig.imgObj;
+              if (orig.videoEl) newPs.videoEl = orig.videoEl;
+              if (orig.thumbnails) newPs.thumbnails = orig.thumbnails;
+              if (orig._extractingThumbs !== undefined) newPs._extractingThumbs = orig._extractingThumbs;
+              if (orig._uploading !== undefined) newPs._uploading = orig._uploading;
+              if (orig._decoding !== undefined) newPs._decoding = orig._decoding;
+              if (orig._blobUrl !== undefined) newPs._blobUrl = orig._blobUrl;
+              if (orig._audioBuffer !== undefined) newPs._audioBuffer = orig._audioBuffer;
             }
-            return ps;
+            return newPs;
           });
         }
         if (this._multiDragPreviewTimelines.motion) {
           this.timeline.motionSegments = this._multiDragPreviewTimelines.motion.map(ps => {
             const orig = this.timeline.motionSegments.find(s => s.id === ps.id);
+            let newPs = { ...ps, start: Math.round(ps.start), length: Math.max(1, Math.round(ps.length)) };
             if (orig) {
-              if (orig.imgObj) ps.imgObj = orig.imgObj;
-              if (orig.videoEl) ps.videoEl = orig.videoEl;
-              if (orig.thumbnails) ps.thumbnails = orig.thumbnails;
-              if (orig._extractingThumbs !== undefined) ps._extractingThumbs = orig._extractingThumbs;
-              if (orig._uploading !== undefined) ps._uploading = orig._uploading;
-              if (orig._decoding !== undefined) ps._decoding = orig._decoding;
-              if (orig._blobUrl !== undefined) ps._blobUrl = orig._blobUrl;
-              if (orig._audioBuffer !== undefined) ps._audioBuffer = orig._audioBuffer;
+              if (orig.imgObj) newPs.imgObj = orig.imgObj;
+              if (orig.videoEl) newPs.videoEl = orig.videoEl;
+              if (orig.thumbnails) newPs.thumbnails = orig.thumbnails;
+              if (orig._extractingThumbs !== undefined) newPs._extractingThumbs = orig._extractingThumbs;
+              if (orig._uploading !== undefined) newPs._uploading = orig._uploading;
+              if (orig._decoding !== undefined) newPs._decoding = orig._decoding;
+              if (orig._blobUrl !== undefined) newPs._blobUrl = orig._blobUrl;
+              if (orig._audioBuffer !== undefined) newPs._audioBuffer = orig._audioBuffer;
             }
-            return ps;
+            return newPs;
           });
         }
         if (this._multiDragPreviewTimelines.audio) {
           this.timeline.audioSegments = this._multiDragPreviewTimelines.audio.map(ps => {
             const orig = this.timeline.audioSegments.find(s => s.id === ps.id);
+            let newPs = { ...ps, start: Math.round(ps.start), length: Math.max(1, Math.round(ps.length)) };
             if (orig) {
-              if (orig.imgObj) ps.imgObj = orig.imgObj;
-              if (orig.videoEl) ps.videoEl = orig.videoEl;
-              if (orig.thumbnails) ps.thumbnails = orig.thumbnails;
-              if (orig._extractingThumbs !== undefined) ps._extractingThumbs = orig._extractingThumbs;
-              if (orig._uploading !== undefined) ps._uploading = orig._uploading;
-              if (orig._decoding !== undefined) ps._decoding = orig._decoding;
-              if (orig._blobUrl !== undefined) ps._blobUrl = orig._blobUrl;
-              if (orig._audioBuffer !== undefined) ps._audioBuffer = orig._audioBuffer;
+              if (orig.imgObj) newPs.imgObj = orig.imgObj;
+              if (orig.videoEl) newPs.videoEl = orig.videoEl;
+              if (orig.thumbnails) newPs.thumbnails = orig.thumbnails;
+              if (orig._extractingThumbs !== undefined) newPs._extractingThumbs = orig._extractingThumbs;
+              if (orig._uploading !== undefined) newPs._uploading = orig._uploading;
+              if (orig._decoding !== undefined) newPs._decoding = orig._decoding;
+              if (orig._blobUrl !== undefined) newPs._blobUrl = orig._blobUrl;
+              if (orig._audioBuffer !== undefined) newPs._audioBuffer = orig._audioBuffer;
             }
-            return ps;
+            return newPs;
           });
         }
         this._multiDragPreviewTimelines = null;
@@ -10976,8 +11108,8 @@ class TimelineEditor {
 
         const mappedArray = this._previewSegments.map(ps => {
           const orig = targetArray.find(s => s.id === ps.id);
-          let finalStart = ps.resolvedStart !== undefined ? ps.resolvedStart : ps.start;
-          let newPs = { ...ps, start: finalStart };
+          let finalStart = Math.round(ps.resolvedStart !== undefined ? ps.resolvedStart : ps.start);
+          let newPs = { ...ps, start: finalStart, length: Math.max(1, Math.round(ps.length)) };
           if (orig) {
             if (orig.imgObj) newPs.imgObj = orig.imgObj;
             if (orig.videoEl) newPs.videoEl = orig.videoEl;
@@ -11012,8 +11144,8 @@ class TimelineEditor {
         if (siblingArray) {
           const mappedSibling = this._previewSiblingSegments.map(ps => {
             const orig = siblingArray.find(s => s.id === ps.id);
-            let finalStart = ps.resolvedStart !== undefined ? ps.resolvedStart : ps.start;
-            let newPs = { ...ps, start: finalStart };
+            let finalStart = Math.round(ps.resolvedStart !== undefined ? ps.resolvedStart : ps.start);
+            let newPs = { ...ps, start: finalStart, length: Math.max(1, Math.round(ps.length)) };
             if (orig) {
               if (orig.imgObj) newPs.imgObj = orig.imgObj;
               if (orig.videoEl) newPs.videoEl = orig.videoEl;
@@ -11979,14 +12111,22 @@ class TimelineEditor {
       })),
       segments: sortedSegments.map(s => {
         const { imgObj, videoEl, _isSeeking, thumbnails, _extractingThumbs, _sSecs, _lSecs, _tSecs, _dSecs, _uploading, _blobUrl, ...rest } = s;
+        rest.start = Math.round(rest.start || 0);
+        rest.length = Math.max(1, Math.round(rest.length || 1));
         return rest;
       }),
       motionSegments: (this.timeline.motionSegments || []).map(s => {
         const { imgObj, videoEl, _isSeeking, thumbnails, _extractingThumbs, _sSecs, _lSecs, _tSecs, _dSecs, _uploading, _blobUrl, ...rest } = s;
+        rest.start = Math.round(rest.start || 0);
+        rest.length = Math.max(1, Math.round(rest.length || 1));
+        if (rest.trimStart !== undefined) rest.trimStart = Math.round(rest.trimStart);
         return rest;
       }),
       audioSegments: (this.timeline.audioSegments || []).map(s => {
         const { _sSecs, _lSecs, _tSecs, _dSecs, _uploading, _decoding, _blobUrl, _audioBuffer, ...rest } = s;
+        rest.start = Math.round(rest.start || 0);
+        rest.length = Math.max(1, Math.round(rest.length || 1));
+        if (rest.trimStart !== undefined) rest.trimStart = Math.round(rest.trimStart);
         return rest;
       }),
       cuts: (this.timeline.cuts || []).map(c => {
@@ -14174,9 +14314,12 @@ class TimelineEditor {
 
 
   addSegmentInGap(frameStart, frameEnd, type = "text") {
+    const start = Math.round(frameStart);
+    const length = Math.max(1, Math.round(frameEnd - frameStart));
     const seg = {
       id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
-      start: frameStart, length: frameEnd - frameStart,
+      start: start,
+      length: length,
       prompt: "", type,
     };
     this.timeline.segments.push(seg);
@@ -14193,19 +14336,20 @@ class TimelineEditor {
   }
 
   addTextSegmentFreeSpace() {
-    const frameRate = this.getFrameRate();
+    const frameRate = Math.round(this.getFrameRate());
     const newLength = Math.max(1, frameRate); // 1 second default
     const sorted = [...this.timeline.segments].sort((a, b) => a.start - b.start);
     let newStart = 0;
     for (const seg of sorted) {
       if (newStart + newLength <= seg.start) break;
-      newStart = Math.max(newStart, seg.start + seg.length);
+      newStart = Math.max(newStart, Math.round(seg.start + seg.length));
     }
     // Place the segment at the first free slot in the visual timeline (no output duration change).
-    const durationFrames = this.getVisualDurationFrames();
+    const durationFrames = Math.round(this.getVisualDurationFrames());
     const seg = {
       id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
-      start: newStart, length: Math.min(newLength, Math.max(newLength, durationFrames - newStart)),
+      start: Math.round(newStart),
+      length: Math.max(1, Math.round(Math.min(newLength, Math.max(newLength, durationFrames - newStart)))),
       prompt: "", type: "text",
     };
     this.timeline.segments.push(seg);
@@ -14223,16 +14367,16 @@ class TimelineEditor {
 
   addCutMarker(type = "soft") {
     if (!this.timeline.cuts) this.timeline.cuts = [];
-    const totalFrames = this.getVisualDurationFrames();
+    const maxTimelineFrames = this.getStartFrames() + this.getDurationFrames();
     const fps = this.getFrameRate();
 
     let playheadFrame = Math.round(this.currentFrame || 0);
-    let targetFrame = getValidCutFrame(playheadFrame, null, this.timeline.cuts, 22, totalFrames);
+    let targetFrame = getValidCutFrame(playheadFrame, null, this.timeline.cuts, 22, maxTimelineFrames);
     if (targetFrame === null) {
       for (let k = 1; ; k++) {
         let candidate = 17 * k + 5;
-        if (candidate >= totalFrames) break;
-        let valid = getValidCutFrame(candidate, null, this.timeline.cuts, 22, totalFrames);
+        if (candidate >= maxTimelineFrames) break;
+        let valid = getValidCutFrame(candidate, null, this.timeline.cuts, 22, maxTimelineFrames);
         if (valid === candidate) {
           targetFrame = candidate;
           break;
@@ -15020,8 +15164,9 @@ app.registerExtension({
           const vWidget = this.widgets?.find(w => w.name === "video_overlap_duration");
           const oWidget = this.widgets?.find(w => w.name === "audio_overlap_duration");
 
-          const aMode = aWidget ? aWidget.value : "in_latent_freeze + ref";
-          const cMode = cWidget ? cWidget.value : "in_latent_freeze";
+          const cleanMode = (v) => (v != null) ? String(v).split(" (")[0].trim() : "";
+          const aMode = cleanMode(aWidget ? aWidget.value : "golden_experience");
+          const cMode = cleanMode(cWidget ? cWidget.value : "golden_experience");
 
           const isGolden = (cMode === "golden_experience" && aMode === "golden_experience");
 
@@ -15040,30 +15185,60 @@ app.registerExtension({
               }
             }
           }
+
+          if (typeof this.computeSize === "function") {
+            const minH = this.computeSize()[1];
+            if (this.size && this.size[1] < minH) {
+              if (typeof this.setSize === "function") {
+                this.setSize([this.size[0], minH]);
+              } else {
+                this.size[1] = minH;
+              }
+            }
+          }
+          this._widgetSlotsDirty = true;
           this.setDirtyCanvas?.(true, true);
+          if (this.graph) this.graph.setDirtyCanvas(true, true);
         };
         this._updateContinuationWidgetsVisibility = updateContinuationWidgetsVisibility;
 
-        if (audioAnchorWidget && !audioAnchorWidget._audioRefHooked) {
-          const origAudioCb = audioAnchorWidget.callback;
-          audioAnchorWidget.callback = (val) => {
-            if (origAudioCb) origAudioCb.call(audioAnchorWidget, val);
-            updateContinuationWidgetsVisibility();
-          };
-          audioAnchorWidget._audioRefHooked = true;
-        }
+        const hookModeWidgets = () => {
+          const aWidget = this.widgets?.find(w => w.name === "audio_anchor_mode");
+          const cWidget = this.widgets?.find(w => w.name === "continuation_mode");
 
-        if (contModeWidget && !contModeWidget._contModeHooked) {
-          const origContCb = contModeWidget.callback;
-          contModeWidget.callback = (val) => {
-            if (origContCb) origContCb.call(contModeWidget, val);
-            updateContinuationWidgetsVisibility();
-          };
-          contModeWidget._contModeHooked = true;
-        }
+          if (aWidget && !aWidget._audioRefHooked) {
+            const origAudioCb = aWidget.callback;
+            aWidget.callback = function (val) {
+              if (origAudioCb) origAudioCb.apply(this, arguments);
+              updateContinuationWidgetsVisibility();
+            };
+            aWidget._audioRefHooked = true;
+          }
 
-        setTimeout(updateContinuationWidgetsVisibility, 10);
-        setTimeout(updateContinuationWidgetsVisibility, 100);
+          if (cWidget && !cWidget._contModeHooked) {
+            const origContCb = cWidget.callback;
+            cWidget.callback = function (val) {
+              if (origContCb) origContCb.apply(this, arguments);
+              updateContinuationWidgetsVisibility();
+            };
+            cWidget._contModeHooked = true;
+          }
+        };
+        this._hookModeWidgets = hookModeWidgets;
+        hookModeWidgets();
+
+        setTimeout(() => {
+          hookModeWidgets();
+          updateContinuationWidgetsVisibility();
+        }, 10);
+        setTimeout(() => {
+          hookModeWidgets();
+          updateContinuationWidgetsVisibility();
+        }, 100);
+        setTimeout(() => {
+          hookModeWidgets();
+          updateContinuationWidgetsVisibility();
+        }, 250);
 
         setTimeout(() => syncStartVideoNameLockState(this), 50);
 
@@ -15159,7 +15334,16 @@ app.registerExtension({
             if (w) w.value = newFPS;
             const syncFrm = (secName, frmName, minV) => {
               const sw = getW(secName), fw = getW(frmName);
-              if (sw && fw) fw.value = Math.max(minV, Math.round((parseFloat(sw.value) || 0) * newFPS));
+              if (sw && fw) {
+                if (frmName === "duration_frames") {
+                  let df = Math.max(5, Math.round((parseFloat(sw.value) || 0) * newFPS));
+                  df = getNearestH3LatticeFrame(df, Infinity, 0);
+                  fw.value = df;
+                  sw.value = parseFloat((df / newFPS).toFixed(3));
+                } else {
+                  fw.value = Math.max(minV, Math.round((parseFloat(sw.value) || 0) * newFPS));
+                }
+              }
             };
             syncFrm("start_second", "start_frame", 0);
             syncFrm("end_second", "end_frame", 1);
@@ -15453,22 +15637,142 @@ app.registerExtension({
             labWrap.appendChild(lab); labWrap.appendChild(unit);
             const input = document.createElement("input"); input.type = "number"; sIn(input, "86px");
             row.appendChild(labWrap); row.appendChild(input); parentCol.appendChild(row);
-            const refresh = () => {
-              if (timeMode() === "frames") { const w = getW(frmName); if (w) input.value = w.value; input.step = "1"; unit.textContent = "fr"; }
-              else { const w = getW(secName); if (w) input.value = w.value; input.step = "0.01"; unit.textContent = "s"; }
+
+            const isDuration = (secName === "duration_seconds" || frmName === "duration_frames");
+            let isTyping = false;
+            let lastCommittedVal = null;
+
+            const stepDuration = (dir) => {
+              const fps = (node._timelineEditor && node._timelineEditor.getFrameRate)
+                ? node._timelineEditor.getFrameRate()
+                : (getW("frame_rate")?.value || 24);
+              let currentFrames = 5;
+              if (timeMode() === "frames") {
+                const w = getW(frmName);
+                currentFrames = w ? (parseInt(w.value, 10) || 5) : 5;
+              } else {
+                const w = getW(secName);
+                const sec = w ? (parseFloat(w.value) || (5 / fps)) : (5 / fps);
+                currentFrames = Math.round(sec * fps);
+              }
+              const currentK = Math.max(0, Math.round((currentFrames - 5) / 17));
+              const newK = Math.max(0, currentK + dir);
+              const newFrames = 17 * newK + 5;
+              if (timeMode() === "frames") {
+                setW(frmName, newFrames);
+                lastCommittedVal = newFrames;
+              } else {
+                const newSec = parseFloat((newFrames / fps).toFixed(3));
+                setW(secName, newSec);
+                lastCommittedVal = newSec;
+              }
+              isTyping = false;
+              timeRefreshers.forEach(fn => fn());
             };
+
+            const refresh = () => {
+              if (timeMode() === "frames") {
+                const w = getW(frmName);
+                if (w) input.value = w.value;
+                if (isDuration) {
+                  input.step = "17";
+                  input.min = "5";
+                } else {
+                  input.step = "1";
+                  input.min = String(minFrm);
+                }
+                unit.textContent = "fr";
+              } else {
+                const w = getW(secName);
+                if (w) input.value = w.value;
+                if (isDuration) {
+                  const fps = (node._timelineEditor && node._timelineEditor.getFrameRate)
+                    ? node._timelineEditor.getFrameRate()
+                    : (getW("frame_rate")?.value || 24);
+                  input.step = (17 / fps).toFixed(3);
+                  input.min = (5 / fps).toFixed(3);
+                } else {
+                  input.step = "0.01";
+                  input.min = String(minSec);
+                }
+                unit.textContent = "s";
+              }
+              lastCommittedVal = parseFloat(input.value);
+            };
+
+            input.addEventListener("keydown", (e) => {
+              if (e.key === "Enter") {
+                input.blur();
+              } else if (isDuration && e.key === "ArrowUp") {
+                e.preventDefault();
+                stepDuration(1);
+              } else if (isDuration && e.key === "ArrowDown") {
+                e.preventDefault();
+                stepDuration(-1);
+              } else {
+                isTyping = true;
+              }
+            });
+
+            input.addEventListener("blur", () => {
+              isTyping = false;
+            });
+
             input.addEventListener("change", () => {
               let v = parseFloat(input.value);
               if (isNaN(v)) v = 0;
-              if (timeMode() === "frames") { v = Math.max(minFrm, Math.round(v)); setW(frmName, v); }
-              else { v = Math.max(minSec, v); setW(secName, parseFloat(v.toFixed(3))); }
+              if (timeMode() === "frames") {
+                v = Math.max(minFrm, Math.round(v));
+                if (isDuration) {
+                  const prevW = getW(frmName);
+                  const prevFrames = prevW ? (parseInt(prevW.value, 10) || 5) : 5;
+                  const prevK = Math.max(0, Math.round((prevFrames - 5) / 17));
+                  let targetK = Math.max(0, Math.round((v - 5) / 17));
+                  if (!isTyping && lastCommittedVal != null) {
+                    if (v > lastCommittedVal && targetK <= prevK) {
+                      targetK = prevK + 1;
+                    } else if (v < lastCommittedVal && targetK >= prevK) {
+                      targetK = Math.max(0, prevK - 1);
+                    }
+                  }
+                  v = 17 * targetK + 5;
+                }
+                setW(frmName, v);
+                lastCommittedVal = v;
+              } else {
+                v = Math.max(minSec, v);
+                if (isDuration) {
+                  const fps = (node._timelineEditor && node._timelineEditor.getFrameRate)
+                    ? node._timelineEditor.getFrameRate()
+                    : (getW("frame_rate")?.value || 24);
+                  const prevW = getW(secName);
+                  const prevSec = prevW ? (parseFloat(prevW.value) || (5 / fps)) : (5 / fps);
+                  const prevFrames = Math.round(prevSec * fps);
+                  const prevK = Math.max(0, Math.round((prevFrames - 5) / 17));
+                  let targetK = Math.max(0, Math.round(((v * fps) - 5) / 17));
+                  if (!isTyping && lastCommittedVal != null) {
+                    if (v > lastCommittedVal && targetK <= prevK) {
+                      targetK = prevK + 1;
+                    } else if (v < lastCommittedVal && targetK >= prevK) {
+                      targetK = Math.max(0, prevK - 1);
+                    }
+                  }
+                  const snappedFrames = 17 * targetK + 5;
+                  v = parseFloat((snappedFrames / fps).toFixed(3));
+                } else {
+                  v = parseFloat(v.toFixed(3));
+                }
+                setW(secName, v);
+                lastCommittedVal = v;
+              }
+              isTyping = false;
               timeRefreshers.forEach(fn => fn());
             });
             timeRefreshers.push(refresh);
             refresh();
             return input;
           };
-          mkTimeRow(left, "Duration", "duration_seconds", "duration_frames", 0.1, 1);
+          mkTimeRow(left, "Duration", "duration_seconds", "duration_frames", 0.208, 5);
 
           // ---------- RIGHT: Timing / Reference ----------
           const right = mkCol("Timing / Reference");
@@ -15554,8 +15858,8 @@ app.registerExtension({
         const _mmxOrigOnConfigure = this.onConfigure;
         this.onConfigure = function () {
           if (_mmxOrigOnConfigure) _mmxOrigOnConfigure.apply(this, arguments);
-          if (this._mmxSettingsRefresh) { try { this._mmxSettingsRefresh(); } catch (e) {} }
-          if (this._updateAudioRefDurVisibility) { try { this._updateAudioRefDurVisibility(); } catch (e) {} }
+          if (this._hookModeWidgets) { try { this._hookModeWidgets(); } catch (e) {} }
+          if (this._updateContinuationWidgetsVisibility) { try { this._updateContinuationWidgetsVisibility(); } catch (e) {} }
         };
 
         const container = document.createElement("div");
@@ -16101,6 +16405,8 @@ app.registerExtension({
             this._timelineEditor.render();
           }
           syncStartVideoNameLockState(this);
+          this._hookModeWidgets?.();
+          this._updateContinuationWidgetsVisibility?.();
         }, 0);
 
         return out;

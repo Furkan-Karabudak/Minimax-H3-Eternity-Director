@@ -1,0 +1,4 @@
+# Minimax H3 Eternity Director runtime dependencies
+imageio-ffmpeg>=0.4.8
+safetensors>=0.4.0
+av>=10.0.0

@@ -4,7 +4,7 @@
 
 [![license](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-%E2%89%A5%200.30.0-1a1a1a)](https://github.com/comfyanonymous/ComfyUI)
-[![fork](https://img.shields.io/badge/fork-Eternity%20|%20on%200.2.2-brightgreen)]()
+[![fork](https://img.shields.io/badge/fork-Eternity%20|%20on%200.3.2-brightgreen)]()
 [![Project Status](https://img.shields.io/badge/Status-In%20Active%20Development-orange)]()
 
 ---

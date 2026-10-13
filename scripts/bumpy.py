@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
+import json
 import os
 import re
 import sys
 from pathlib import Path
 
+# Ensure UTF-8 output encoding across all platforms (specifically Windows consoles)
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # Paths
 ROOT_DIR = Path(__file__).resolve().parent.parent
 PYPROJECT_PATH = ROOT_DIR / "pyproject.toml"
+PACKAGE_JSON_PATH = ROOT_DIR / "studio" / "ui" / "package.json"
 
 # Cross-platform single-character / keypress handler
 if os.name == "nt":
@@ -63,32 +71,43 @@ def clear_screen():
     sys.stdout.flush()
 
 
-def parse_compound_version(v: str):
-    match = re.match(r"^(\d+\.\d+\.\d+)(?:([\-\+])ee\.?(\d+(?:\.\d+)*))?$", v.strip())
+def parse_studio_version(v: str):
+    """
+    Parse versions in the new scheme:
+      X.Y.Z-alpha.x.y
+      X.Y.Z-beta.x.y
+      X.Y.Z-rc.x.y
+      X.Y.Z (release)
+
+    Returns:
+      (base_parts: [int, int, int], phase: str | None, x: int, y: int)
+    """
+    v_clean = v.strip().lstrip("v")
+    # Matches e.g. "1.0.0-alpha.1.0" or "1.0.0-beta.2" or "1.0.0"
+    match = re.match(
+        r"^(\d+\.\d+\.\d+)(?:-([a-zA-Z]+)(?:\.(\d+))?(?:\.(\d+))?)?$",
+        v_clean,
+    )
     if match:
-        base_str, sep_char, ee_str = match.groups()
-        base_parts = list(map(int, base_str.split(".")))
+        base_str, phase, x_str, y_str = match.groups()
+        base_parts = [int(p) for p in base_str.split(".")]
         while len(base_parts) < 3:
             base_parts.append(0)
-        sep = sep_char or "-"
-        if ee_str:
-            ee_parts = list(map(int, ee_str.split(".")))
-            while len(ee_parts) < 3:
-                ee_parts.append(0)
-        else:
-            ee_parts = [0, 0, 1]
-        return base_parts, sep, ee_parts
-    else:
-        main_ver, *rest = v.split("-", 1)
-        raw_parts = re.findall(r"\d+", main_ver)
-        base_parts = [int(p) for p in raw_parts[:3]] if raw_parts else [0, 2, 2]
-        while len(base_parts) < 3:
-            base_parts.append(0)
-        return base_parts, "-", [0, 0, 1]
+        
+        phase_val = phase.lower() if phase else None
+        x_val = int(x_str) if x_str is not None else 1
+        y_val = int(y_str) if y_str is not None else 0
+        return base_parts, phase_val, x_val, y_val
+
+    # Legacy fallback: e.g. "0.3.2-ee.0.3.0" -> initial studio baseline is 1.0.0-alpha.1.0
+    return [1, 0, 0], "alpha", 1, 0
 
 
-def format_version(base_parts, sep, ee_parts):
-    return f"{base_parts[0]}.{base_parts[1]}.{base_parts[2]}{sep}ee.{ee_parts[0]}.{ee_parts[1]}.{ee_parts[2]}"
+def format_studio_version(base_parts, phase, x, y) -> str:
+    base_str = f"{base_parts[0]}.{base_parts[1]}.{base_parts[2]}"
+    if phase:
+        return f"{base_str}-{phase}.{x}.{y}"
+    return base_str
 
 
 def get_current_pyproject_version() -> str:
@@ -97,66 +116,171 @@ def get_current_pyproject_version() -> str:
         sys.exit(1)
 
     content = PYPROJECT_PATH.read_text(encoding="utf-8")
-    match = re.search(r'^\[project\](?:(?!^\[)[\s\S])*?\bversion\s*=\s*"([^"]+)"', content, re.MULTILINE)
+    match = re.search(
+        r'^\[project\](?:(?!^\[)[\s\S])*?\bversion\s*=\s*"([^"]+)"',
+        content,
+        re.MULTILINE,
+    )
     if not match:
         print("\033[31mError: Could not locate version field in pyproject.toml [project] section.\033[0m")
         sys.exit(1)
 
-    return match.group(1)
+    return match.group(1).strip()
 
 
-def update_pyproject_file(prev_ver: str, next_ver: str):
-    success = False
+def update_version_in_files(prev_ver: str, next_ver: str):
+    results = []
+
+    # 1. Update pyproject.toml
     try:
-        raw = PYPROJECT_PATH.read_text(encoding="utf-8")
-        updated = re.sub(
+        raw_pyproject = PYPROJECT_PATH.read_text(encoding="utf-8")
+        updated_pyproject = re.sub(
             r'(^\[project\](?:(?!^\[)[\s\S])*?\bversion\s*=\s*")[^"]+(")',
             rf"\g<1>{next_ver}\g<2>",
-            raw,
+            raw_pyproject,
             flags=re.MULTILINE,
         )
-        PYPROJECT_PATH.write_text(updated, encoding="utf-8")
-        success = True
-    except Exception:
-        success = False
+        PYPROJECT_PATH.write_text(updated_pyproject, encoding="utf-8")
+        results.append(("pyproject.toml", True, prev_ver, next_ver))
+    except Exception as e:
+        results.append(("pyproject.toml", False, prev_ver, str(e)))
+
+    # 2. Update studio/ui/package.json
+    if PACKAGE_JSON_PATH.exists():
+        try:
+            raw_pkg = PACKAGE_JSON_PATH.read_text(encoding="utf-8")
+            old_pkg_match = re.search(r'"version"\s*:\s*"([^"]+)"', raw_pkg)
+            old_pkg_ver = old_pkg_match.group(1) if old_pkg_match else prev_ver
+
+            updated_pkg = re.sub(
+                r'("version"\s*:\s*")[^"]+(")',
+                rf'\g<1>{next_ver}\g<2>',
+                raw_pkg,
+            )
+            PACKAGE_JSON_PATH.write_text(updated_pkg, encoding="utf-8")
+            results.append(("studio/ui/package.json", True, old_pkg_ver, next_ver))
+        except Exception as e:
+            results.append(("studio/ui/package.json", False, prev_ver, str(e)))
 
     clear_screen()
-    print("\n")
-    if success:
-        print(f"\033[32m✔\033[0m pyproject.toml  \033[90m({prev_ver} -> \033[1;32m{next_ver}\033[0;90m)\033[0m")
-    else:
-        print("\033[31m✖\033[0m pyproject.toml  \033[31m(Update Failed!)\033[0m")
+    print("\n" + "=" * 62)
+    print("  \033[1;32m✔ Version Bump Successfully Applied!\033[0m")
+    print("=" * 62 + "\n")
+    for file_name, success, old_v, new_v in results:
+        if success:
+            print(f"  \033[32m✔\033[0m {file_name:<26} \033[90m({old_v} -> \033[1;32m{new_v}\033[0;90m)\033[0m")
+        else:
+            print(f"  \033[31m✖\033[0m {file_name:<26} \033[31m(Update Failed: {new_v})\033[0m")
     print("\n")
     sys.exit(0)
 
 
 def main():
     prev_version = get_current_pyproject_version()
-    base_parts, sep, ee_parts = parse_compound_version(prev_version)
-    
+    base_parts, phase, x_val, y_val = parse_studio_version(prev_version)
+
     curr_base = list(base_parts)
-    curr_sep = sep
-    curr_ee = list(ee_parts)
-    current_preview = format_version(curr_base, curr_sep, curr_ee)
+    curr_phase = phase
+    curr_x = x_val
+    curr_y = y_val
+
+    # If previous version was legacy (contained 'ee'), initialize preview directly to 1.0.0-alpha.1.0
+    if "ee" in prev_version:
+        curr_base = [1, 0, 0]
+        curr_phase = "alpha"
+        curr_x = 1
+        curr_y = 0
+
+    current_preview = format_studio_version(curr_base, curr_phase, curr_x, curr_y)
 
     MENU_ITEMS = [
-        # EE Section (Top)
-        {"id": "ee_patch", "section": "ee", "label": "ee-patch", "desc": "Increment EE patch (e.g. .0.0.1 -> .0.0.2)"},
-        {"id": "ee_minor", "section": "ee", "label": "ee-minor", "desc": "Increment EE minor (e.g. .0.0.1 -> .0.1.0)"},
-        {"id": "ee_major", "section": "ee", "label": "ee-major", "desc": "Increment EE major (e.g. .0.0.1 -> .1.0.0)"},
-        
-        # Base Section (Bottom)
-        {"id": "base_patch", "section": "base", "label": "base-patch", "desc": "Increment Base patch (e.g. 0.2.2 -> 0.2.3)"},
-        {"id": "base_minor", "section": "base", "label": "base-minor", "desc": "Increment Base minor (e.g. 0.2.2 -> 0.3.0)"},
-        {"id": "base_major", "section": "base", "label": "base-major", "desc": "Increment Base major (e.g. 0.2.2 -> 1.0.0)"},
-        
+        # Pre-Release Iterations
+        {
+            "id": "patch",
+            "section": "pre_release",
+            "label": "patch (+y)",
+            "desc": "Increment patch/bugfix counter (e.g. .1.0 -> .1.1)",
+        },
+        {
+            "id": "feature",
+            "section": "pre_release",
+            "label": "feature (+x)",
+            "desc": "Increment feature counter and reset patch (e.g. .1.2 -> .2.0)",
+        },
+
+        # Phase Transitions
+        {
+            "id": "phase_alpha",
+            "section": "phase",
+            "label": "to-alpha",
+            "desc": "Switch phase to Alpha (resets counter to .1.0)",
+        },
+        {
+            "id": "phase_beta",
+            "section": "phase",
+            "label": "to-beta",
+            "desc": "Switch phase to Beta (resets counter to .1.0)",
+        },
+        {
+            "id": "phase_rc",
+            "section": "phase",
+            "label": "to-rc",
+            "desc": "Switch phase to Release Candidate (resets counter to .1.0)",
+        },
+        {
+            "id": "phase_release",
+            "section": "phase",
+            "label": "to-release",
+            "desc": "Promote to official Release (drops pre-release suffix, e.g. 1.0.0)",
+        },
+
+        # Base SemVer (Target)
+        {
+            "id": "base_patch",
+            "section": "base",
+            "label": "base-patch",
+            "desc": "Increment base patch (e.g. 1.0.0 -> 1.0.1)",
+        },
+        {
+            "id": "base_minor",
+            "section": "base",
+            "label": "base-minor",
+            "desc": "Increment base minor (e.g. 1.0.0 -> 1.1.0)",
+        },
+        {
+            "id": "base_major",
+            "section": "base",
+            "label": "base-major",
+            "desc": "Increment base major (e.g. 1.0.0 -> 2.0.0)",
+        },
+
         # Utilities
-        {"id": "as_is", "section": "util", "label": "as-is", "desc": "Reset preview to original Previous Version"},
-        {"id": "custom", "section": "util", "label": "custom", "desc": "Type a custom version manually"},
-        
+        {
+            "id": "as_is",
+            "section": "util",
+            "label": "as-is",
+            "desc": "Reset preview to original Previous Version",
+        },
+        {
+            "id": "custom",
+            "section": "util",
+            "label": "custom",
+            "desc": "Type manual custom version string",
+        },
+
         # Actions
-        {"id": "confirm", "section": "action", "label": "[ Confirm & Save ]", "desc": "Write new version to pyproject.toml"},
-        {"id": "cancel", "section": "action", "label": "[ Cancel ]", "desc": "Exit without saving changes"},
+        {
+            "id": "confirm",
+            "section": "action",
+            "label": "[ Confirm & Save ]",
+            "desc": "Write new version to pyproject.toml & package.json",
+        },
+        {
+            "id": "cancel",
+            "section": "action",
+            "label": "[ Cancel ]",
+            "desc": "Exit without saving changes",
+        },
     ]
 
     selected_index = 0
@@ -165,10 +289,11 @@ def main():
 
     def render():
         clear_screen()
-        print("\n" + "=" * 60)
+        phase_badge = f"\033[1;35m[{curr_phase.upper() if curr_phase else 'RELEASE'}]\033[0m"
+        print("\n" + "=" * 62)
         print(f"  \033[1;36mPrevious Version:\033[0m  \033[33m{prev_version}\033[0m")
-        print(f"  \033[1;32mCurrent Version: \033[0m  \033[1;42;30m {current_preview} \033[0m \033[90m(Live Preview)\033[0m")
-        print("=" * 60 + "\n")
+        print(f"  \033[1;32mCurrent Version: \033[0m  \033[1;42;30m {current_preview} \033[0m  {phase_badge} \033[90m(Live Preview)\033[0m")
+        print("=" * 62 + "\n")
 
         if is_custom_mode:
             print("\033[90m< [ESC] to cancel <\033[0m\n")
@@ -186,13 +311,13 @@ def main():
             prefix = "▶ " if is_selected else "  "
 
             if item["id"] == "confirm":
-                line = f"{prefix}\033[1;32m{item['label']:<22}\033[0m \033[90m- {item['desc']}\033[0m"
+                line = f"{prefix}\033[1;32m{item['label']:<20}\033[0m \033[90m- {item['desc']}\033[0m"
             elif item["id"] == "cancel":
-                line = f"{prefix}\033[1;31m{item['label']:<22}\033[0m \033[90m- {item['desc']}\033[0m"
+                line = f"{prefix}\033[1;31m{item['label']:<20}\033[0m \033[90m- {item['desc']}\033[0m"
             elif item["id"] == "custom":
-                line = f"{prefix}\033[1;33m{item['label']:<22}\033[0m \033[90m>_ type manual version\033[0m"
+                line = f"{prefix}\033[1;33m{item['label']:<20}\033[0m \033[90m>_ type manual version\033[0m"
             else:
-                line = f"{prefix}{item['label']:<16} \033[90m- {item['desc']}\033[0m"
+                line = f"{prefix}{item['label']:<18} \033[90m- {item['desc']}\033[0m"
 
             if is_selected and item["id"] not in ("confirm", "cancel", "custom"):
                 print(f"\033[1;36m{line}\033[0m")
@@ -218,10 +343,11 @@ def main():
             if key == "return":
                 if len(custom_input.strip()) > 0:
                     current_preview = custom_input.strip()
-                    parsed_b, parsed_s, parsed_e = parse_compound_version(current_preview)
+                    parsed_b, parsed_p, parsed_x, parsed_y = parse_studio_version(current_preview)
                     curr_base = parsed_b
-                    curr_sep = parsed_s
-                    curr_ee = parsed_e
+                    curr_phase = parsed_p
+                    curr_x = parsed_x
+                    curr_y = parsed_y
                     is_custom_mode = False
                     custom_input = ""
                 continue
@@ -241,7 +367,7 @@ def main():
             action_id = item["id"]
 
             if action_id == "confirm":
-                update_pyproject_file(prev_version, current_preview)
+                update_version_in_files(prev_version, current_preview)
             elif action_id == "cancel":
                 clear_screen()
                 print("\n\033[33mVersion update cancelled.\033[0m\n")
@@ -251,36 +377,56 @@ def main():
                 custom_input = current_preview
             elif action_id == "as_is":
                 curr_base = list(base_parts)
-                curr_sep = sep
-                curr_ee = list(ee_parts)
-                current_preview = format_version(curr_base, curr_sep, curr_ee)
-            elif action_id == "ee_patch":
-                curr_ee[2] += 1
-                current_preview = format_version(curr_base, curr_sep, curr_ee)
-            elif action_id == "ee_minor":
-                curr_ee[1] += 1
-                curr_ee[2] = 0
-                current_preview = format_version(curr_base, curr_sep, curr_ee)
-            elif action_id == "ee_major":
-                curr_ee[0] += 1
-                curr_ee[1] = 0
-                curr_ee[2] = 0
-                current_preview = format_version(curr_base, curr_sep, curr_ee)
+                curr_phase = phase
+                curr_x = x_val
+                curr_y = y_val
+                current_preview = format_studio_version(curr_base, curr_phase, curr_x, curr_y)
+            elif action_id == "patch":
+                if curr_phase:
+                    curr_y += 1
+                else:
+                    curr_base[2] += 1
+                current_preview = format_studio_version(curr_base, curr_phase, curr_x, curr_y)
+            elif action_id == "feature":
+                if curr_phase:
+                    curr_x += 1
+                    curr_y = 0
+                else:
+                    curr_base[1] += 1
+                    curr_base[2] = 0
+                current_preview = format_studio_version(curr_base, curr_phase, curr_x, curr_y)
+            elif action_id == "phase_alpha":
+                curr_phase = "alpha"
+                curr_x = 1
+                curr_y = 0
+                current_preview = format_studio_version(curr_base, curr_phase, curr_x, curr_y)
+            elif action_id == "phase_beta":
+                curr_phase = "beta"
+                curr_x = 1
+                curr_y = 0
+                current_preview = format_studio_version(curr_base, curr_phase, curr_x, curr_y)
+            elif action_id == "phase_rc":
+                curr_phase = "rc"
+                curr_x = 1
+                curr_y = 0
+                current_preview = format_studio_version(curr_base, curr_phase, curr_x, curr_y)
+            elif action_id == "phase_release":
+                curr_phase = None
+                curr_x = 0
+                curr_y = 0
+                current_preview = format_studio_version(curr_base, curr_phase, curr_x, curr_y)
             elif action_id == "base_patch":
                 curr_base[2] += 1
-                curr_ee = [0, 0, 1]
-                current_preview = format_version(curr_base, curr_sep, curr_ee)
+                current_preview = format_studio_version(curr_base, curr_phase, curr_x, curr_y)
             elif action_id == "base_minor":
                 curr_base[1] += 1
                 curr_base[2] = 0
-                curr_ee = [0, 0, 1]
-                current_preview = format_version(curr_base, curr_sep, curr_ee)
+                current_preview = format_studio_version(curr_base, curr_phase, curr_x, curr_y)
             elif action_id == "base_major":
                 curr_base[0] += 1
                 curr_base[1] = 0
                 curr_base[2] = 0
-                curr_ee = [0, 0, 1]
-                current_preview = format_version(curr_base, curr_sep, curr_ee)
+                current_preview = format_studio_version(curr_base, curr_phase, curr_x, curr_y)
 
 
 if __name__ == "__main__":

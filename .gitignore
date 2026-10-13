@@ -42,3 +42,7 @@ AGENTS.md
 reference/
 tests/
 scratch/
+
+# Node / Frontend development
+node_modules/
+.vite/

@@ -326,11 +326,18 @@ async def minimax_director_check_file(request):
 
 @routes.get("/h3_eternity_director/asset")
 async def minimax_director_asset(request):
-    """Serve static assets directly from the repository's assets directory without caching."""
     asset_path = request.query.get("path", "")
     if not asset_path:
         return web.Response(status=400, text="Asset path required")
-    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    cur = os.path.abspath(__file__)
+    root_dir = None
+    for _ in range(5):
+        cur = os.path.dirname(cur)
+        if os.path.isdir(os.path.join(cur, "assets")):
+            root_dir = cur
+            break
+    if root_dir is None:
+        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     clean_path = os.path.normpath(asset_path).lstrip(r"\/")
     full_path = os.path.join(root_dir, "assets", clean_path)
     if not os.path.exists(full_path) or not os.path.isfile(full_path):

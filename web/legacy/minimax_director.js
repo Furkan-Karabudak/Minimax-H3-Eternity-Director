@@ -1263,18 +1263,30 @@ const getTimelineAssetUrl = (relPath) => {
     : "/h3_eternity_director/asset?" + query;
 };
 
-const PLAYHEAD_IMAGE = new Image();
-PLAYHEAD_IMAGE.src = getTimelineAssetUrl("timeline/i_tml_playhead.png");
+const setupTimelineImage = (img, relPath) => {
+  img.onload = () => {
+    if (window._mmxdActiveEditor) window._mmxdActiveEditor.render();
+  };
+  img.onerror = () => {
+    if (!img.dataset.fallbackTried) {
+      img.dataset.fallbackTried = "1";
+      img.src = `/extensions/Minimax-H3-Director_Eternity-Edition/assets/${relPath}?t=${Date.now()}`;
+    }
+  };
+  img.src = getTimelineAssetUrl(relPath);
+  return img;
+};
 
-const CUT_SOFT_IMAGE = new Image();
-CUT_SOFT_IMAGE.src = getTimelineAssetUrl("timeline/i_tml_cut_soft.png");
-
-const CUT_CHAIN_IMAGE = new Image();
-CUT_CHAIN_IMAGE.src = getTimelineAssetUrl("timeline/i_tml_cut_chain.png");
+const PLAYHEAD_IMAGE = setupTimelineImage(new Image(), "timeline/i_tml_playhead.png");
+const CUT_SOFT_IMAGE = setupTimelineImage(new Image(), "timeline/i_tml_cut_soft.png");
+const CUT_CHAIN_IMAGE = setupTimelineImage(new Image(), "timeline/i_tml_cut_chain.png");
 
 window.MMXD_reloadTimelineAssets = function() {
+  PLAYHEAD_IMAGE.dataset.fallbackTried = "";
   PLAYHEAD_IMAGE.src = getTimelineAssetUrl("timeline/i_tml_playhead.png");
+  CUT_SOFT_IMAGE.dataset.fallbackTried = "";
   CUT_SOFT_IMAGE.src = getTimelineAssetUrl("timeline/i_tml_cut_soft.png");
+  CUT_CHAIN_IMAGE.dataset.fallbackTried = "";
   CUT_CHAIN_IMAGE.src = getTimelineAssetUrl("timeline/i_tml_cut_chain.png");
   if (window._mmxdActiveEditor) window._mmxdActiveEditor.render();
 };
